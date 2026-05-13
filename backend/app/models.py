@@ -1,18 +1,25 @@
-class Job(BaseModel):
-__init__(self, id, title, description, company, location, url, created_at):
-    self.id = id
-    self.title = title
-    self.description = description
-    self.company = company
-    self.location = location
-    self.url = url
-    self.created_at = created_at
+from sqlalchemy import Column, Integer, String, Float, Boolean
+from .database import Base
 
-class Job(BaseModel):
-    id: int
-    title: str
-    description: str
-    company: str
-    location: str
-    url: str
-    created_at: str
+
+class User(Base):
+    __tablename__ = "users"
+
+    user_id = Column(Integer, primary_key=True, index=True)
+
+    name = Column(String, nullable=False)
+
+    mail = Column(String, unique=True, index=True, nullable=False)
+
+    skills = Column(String, nullable=True)
+    # Örnek: "Python, FastAPI, PostgreSQL, Django"
+
+    experience_years = Column(Float, nullable=True)
+    # Örnek: 0.5, 1, 2.5
+
+    major = Column(String, nullable=True)
+    # Örnek: "Computer Science"
+
+    master = Column(Boolean, default=False)
+    phd = Column(Boolean, default=False)
+    abitur = Column(Boolean, default=False)
