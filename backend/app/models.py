@@ -23,3 +23,16 @@ class User(Base):
     master = Column(Boolean, default=False)
     phd = Column(Boolean, default=False)
     abitur = Column(Boolean, default=False)
+
+class Job(Base):
+    __tablename__ = "jobs"
+
+    job_id = Column(Integer, primary_key=True, index=True)
+
+    title = Column(String, nullable=False)
+    company_name = Column(String, nullable=True)
+    location = Column(String, nullable=True)
+
+    url = Column(String, unique=True, index=True, nullable=False)
+
+    description_text = Column(String, nullable=True)

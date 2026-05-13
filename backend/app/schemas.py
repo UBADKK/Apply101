@@ -25,3 +25,23 @@ class UserResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class JobCreate(BaseModel):
+    title: str
+    company_name: str | None = None
+    location: str | None = None
+    url: str
+    description_text: str | None = None
+
+
+class JobResponse(BaseModel):
+    job_id: int
+    title: str
+    company_name: str | None = None
+    location: str | None = None
+    url: str
+    description_text: str | None = None
+
+    class Config:
+        from_attributes = True
