@@ -27,6 +27,44 @@ class UserResponse(BaseModel):
         from_attributes = True
 
 
+class CandidateProfileCreate(BaseModel):
+    self_description: str | None = None
+
+    target_role: str | None = None
+    secondary_target_role: str | None = None
+
+    target_location: str | None = None
+    preferred_work_type: str | None = None
+
+    preferred_technologies: str | None = None
+    extra_preferences: str | None = None
+
+
+class CandidateProfileResponse(BaseModel):
+    profile_id: int
+    user_id: int
+
+    cv_filename: str | None = None
+    cv_file_path: str | None = None
+    cv_text: str | None = None
+
+    self_description: str | None = None
+
+    target_role: str | None = None
+    secondary_target_role: str | None = None
+
+    target_location: str | None = None
+    preferred_work_type: str | None = None
+
+    preferred_technologies: str | None = None
+    extra_preferences: str | None = None
+
+    is_active: bool
+
+    class Config:
+        from_attributes = True
+
+
 class JobCreate(BaseModel):
     title: str
     company_name: str | None = None
