@@ -11,7 +11,10 @@ from .database import engine, Base, get_db
 from . import models, schemas
 
 
+from ..routers import users
+
 app = FastAPI()
+app.include_router(users.router)
 
 Base.metadata.create_all(bind=engine)
 
@@ -39,34 +42,6 @@ def extract_text_from_pdf(file_path: str) -> str:
 @app.get("/")
 def read_root():
     return {"message": "Apply101 backend is running"}
-
-
-#Add new user to DB
-@app.post("/users", response_model=schemas.UserResponse)
-def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
-    new_user = models.User(
-        name=user.name,
-        mail=user.mail,
-        skills=user.skills,
-        experience_years=user.experience_years,
-        major=user.major,
-        master=user.master,
-        phd=user.phd,
-        abitur=user.abitur,
-    )
-
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-
-    return new_user
-
-
-#Get users from DB
-@app.get("/users", response_model=list[schemas.UserResponse])
-def get_users(db: Session = Depends(get_db)):
-    users = db.query(models.User).all()
-    return users
 
 
 #Add new profile to a user
