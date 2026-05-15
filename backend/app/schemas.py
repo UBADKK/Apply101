@@ -65,6 +65,7 @@ class CandidateProfileResponse(BaseModel):
         from_attributes = True
 
 
+#Currently not being used!
 class JobCreate(BaseModel):
     title: str
     company_name: str | None = None
