@@ -12,13 +12,14 @@ from . import models, schemas
 
 
 from ..routers import users
+from ..routers import profiles
 
 app = FastAPI()
 app.include_router(users.router)
+app.include_router(profiles.router)
 
 Base.metadata.create_all(bind=engine)
 
-keywords = ["junior", "developer"]
 
 def html_to_text(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
@@ -42,46 +43,6 @@ def extract_text_from_pdf(file_path: str) -> str:
 @app.get("/")
 def read_root():
     return {"message": "Apply101 backend is running"}
-
-
-#Add new profile to a user
-@app.post("/users/{user_id}/profile", response_model=schemas.CandidateProfileResponse)
-def create_candidate_profile(
-    user_id: int,
-    profile: schemas.CandidateProfileCreate,
-    db: Session = Depends(get_db)
-):
-    user = db.query(models.User).filter(models.User.user_id == user_id).first()
-
-    if not user:
-        return {"error": "User not found"}
-
-    new_profile = models.CandidateProfile(
-        user_id=user_id,
-        self_description=profile.self_description,
-        target_role=profile.target_role,
-        secondary_target_role=profile.secondary_target_role,
-        target_location=profile.target_location,
-        preferred_work_type=profile.preferred_work_type,
-        preferred_technologies=profile.preferred_technologies,
-        extra_preferences=profile.extra_preferences,
-    )
-
-    db.add(new_profile)
-    db.commit()
-    db.refresh(new_profile)
-
-    return new_profile
-
-
-#Get user's profiles from DB
-@app.get("/users/{user_id}/profiles", response_model=list[schemas.CandidateProfileResponse])
-def get_user_profiles(user_id: int, db: Session = Depends(get_db)):
-    profiles = db.query(models.CandidateProfile).filter(
-        models.CandidateProfile.user_id == user_id
-    ).all()
-
-    return profiles
 
 
 #Get jobs from DB
