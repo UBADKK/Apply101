@@ -1,12 +1,6 @@
-import requests
+from fastapi import FastAPI
 
-from fastapi import FastAPI, Depends, File
-
-from sqlalchemy.orm import Session
-
-from .database import engine, Base, get_db
-from . import models, schemas
-
+from .database import engine, Base
 
 from ..routers import users
 from ..routers import profiles
@@ -18,8 +12,6 @@ app.include_router(profiles.router)
 app.include_router(jobs.router)
 
 Base.metadata.create_all(bind=engine)
-
-
 
 #Home
 @app.get("/")
