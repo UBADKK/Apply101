@@ -1,3 +1,5 @@
+from dotenv import load_dotenv
+load_dotenv()
 from fastapi import FastAPI
 
 from .database import engine, Base
@@ -5,11 +7,15 @@ from .database import engine, Base
 from ..routers import users
 from ..routers import profiles
 from ..routers import jobs
+from ..routers import matches
+
+
 
 app = FastAPI()
 app.include_router(users.router)
 app.include_router(profiles.router)
 app.include_router(jobs.router)
+app.include_router(matches.router)
 
 Base.metadata.create_all(bind=engine)
 
