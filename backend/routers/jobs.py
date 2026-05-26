@@ -247,12 +247,59 @@ def fetch_jobs_by_pages(
     }
 
 #THIS ENDPOINTS SENDS JOB DETAIL OF FIRST 3 JOBS TO LLM
+MAX_ANALYZE_JOBS = 10
+
+
 @router.post("/analyze-sample")
 def analyze_sample_jobs(
-    limit: int = Query(default=3, ge=1, le=10),
+    limit: int = Query(default=3, ge=1),
+    job_id_list: list[int] | None = Query(
+        None,
+        description="Analyze only the jobs with these job IDs."
+    ),
     db: Session = Depends(get_db)
 ):
-    jobs = db.query(models.Job).limit(limit).all()
+    if limit > MAX_ANALYZE_JOBS:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "ERR_LIMIT_TOO_HIGH",
+                "message": f"limit cannot be greater than {MAX_ANALYZE_JOBS}."
+            }
+        )
+
+    if job_id_list and len(job_id_list) > MAX_ANALYZE_JOBS:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "ERR_TOO_MANY_JOB_IDS",
+                "message": f"You can analyze at most {MAX_ANALYZE_JOBS} jobs at a time."
+            }
+        )
+
+    if job_id_list:
+        jobs = db.query(models.Job).filter(
+            models.Job.job_id.in_(job_id_list)
+        ).all()
+
+        found_job_ids = {job.job_id for job in jobs}
+        missing_job_ids = [
+            job_id for job_id in job_id_list
+            if job_id not in found_job_ids
+        ]
+
+        if not jobs:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error_code": "ERR_NO_JOBS_FOUND",
+                    "message": "None of the provided job IDs were found.",
+                    "missing_job_ids": missing_job_ids
+                }
+            )
+    else:
+        jobs = db.query(models.Job).limit(limit).all()
+        missing_job_ids = []
 
     if not jobs:
         raise HTTPException(
@@ -321,6 +368,7 @@ Rules:
                 detail={
                     "error_code": "ERR_AI_INVALID_JSON",
                     "message": "AI response was not valid JSON.",
+                    "job_id": job.job_id,
                     "raw_response": raw_text
                 }
             )
@@ -336,5 +384,8 @@ Rules:
 
     return {
         "analyzed_count": len(results),
+        "requested_job_ids": job_id_list,
+        "missing_job_ids": missing_job_ids,
+        "max_allowed_jobs": MAX_ANALYZE_JOBS,
         "results": results
     }
