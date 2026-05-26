@@ -1,4 +1,5 @@
 from pydantic import BaseModel, EmailStr
+from typing import Literal
 
 
 class UserCreate(BaseModel):
@@ -84,3 +85,16 @@ class JobResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class MatchResult(BaseModel):
+    score: int
+    summary: str
+    strengths: list[str]
+    weaknesses: list[str]
+    recommendation: Literal[
+        "strong_apply",
+        "apply",
+        "maybe",
+        "weak_match"
+    ]

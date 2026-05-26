@@ -6,7 +6,7 @@ from openai import OpenAI
 
 from ..app.database import get_db
 from ..app import models
-
+from ..app.schemas import MatchResult
 
 router = APIRouter(
     prefix="/users",
@@ -61,6 +61,7 @@ Job description:
 
 
 def get_ai_match(profile_text: str, job_text: str):
+
     prompt = f"""
 Analyze how well this candidate profile matches this job posting.
 
@@ -70,40 +71,31 @@ Candidate Profile:
 Job Posting:
 {job_text}
 
-Return ONLY valid JSON in this exact structure:
-{{
-  "score": 0,
-  "summary": "short summary",
-  "strengths": ["point 1", "point 2"],
-  "weaknesses": ["point 1", "point 2"],
-  "recommendation": "apply" 
-}}
-
 Rules:
 - score must be an integer between 0 and 100
 - summary should be short and clear
 - strengths and weaknesses should each contain 2 to 5 short bullet points
 - recommendation must be one of:
   "strong_apply", "apply", "maybe", "weak_match"
-- do not return anything except JSON
 """
 
-    response = client.responses.create(
-        model="gpt-4.1-mini",
-        input=prompt
-    )
-
-    raw_text = response.output_text.strip()
-
     try:
-        result = json.loads(raw_text)
-    except json.JSONDecodeError:
-        raise HTTPException(
-            status_code=500,
-            detail=f"AI response was not valid JSON: {raw_text}"
+        response = client.responses.parse(
+            model="gpt-4.1-mini",
+            input=prompt,
+            text_format=MatchResult,
+            temperature=0.2
         )
 
-    return result
+        result = response.output_parsed
+
+        return result.model_dump()
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"AI structured output failed: {str(e)}"
+        )
 
 
 @router.post("/{user_id}/profiles/{profile_id}/jobs/{job_id}/match")
