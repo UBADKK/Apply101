@@ -1,13 +1,16 @@
 import requests
 import time
+import json
 
 from bs4 import BeautifulSoup
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from openai import OpenAI
 
 from ..app.database import get_db
 from ..app import models, schemas
 
+client = OpenAI()
 
 router = APIRouter(
     prefix="/jobs",
@@ -241,4 +244,97 @@ def fetch_jobs_by_pages(
             for job in saved_jobs[:10]
         ],
         "sample_skipped_jobs": skipped_jobs[:10],
+    }
+
+#THIS ENDPOINTS SENDS JOB DETAIL OF FIRST 3 JOBS TO LLM
+@router.post("/analyze-sample")
+def analyze_sample_jobs(
+    limit: int = Query(default=3, ge=1, le=10),
+    db: Session = Depends(get_db)
+):
+    jobs = db.query(models.Job).limit(limit).all()
+
+    if not jobs:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_code": "ERR_NO_JOBS",
+                "message": "No jobs found in database."
+            }
+        )
+
+    results = []
+
+    for job in jobs:
+        prompt = f"""
+You are a job posting parser for a job matching system.
+
+Extract the key matching signals from this job posting.
+Do not invent information. If something is unclear, return "unknown".
+
+Job title:
+{job.title or ""}
+
+Company:
+{job.company_name or ""}
+
+Location:
+{job.location or ""}
+
+Job description:
+{(job.description_text or "")[:12000]}
+
+Return ONLY valid JSON in this exact structure:
+{{
+  "summary": "short but information-dense summary",
+  "required_skills": ["skill 1", "skill 2"],
+  "preferred_skills": ["skill 1", "skill 2"],
+  "responsibilities": ["responsibility 1", "responsibility 2"],
+  "seniority_level": "intern|junior|mid|senior|lead|unknown",
+  "language_requirements": ["English", "German", "unknown"],
+  "visa_sponsorship": "yes|no|unknown",
+  "work_type": "remote|hybrid|onsite|unknown",
+  "employment_type": "full-time|part-time|internship|working-student|contract|unknown",
+  "dealbreakers": ["dealbreaker 1", "dealbreaker 2"]
+}}
+
+Rules:
+- Return only valid JSON.
+- Do not include markdown.
+- Do not infer requirements that are not stated.
+- If German is required, include it in language_requirements and dealbreakers if relevant.
+- If EU work authorization is required, include it in dealbreakers.
+"""
+
+        response = client.responses.create(
+            model="gpt-4.1-mini",
+            input=prompt
+        )
+
+        raw_text = response.output_text.strip()
+
+        try:
+            analysis = json.loads(raw_text)
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error_code": "ERR_AI_INVALID_JSON",
+                    "message": "AI response was not valid JSON.",
+                    "raw_response": raw_text
+                }
+            )
+
+        results.append({
+            "job_id": job.job_id,
+            "title": job.title,
+            "company_name": job.company_name,
+            "location": job.location,
+            "url": job.url,
+            "analysis": analysis
+        })
+
+    return {
+        "analyzed_count": len(results),
+        "results": results
     }
