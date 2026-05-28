@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, Float, Boolean, ForeignKey, Text, DateTime
 from sqlalchemy.orm import relationship
 from .database import Base
 
@@ -70,3 +70,50 @@ class Job(Base):
     url = Column(String, unique=True, index=True, nullable=False)
 
     description_text = Column(String, nullable=True)
+
+    source_created_at = Column(Integer, nullable=True)
+    fetched_at = Column(DateTime, nullable=True)
+    last_seen_at = Column(DateTime, nullable=True)
+
+    job_status = Column(String, default="unknown", nullable=True)
+    last_status_checked_at = Column(DateTime, nullable=True)
+    last_status_code = Column(Integer, nullable=True)
+    status_check_error = Column(String, nullable=True)
+
+    source = Column(String, nullable=True)
+    source_job_id = Column(String, nullable=True)
+    source_updated_at = Column(Integer, nullable=True)
+
+    created_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, nullable=True)
+
+class JobAnalysis(Base):
+    __tablename__ = "job_analysis"
+
+    analysis_id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(Integer, nullable=False)
+
+    analysis_status = Column(String, default="pending", nullable=True)
+    analysis_json = Column(Text, nullable=True)
+
+    role_family = Column(String, nullable=True)
+    role_subfamily = Column(String, nullable=True)
+    normalized_role_title = Column(String, nullable=True)
+
+    seniority_level = Column(String, nullable=True)
+    work_type = Column(String, nullable=True)
+    employment_type = Column(String, nullable=True)
+    visa_sponsorship = Column(String, nullable=True)
+
+    required_skills_json = Column(Text, nullable=True)
+    preferred_skills_json = Column(Text, nullable=True)
+    language_requirements_json = Column(Text, nullable=True)
+    dealbreakers_json = Column(Text, nullable=True)
+
+    analysis_model = Column(String, nullable=True)
+    analysis_prompt_version = Column(String, nullable=True)
+    analyzed_at = Column(DateTime, nullable=True)
+    analysis_error = Column(Text, nullable=True)
+
+    is_current = Column(Boolean, default=True)
+    created_at = Column(DateTime, nullable=True)

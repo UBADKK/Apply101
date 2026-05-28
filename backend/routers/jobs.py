@@ -6,6 +6,7 @@ from bs4 import BeautifulSoup
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from openai import OpenAI
+from datetime import datetime
 
 from ..app.database import get_db
 from ..app import models, schemas
@@ -19,46 +20,120 @@ router = APIRouter(
 
 
 def html_to_text(html: str) -> str:
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(html or "", "html.parser")
     return soup.get_text(separator="\n", strip=True)
+
+
+def build_skipped_job(reason: str, job: dict, page: int | None = None):
+    skipped_job = {
+        "reason": reason,
+        "url": job.get("url"),
+        "title": job.get("title")
+    }
+
+    if page is not None:
+        skipped_job["page"] = page
+
+    return skipped_job
+
+
+def build_saved_job_sample(job: models.Job):
+    return {
+        "job_id": job.job_id,
+        "title": job.title,
+        "company_name": job.company_name,
+        "location": job.location,
+        "url": job.url,
+        "source_created_at": job.source_created_at,
+        "fetched_at": job.fetched_at,
+        "last_seen_at": job.last_seen_at,
+    }
 
 
 # Get jobs from DB
 @router.get("/", response_model=list[schemas.JobResponse])
-def get_jobs(db: Session = Depends(get_db)):
-    jobs = db.query(models.Job).all()
+def get_jobs(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db)
+):
+    jobs = (
+        db.query(models.Job)
+        .order_by(models.Job.job_id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
     return jobs
 
-
-# Fetch jobs from Arbeitnow
+# Fetch first page of jobs from Arbeitnow
 @router.post("/fetch")
 def fetch_jobs(db: Session = Depends(get_db)):
     url = "https://www.arbeitnow.com/api/job-board-api"
-    response = requests.get(url)
+
+    headers = {
+        "User-Agent": "Apply101/1.0"
+    }
+
+    response = requests.get(
+        url,
+        headers=headers,
+        timeout=20
+    )
+    response.raise_for_status()
+
     data = response.json()
-    jobs = data["data"]
+    jobs = data.get("data", [])
 
     saved_jobs = []
     skipped_jobs = []
 
-#burada jobs[:10] vardi, sayfa basi 100 ilan donuyodu kayip olmasin diye kaldirdim.
+    now = datetime.utcnow()
+
+    # Burada jobs[:10] vardı; sayfa başı 100 ilan döndüğü için tamamını işliyoruz.
     for job in jobs:
-        clean_description = html_to_text(job["description"])
+        job_url = job.get("url")
+
+        if not job_url:
+            skipped_jobs.append(build_skipped_job("MISSING_URL", job))
+            continue
+
+        description_html = job.get("description")
+
+        if not description_html:
+            skipped_jobs.append(build_skipped_job("MISSING_DESCRIPTION", job))
+            continue
+
+        clean_description = html_to_text(description_html)
+
+        if not clean_description:
+            skipped_jobs.append(build_skipped_job("EMPTY_DESCRIPTION_AFTER_CLEANING", job))
+            continue
 
         existing_job = db.query(models.Job).filter(
-            models.Job.url == job["url"]
+            models.Job.url == job_url
         ).first()
 
         if existing_job:
-            skipped_jobs.append(job["url"])
+            # Aynı ilan tekrar API'de görülürse hâlâ feed içinde görüldüğünü kaydediyoruz.
+            existing_job.last_seen_at = now
+
+            if existing_job.source_created_at is None:
+                existing_job.source_created_at = job.get("created_at")
+
+            skipped_jobs.append(build_skipped_job("DUPLICATE_IN_DB", job))
             continue
 
         new_job = models.Job(
-            title=job["title"],
-            company_name=job["company_name"],
-            location=job["location"],
-            url=job["url"],
+            title=job.get("title"),
+            company_name=job.get("company_name"),
+            location=job.get("location"),
+            url=job_url,
             description_text=clean_description,
+            source_created_at=job.get("created_at"),
+            fetched_at=now,
+            last_seen_at=now,
         )
 
         db.add(new_job)
@@ -72,8 +147,14 @@ def fetch_jobs(db: Session = Depends(get_db)):
     return {
         "saved_count": len(saved_jobs),
         "skipped_count": len(skipped_jobs),
-        "saved_jobs": saved_jobs,
+        "jobs_seen_count": len(jobs),
+        "sample_saved_jobs": [
+            build_saved_job_sample(job)
+            for job in saved_jobs[:10]
+        ],
+        "sample_skipped_jobs": skipped_jobs[:10],
     }
+
 
 @router.post("/fetch-pages")
 def fetch_jobs_by_pages(
@@ -111,9 +192,10 @@ def fetch_jobs_by_pages(
     pages_checked = 0
     last_checked_page = None
     stopped_reason = None
+    jobs_seen_count = 0
 
     def process_page(page: int):
-        nonlocal pages_checked, last_checked_page, stopped_reason
+        nonlocal pages_checked, last_checked_page, stopped_reason, jobs_seen_count
 
         response = requests.get(
             base_url,
@@ -144,54 +226,72 @@ def fetch_jobs_by_pages(
             stopped_reason = "EMPTY_PAGE"
             return False
 
+        jobs_seen_count += len(jobs)
+
         page_saved_jobs = []
+        now = datetime.utcnow()
 
         for job in jobs:
             job_url = job.get("url")
 
             if not job_url:
-                skipped_jobs.append({
-                    "reason": "MISSING_URL",
-                    "title": job.get("title")
-                })
+                skipped_jobs.append(build_skipped_job("MISSING_URL", job, page))
                 continue
 
             if job_url in seen_urls:
-                skipped_jobs.append({
-                    "reason": "DUPLICATE_IN_THIS_FETCH",
-                    "url": job_url,
-                    "title": job.get("title")
-                })
+                skipped_jobs.append(build_skipped_job("DUPLICATE_IN_THIS_FETCH", job, page))
                 continue
 
             seen_urls.add(job_url)
+
+            description_html = job.get("description")
+
+            if not description_html:
+                skipped_jobs.append(build_skipped_job("MISSING_DESCRIPTION", job, page))
+                continue
+
+            clean_description = html_to_text(description_html)
+
+            if not clean_description:
+                skipped_jobs.append(build_skipped_job("EMPTY_DESCRIPTION_AFTER_CLEANING", job, page))
+                continue
 
             existing_job = db.query(models.Job).filter(
                 models.Job.url == job_url
             ).first()
 
             if existing_job:
-                skipped_jobs.append({
-                    "reason": "DUPLICATE_IN_DB",
-                    "url": job_url,
-                    "title": job.get("title")
-                })
+                # Aynı ilan tekrar API'de görülürse last_seen_at güncellenir.
+                existing_job.last_seen_at = now
+
+                if existing_job.source_created_at is None:
+                    existing_job.source_created_at = job.get("created_at")
+
+                skipped_jobs.append(build_skipped_job("DUPLICATE_IN_DB", job, page))
                 continue
 
-            clean_description = html_to_text(job.get("description", ""))
-
             new_job = models.Job(
-                title=job.get("title"),
-                company_name=job.get("company_name"),
-                location=job.get("location"),
-                url=job_url,
-                description_text=clean_description,
-            )
+            title=job.get("title"),
+            company_name=job.get("company_name"),
+            location=job.get("location"),
+            url=job_url,
+            description_text=clean_description,
+            source="arbeitnow",
+            source_job_id=None,
+            source_created_at=job.get("created_at"),
+            source_updated_at=None,
+            fetched_at=now,
+            last_seen_at=now,
+            created_at=now,
+            updated_at=now,
+)
 
             db.add(new_job)
             saved_jobs.append(new_job)
             page_saved_jobs.append(new_job)
 
+        # Her başarılı sayfadan sonra commit.
+        # Böylece örneğin 7. sayfada 403 olursa ilk 6 sayfa DB'ye yazılmış olur.
         db.commit()
 
         for job in page_saved_jobs:
@@ -214,7 +314,7 @@ def fetch_jobs_by_pages(
                 stopped_reason = "SAFETY_LIMIT_REACHED"
                 break
 
-            time.sleep(1)
+            time.sleep(2)
     else:
         for page in pages_to_fetch:
             has_jobs = process_page(page)
@@ -231,22 +331,18 @@ def fetch_jobs_by_pages(
         "pages_checked": pages_checked,
         "last_checked_page": last_checked_page,
         "stopped_reason": stopped_reason,
+        "jobs_seen_count": jobs_seen_count,
         "saved_count": len(saved_jobs),
         "skipped_count": len(skipped_jobs),
         "sample_saved_jobs": [
-            {
-                "job_id": job.job_id,
-                "title": job.title,
-                "company_name": job.company_name,
-                "location": job.location,
-                "url": job.url
-            }
+            build_saved_job_sample(job)
             for job in saved_jobs[:10]
         ],
         "sample_skipped_jobs": skipped_jobs[:10],
     }
 
-#THIS ENDPOINTS SENDS JOB DETAIL OF FIRST 3 JOBS TO LLM
+
+# This endpoint sends selected job details to LLM for sample analysis.
 MAX_ANALYZE_JOBS = 10
 
 
@@ -334,14 +430,17 @@ Job description:
 Return ONLY valid JSON in this exact structure:
 {{
   "summary": "short but information-dense summary",
+  "role_family": "engineering|data|product|design|marketing|sales|customer_success|operations|business_analysis|project_management|finance|accounting|hr|legal|consulting|strategy|it|cybersecurity|qa_testing|devops|research|education|healthcare|logistics|supply_chain|manufacturing|administration|support|content|media|other|unknown",
+  "role_subfamily": "short snake_case normalized subcategory, e.g. backend_engineering, data_analysis, product_management, account_executive",
+  "normalized_role_title": "specific normalized role title, e.g. backend software engineer, business intelligence analyst, customer success manager",
   "required_skills": ["skill 1", "skill 2"],
   "preferred_skills": ["skill 1", "skill 2"],
   "responsibilities": ["responsibility 1", "responsibility 2"],
-  "seniority_level": "intern|junior|mid|senior|lead|unknown",
+  "seniority_level": "intern|junior|mid|senior|lead|executive|unknown",
   "language_requirements": ["English", "German", "unknown"],
   "visa_sponsorship": "yes|no|unknown",
   "work_type": "remote|hybrid|onsite|unknown",
-  "employment_type": "full-time|part-time|internship|working-student|contract|unknown",
+  "employment_type": "full-time|part-time|internship|working-student|contract|freelance|temporary|unknown",
   "dealbreakers": ["dealbreaker 1", "dealbreaker 2"]
 }}
 
@@ -349,13 +448,18 @@ Rules:
 - Return only valid JSON.
 - Do not include markdown.
 - Do not infer requirements that are not stated.
+- role_family must be selected from the allowed list.
+- role_subfamily should be a short snake_case normalized subcategory.
+- normalized_role_title should be a concise human-readable normalized title.
+- Do not force a job into an inaccurate category. Use "other" or "unknown" when unclear.
 - If German is required, include it in language_requirements and dealbreakers if relevant.
 - If EU work authorization is required, include it in dealbreakers.
 """
 
         response = client.responses.create(
             model="gpt-4.1-mini",
-            input=prompt
+            input=prompt,
+            temperature=0
         )
 
         raw_text = response.output_text.strip()
