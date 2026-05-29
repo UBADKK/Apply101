@@ -6,7 +6,7 @@ from bs4 import BeautifulSoup
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from openai import OpenAI
-from datetime import datetime
+from datetime import datetime, timezone
 
 from ..app.database import get_db
 from ..app import models, schemas
@@ -67,6 +67,22 @@ def get_jobs(
 
     return jobs
 
+@router.get("/fetch-runs")
+def get_job_fetch_runs(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db)
+):
+    fetch_runs = (
+        db.query(models.JobFetchRun)
+        .order_by(models.JobFetchRun.run_id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    return fetch_runs
+
 # Fetch first page of jobs from Arbeitnow
 @router.post("/fetch")
 def fetch_jobs(db: Session = Depends(get_db)):
@@ -89,7 +105,7 @@ def fetch_jobs(db: Session = Depends(get_db)):
     saved_jobs = []
     skipped_jobs = []
 
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     # Burada jobs[:10] vardı; sayfa başı 100 ilan döndüğü için tamamını işliyoruz.
     for job in jobs:
@@ -131,9 +147,14 @@ def fetch_jobs(db: Session = Depends(get_db)):
             location=job.get("location"),
             url=job_url,
             description_text=clean_description,
+            source="arbeitnow",
+            source_job_id=None,
             source_created_at=job.get("created_at"),
+            source_update_at=None,
             fetched_at=now,
             last_seen_at=now,
+            created_at=now,
+            updated_at=now,
         )
 
         db.add(new_job)
@@ -193,9 +214,20 @@ def fetch_jobs_by_pages(
     last_checked_page = None
     stopped_reason = None
     jobs_seen_count = 0
+    duplicate_jobs_count = 0
+    error_message = None
+
+    started_at = datetime.now(timezone.utc)
+
+    fetch_type = "all_pages"
+    if not alljobs:
+        if thispage is not None:
+            fetch_type = "thispage"
+        elif maxpage is not None:
+            fetch_type = "maxpage"
 
     def process_page(page: int):
-        nonlocal pages_checked, last_checked_page, stopped_reason, jobs_seen_count
+        nonlocal pages_checked, last_checked_page, stopped_reason, jobs_seen_count, duplicate_jobs_count
 
         response = requests.get(
             base_url,
@@ -229,8 +261,7 @@ def fetch_jobs_by_pages(
         jobs_seen_count += len(jobs)
 
         page_saved_jobs = []
-        now = datetime.utcnow()
-
+        now = datetime.now(timezone.utc)
         for job in jobs:
             job_url = job.get("url")
 
@@ -266,6 +297,8 @@ def fetch_jobs_by_pages(
 
                 if existing_job.source_created_at is None:
                     existing_job.source_created_at = job.get("created_at")
+
+                duplicate_jobs_count += 1
 
                 skipped_jobs.append(build_skipped_job("DUPLICATE_IN_DB", job, page))
                 continue
@@ -324,7 +357,39 @@ def fetch_jobs_by_pages(
 
             time.sleep(1)
 
+    if stopped_reason is None:
+        stopped_reason = "REQUESTED_PAGES_COMPLETED"
+
+    finished_at = datetime.now(timezone.utc)
+
+    fetch_run = models.JobFetchRun(
+        source="arbeitnow",
+        fetch_type=fetch_type,
+        params_json=json.dumps({
+            "alljobs": alljobs,
+            "maxpage": maxpage,
+            "thispage": thispage,
+            "sleep_seconds": 2
+        }),
+        started_at=started_at,
+        finished_at=finished_at,
+        pages_checked=pages_checked,
+        last_checked_page=last_checked_page,
+        jobs_seen_count=jobs_seen_count,
+        new_jobs_count=len(saved_jobs),
+        duplicate_jobs_count=duplicate_jobs_count,
+        skipped_jobs_count=len(skipped_jobs),
+        stopped_reason=stopped_reason,
+        status="completed",
+        error_message=error_message
+    )
+
+    db.add(fetch_run)
+    db.commit()
+    db.refresh(fetch_run)
+
     return {
+        "fetch_run_id": fetch_run.run_id,
         "alljobs": alljobs,
         "maxpage": maxpage,
         "thispage": thispage,

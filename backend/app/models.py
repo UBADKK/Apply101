@@ -117,3 +117,27 @@ class JobAnalysis(Base):
 
     is_current = Column(Boolean, default=True)
     created_at = Column(DateTime, nullable=True)
+
+class JobFetchRun(Base):
+    __tablename__ = "job_fetch_runs"
+
+    run_id = Column(Integer, primary_key=True, index=True)
+
+    source = Column(String, nullable=False)
+    fetch_type = Column(String, nullable=True)
+    params_json = Column(Text, nullable=True)
+
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+
+    pages_checked = Column(Integer, default=0)
+    last_checked_page = Column(Integer, nullable=True)
+
+    jobs_seen_count = Column(Integer, default=0)
+    new_jobs_count = Column(Integer, default=0)
+    duplicate_jobs_count = Column(Integer, default=0)
+    skipped_jobs_count = Column(Integer, default=0)
+
+    stopped_reason = Column(String, nullable=True)
+    status = Column(String, default="running")
+    error_message = Column(Text, nullable=True)
