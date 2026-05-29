@@ -407,9 +407,338 @@ def fetch_jobs_by_pages(
     }
 
 
-# This endpoint sends selected job details to LLM for sample analysis.
-MAX_ANALYZE_JOBS = 10
 
+JOB_ANALYSIS_MODEL = "gpt-4.1-mini"
+JOB_ANALYSIS_PROMPT_VERSION = "job_analysis_v2"
+
+MAX_ANALYZE_JOBS = 10
+MAX_ANALYZE_MISSING_JOBS = 10
+
+@router.post("/{job_id}/analyze")
+def analyze_job(
+    job_id: int,
+    force_reanalyze: bool = Query(default=False),
+    db: Session = Depends(get_db)
+):
+    job = db.query(models.Job).filter(
+        models.Job.job_id == job_id
+    ).first()
+
+    if not job:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_code": "ERR_JOB_NOT_FOUND",
+                "message": f"Job with id {job_id} was not found."
+            }
+        )
+
+    if not job.description_text:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "ERR_JOB_DESCRIPTION_MISSING",
+                "message": "Job does not have description_text, so it cannot be analyzed.",
+                "job_id": job_id
+            }
+        )
+
+    existing_analysis = db.query(models.JobAnalysis).filter(
+        models.JobAnalysis.job_id == job_id,
+        models.JobAnalysis.analysis_status == "completed",
+        models.JobAnalysis.analysis_model == JOB_ANALYSIS_MODEL,
+        models.JobAnalysis.analysis_prompt_version == JOB_ANALYSIS_PROMPT_VERSION,
+        models.JobAnalysis.is_current == True
+    ).first()
+
+    if existing_analysis and not force_reanalyze:
+        return {
+            "status": "cached",
+            "message": "Job already has a current completed analysis for this model and prompt version.",
+            "job_id": job.job_id,
+            "analysis_id": existing_analysis.analysis_id,
+            "analysis": json.loads(existing_analysis.analysis_json)
+            if existing_analysis.analysis_json else None
+        }
+
+    prompt = f"""
+You are a job posting parser for a job matching system.
+
+Extract the key matching signals from this job posting.
+Do not invent information. If something is unclear, return "unknown".
+
+Job title:
+{job.title or ""}
+
+Company:
+{job.company_name or ""}
+
+Location:
+{job.location or ""}
+
+Job description:
+{(job.description_text or "")[:12000]}
+
+Return ONLY valid JSON in this exact structure:
+{{
+  "summary": "short but information-dense summary",
+  "role_family": "engineering|data|product|design|marketing|sales|customer_success|operations|business_analysis|project_management|finance|accounting|hr|legal|consulting|strategy|it|cybersecurity|qa_testing|devops|research|education|healthcare|logistics|supply_chain|manufacturing|administration|support|content|media|other|unknown",
+  "role_subfamily": "short snake_case normalized subcategory, e.g. backend_engineering, data_analysis, product_management, account_executive",
+  "normalized_role_title": "specific normalized role title, e.g. backend software engineer, business intelligence analyst, customer success manager",
+  "required_skills": ["skill 1", "skill 2"],
+  "preferred_skills": ["skill 1", "skill 2"],
+  "responsibilities": ["responsibility 1", "responsibility 2"],
+  "seniority_level": "intern|junior|mid|senior|lead|executive|unknown",
+  "language_requirements": ["English", "German", "unknown"],
+  "visa_sponsorship": "yes|no|unknown",
+  "work_type": "remote|hybrid|onsite|unknown",
+  "employment_type": "full-time|part-time|internship|working-student|contract|freelance|temporary|unknown",
+  "dealbreakers": ["dealbreaker 1", "dealbreaker 2"]
+}}
+
+Rules:
+- Return only valid JSON.
+- Do not include markdown.
+- Do not infer requirements that are not stated.
+- role_family must be selected from the allowed list.
+- role_subfamily should be a short snake_case normalized subcategory.
+- normalized_role_title should be a concise human-readable normalized title.
+- Do not force a job into an inaccurate category. Use "other" or "unknown" when unclear.
+- If German is required, include it in language_requirements and dealbreakers if relevant.
+- If EU work authorization is required, include it in dealbreakers.
+- Only include hard requirements in dealbreakers.
+- Do not include preferred, advantageous, nice-to-have, or optional qualifications in dealbreakers.
+- For working-student roles, if university enrollment is required, set employment_type to "working-student" and include student enrollment requirement in dealbreakers.
+"""
+
+    now = datetime.now(timezone.utc)
+
+    try:
+        response = client.responses.create(
+            model=JOB_ANALYSIS_MODEL,
+            input=prompt,
+            temperature=0
+        )
+
+        raw_text = response.output_text.strip()
+
+        try:
+            analysis = json.loads(raw_text)
+        except json.JSONDecodeError:
+            failed_analysis = models.JobAnalysis(
+                job_id=job.job_id,
+                analysis_status="failed",
+                analysis_json=None,
+                analysis_model=JOB_ANALYSIS_MODEL,
+                analysis_prompt_version=JOB_ANALYSIS_PROMPT_VERSION,
+                analyzed_at=now,
+                analysis_error=f"AI response was not valid JSON: {raw_text[:1000]}",
+                is_current=False,
+                created_at=now
+            )
+
+            db.add(failed_analysis)
+            db.commit()
+
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error_code": "ERR_AI_INVALID_JSON",
+                    "message": "AI response was not valid JSON.",
+                    "job_id": job.job_id,
+                    "raw_response": raw_text
+                }
+            )
+
+        db.query(models.JobAnalysis).filter(
+            models.JobAnalysis.job_id == job.job_id,
+            models.JobAnalysis.is_current == True
+        ).update({
+            "is_current": False
+        })
+
+        new_analysis = models.JobAnalysis(
+            job_id=job.job_id,
+            analysis_status="completed",
+            analysis_json=json.dumps(analysis, ensure_ascii=False),
+
+            role_family=analysis.get("role_family"),
+            role_subfamily=analysis.get("role_subfamily"),
+            normalized_role_title=analysis.get("normalized_role_title"),
+
+            seniority_level=analysis.get("seniority_level"),
+            work_type=analysis.get("work_type"),
+            employment_type=analysis.get("employment_type"),
+            visa_sponsorship=analysis.get("visa_sponsorship"),
+
+            required_skills_json=json.dumps(
+                analysis.get("required_skills", []),
+                ensure_ascii=False
+            ),
+            preferred_skills_json=json.dumps(
+                analysis.get("preferred_skills", []),
+                ensure_ascii=False
+            ),
+            language_requirements_json=json.dumps(
+                analysis.get("language_requirements", []),
+                ensure_ascii=False
+            ),
+            dealbreakers_json=json.dumps(
+                analysis.get("dealbreakers", []),
+                ensure_ascii=False
+            ),
+
+            analysis_model=JOB_ANALYSIS_MODEL,
+            analysis_prompt_version=JOB_ANALYSIS_PROMPT_VERSION,
+            analyzed_at=now,
+            analysis_error=None,
+            is_current=True,
+            created_at=now
+        )
+
+        db.add(new_analysis)
+        db.commit()
+        db.refresh(new_analysis)
+
+        return {
+            "status": "created",
+            "job_id": job.job_id,
+            "analysis_id": new_analysis.analysis_id,
+            "analysis_model": new_analysis.analysis_model,
+            "analysis_prompt_version": new_analysis.analysis_prompt_version,
+            "analysis": analysis
+        }
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        failed_analysis = models.JobAnalysis(
+            job_id=job.job_id,
+            analysis_status="failed",
+            analysis_json=None,
+            analysis_model=JOB_ANALYSIS_MODEL,
+            analysis_prompt_version=JOB_ANALYSIS_PROMPT_VERSION,
+            analyzed_at=now,
+            analysis_error=str(e),
+            is_current=False,
+            created_at=now
+        )
+
+        db.add(failed_analysis)
+        db.commit()
+
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_code": "ERR_JOB_ANALYSIS_FAILED",
+                "message": "Job analysis failed.",
+                "job_id": job.job_id,
+                "error": str(e)
+            }
+        )
+
+
+#This endpoint analyzes jobs with no analysis as batchs by using the analyze endpoint.
+
+@router.post("/analyze-missing")
+def analyze_missing_jobs(
+    limit: int = Query(default=3, ge=1, le=MAX_ANALYZE_MISSING_JOBS),
+    db: Session = Depends(get_db)
+):
+    completed_analysis_job_ids = (
+        db.query(models.JobAnalysis.job_id)
+        .filter(
+            models.JobAnalysis.analysis_status == "completed",
+            models.JobAnalysis.analysis_model == JOB_ANALYSIS_MODEL,
+            models.JobAnalysis.analysis_prompt_version == JOB_ANALYSIS_PROMPT_VERSION,
+            models.JobAnalysis.is_current == True
+        )
+    )
+
+    jobs = (
+        db.query(models.Job)
+        .filter(
+            models.Job.description_text.isnot(None),
+            ~models.Job.job_id.in_(completed_analysis_job_ids)
+        )
+        .order_by(models.Job.job_id.desc())
+        .limit(limit)
+        .all()
+    )
+
+    if not jobs:
+        return {
+            "status": "no_jobs_to_analyze",
+            "requested_limit": limit,
+            "max_allowed_limit": MAX_ANALYZE_MISSING_JOBS,
+            "analyzed_count": 0,
+            "failed_count": 0,
+            "results": []
+        }
+
+    results = []
+
+    for job in jobs:
+        try:
+            result = analyze_job(
+                job_id=job.job_id,
+                force_reanalyze=False,
+                db=db
+            )
+
+            results.append({
+                "job_id": job.job_id,
+                "title": job.title,
+                "company_name": job.company_name,
+                "status": result.get("status"),
+                "analysis_id": result.get("analysis_id"),
+                "analysis_prompt_version": result.get("analysis_prompt_version")
+            })
+
+        except HTTPException as e:
+            db.rollback()
+
+            results.append({
+                "job_id": job.job_id,
+                "title": job.title,
+                "company_name": job.company_name,
+                "status": "failed",
+                "error": e.detail
+            })
+
+        except Exception as e:
+            db.rollback()
+
+            results.append({
+                "job_id": job.job_id,
+                "title": job.title,
+                "company_name": job.company_name,
+                "status": "failed",
+                "error": str(e)
+            })
+
+    analyzed_count = len([
+        result for result in results
+        if result.get("status") in ["created", "cached"]
+    ])
+
+    failed_count = len([
+        result for result in results
+        if result.get("status") == "failed"
+    ])
+
+    return {
+        "status": "completed",
+        "requested_limit": limit,
+        "max_allowed_limit": MAX_ANALYZE_MISSING_JOBS,
+        "selected_job_count": len(jobs),
+        "analyzed_count": analyzed_count,
+        "failed_count": failed_count,
+        "results": results
+    }
+
+# This endpoint sends selected job details to LLM for sample analysis.
 
 @router.post("/analyze-sample")
 def analyze_sample_jobs(
