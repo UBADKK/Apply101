@@ -58,6 +58,22 @@ class CandidateProfile(Base):
 
     user = relationship("User", back_populates="candidate_profiles")
 
+    profile_name = Column(String, nullable=True)
+
+    target_locations_json = Column(Text, nullable=True)
+    preferred_roles_json = Column(Text, nullable=True)
+    excluded_roles_json = Column(Text, nullable=True)
+
+    visa_sponsorship_needed = Column(Boolean, nullable=True)
+    work_authorization_status = Column(String, nullable=True)
+    relocation_preference = Column(String, nullable=True)
+
+    years_of_experience = Column(Float, nullable=True)
+    seniority_target = Column(String, nullable=True)
+
+    created_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, nullable=True)
+
 class Job(Base):
     __tablename__ = "jobs"
 
@@ -141,3 +157,18 @@ class JobFetchRun(Base):
     stopped_reason = Column(String, nullable=True)
     status = Column(String, default="running")
     error_message = Column(Text, nullable=True)
+
+class UserLanguage(Base):
+    __tablename__ = "user_languages"
+
+    user_language_id = Column(Integer, primary_key=True, index=True)
+
+    user_id = Column(Integer, nullable=False)
+
+    language_code = Column(String, nullable=False)
+    language_name = Column(String, nullable=False)
+    proficiency_level = Column(String, nullable=True)
+    proficiency_scale = Column(String, default="CEFR", nullable=True)
+
+    is_primary = Column(Boolean, default=False)
+    created_at = Column(DateTime, nullable=True)
