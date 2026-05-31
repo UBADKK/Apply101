@@ -20,7 +20,7 @@ client = OpenAI()
 
 MATCH_MODEL = "gpt-4.1-mini"
 MATCH_PROMPT_VERSION = "job_match_v1"
-
+MAX_BATCH_MATCH_JOBS = 50
 
 @router.post("/{user_id}/profiles/{profile_id}/jobs/{job_id}/match")
 def match_profile_with_job(
@@ -341,3 +341,167 @@ Important:
                 "error": str(e)
             }
         )
+    
+    MAX_BATCH_MATCH_JOBS = 50
+
+
+@router.post("/{user_id}/profiles/{profile_id}/jobs/match-analyzed")
+def match_profile_with_analyzed_jobs(
+    user_id: int,
+    profile_id: int,
+    limit: int = Query(default=20, ge=1, le=MAX_BATCH_MATCH_JOBS),
+    offset: int = Query(default=0, ge=0),
+    force_rematch: bool = Query(default=False),
+    db: Session = Depends(get_db)
+):
+    user = db.query(models.User).filter(
+        models.User.user_id == user_id
+    ).first()
+
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_code": "ERR_USER_NOT_FOUND",
+                "message": f"User with id {user_id} was not found."
+            }
+        )
+
+    profile = db.query(models.CandidateProfile).filter(
+        models.CandidateProfile.profile_id == profile_id,
+        models.CandidateProfile.user_id == user_id
+    ).first()
+
+    if not profile:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_code": "ERR_PROFILE_NOT_FOUND",
+                "message": f"Profile with id {profile_id} was not found for user {user_id}."
+            }
+        )
+
+    profile_analysis = db.query(models.ProfileAnalysis).filter(
+        models.ProfileAnalysis.profile_id == profile_id,
+        models.ProfileAnalysis.analysis_status == "completed",
+        models.ProfileAnalysis.is_current == True
+    ).order_by(
+        models.ProfileAnalysis.analysis_id.desc()
+    ).first()
+
+    if not profile_analysis:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_code": "ERR_PROFILE_ANALYSIS_MISSING",
+                "message": "Profile must be analyzed before matching.",
+                "profile_id": profile_id
+            }
+        )
+
+    analyzed_jobs = (
+        db.query(models.Job)
+        .join(
+            models.JobAnalysis,
+            models.Job.job_id == models.JobAnalysis.job_id
+        )
+        .filter(
+            models.JobAnalysis.analysis_status == "completed",
+            models.JobAnalysis.is_current == True
+        )
+        .order_by(models.Job.job_id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    if not analyzed_jobs:
+        return {
+            "status": "no_analyzed_jobs_found",
+            "user_id": user_id,
+            "profile_id": profile_id,
+            "requested_limit": limit,
+            "offset": offset,
+            "matched_count": 0,
+            "failed_count": 0,
+            "results": []
+        }
+
+    results = []
+
+    for job in analyzed_jobs:
+        try:
+            result = match_profile_with_job(
+                user_id=user_id,
+                profile_id=profile_id,
+                job_id=job.job_id,
+                force_rematch=force_rematch,
+                db=db
+            )
+
+            results.append({
+                "job_id": job.job_id,
+                "title": job.title,
+                "company_name": job.company_name,
+                "location": job.location,
+                "url": job.url,
+                "status": result.get("status"),
+                "match_id": result.get("match_id"),
+                "overall_score": result.get("overall_score"),
+                "recommendation": result.get("recommendation"),
+                "summary": (
+                    result.get("match", {}).get("summary")
+                    if result.get("match") else None
+                )
+            })
+
+        except HTTPException as e:
+            db.rollback()
+
+            results.append({
+                "job_id": job.job_id,
+                "title": job.title,
+                "company_name": job.company_name,
+                "status": "failed",
+                "error": e.detail
+            })
+
+        except Exception as e:
+            db.rollback()
+
+            results.append({
+                "job_id": job.job_id,
+                "title": job.title,
+                "company_name": job.company_name,
+                "status": "failed",
+                "error": str(e)
+            })
+
+    matched_count = len([
+        result for result in results
+        if result.get("status") in ["created", "cached"]
+    ])
+
+    failed_count = len([
+        result for result in results
+        if result.get("status") == "failed"
+    ])
+
+    sorted_results = sorted(
+        results,
+        key=lambda item: item.get("overall_score") or 0,
+        reverse=True
+    )
+
+    return {
+        "status": "completed",
+        "user_id": user_id,
+        "profile_id": profile_id,
+        "requested_limit": limit,
+        "offset": offset,
+        "selected_job_count": len(analyzed_jobs),
+        "matched_count": matched_count,
+        "failed_count": failed_count,
+        "max_allowed_limit": MAX_BATCH_MATCH_JOBS,
+        "results": sorted_results
+    }
