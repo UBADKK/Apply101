@@ -74,6 +74,43 @@ class CandidateProfile(Base):
     created_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, nullable=True)
 
+class ProfileAnalysis(Base):
+    __tablename__ = "profile_analysis"
+
+    analysis_id = Column(Integer, primary_key=True, index=True)
+    profile_id = Column(Integer, ForeignKey("candidate_profiles.profile_id"), nullable=False)
+
+    analysis_status = Column(String, default="pending", nullable=True)
+    analysis_json = Column(Text, nullable=True)
+
+    candidate_summary = Column(Text, nullable=True)
+
+    current_role_family = Column(String, nullable=True)
+    seniority_level = Column(String, nullable=True)
+    education_level = Column(String, nullable=True)
+    field_of_study = Column(String, nullable=True)
+
+    strong_skills_json = Column(Text, nullable=True)
+    moderate_skills_json = Column(Text, nullable=True)
+    weak_or_basic_skills_json = Column(Text, nullable=True)
+    tools_json = Column(Text, nullable=True)
+    languages_json = Column(Text, nullable=True)
+    target_roles_json = Column(Text, nullable=True)
+    target_role_families_json = Column(Text, nullable=True)
+    excluded_roles_json = Column(Text, nullable=True)
+
+    visa_sponsorship_needed = Column(Boolean, nullable=True)
+    work_authorization_status = Column(String, nullable=True)
+    relocation_preference = Column(String, nullable=True)
+
+    analysis_model = Column(String, nullable=True)
+    analysis_prompt_version = Column(String, nullable=True)
+    analyzed_at = Column(DateTime, nullable=True)
+    analysis_error = Column(Text, nullable=True)
+
+    is_current = Column(Boolean, default=True)
+    created_at = Column(DateTime, nullable=True)
+
 class Job(Base):
     __tablename__ = "jobs"
 
@@ -163,7 +200,7 @@ class UserLanguage(Base):
 
     user_language_id = Column(Integer, primary_key=True, index=True)
 
-    user_id = Column(Integer, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.user_id"), nullable=False)
 
     language_code = Column(String, nullable=False)
     language_name = Column(String, nullable=False)
@@ -171,4 +208,46 @@ class UserLanguage(Base):
     proficiency_scale = Column(String, default="CEFR", nullable=True)
 
     is_primary = Column(Boolean, default=False)
+    created_at = Column(DateTime, nullable=True)
+
+class JobMatch(Base):
+    __tablename__ = "job_matches"
+
+    match_id = Column(Integer, primary_key=True, index=True)
+
+    profile_id = Column(Integer, ForeignKey("candidate_profiles.profile_id"), nullable=False)
+    job_id = Column(Integer, ForeignKey("jobs.job_id"), nullable=False)
+
+    profile_analysis_id = Column(Integer, ForeignKey("profile_analysis.analysis_id"), nullable=True)
+    job_analysis_id = Column(Integer, ForeignKey("job_analysis.analysis_id"), nullable=True)
+
+    match_status = Column(String, default="completed", nullable=True)
+    match_json = Column(Text, nullable=True)
+
+    role_fit_score = Column(Integer, nullable=True)
+    skills_fit_score = Column(Integer, nullable=True)
+    experience_fit_score = Column(Integer, nullable=True)
+    seniority_fit_score = Column(Integer, nullable=True)
+    location_fit_score = Column(Integer, nullable=True)
+    work_type_fit_score = Column(Integer, nullable=True)
+    language_fit_score = Column(Integer, nullable=True)
+    visa_fit_score = Column(Integer, nullable=True)
+
+    base_match_score = Column(Integer, nullable=True)
+    practical_match_score = Column(Integer, nullable=True)
+    overall_score = Column(Integer, nullable=True)
+
+    recommendation = Column(String, nullable=True)
+    summary = Column(Text, nullable=True)
+
+    strengths_json = Column(Text, nullable=True)
+    weaknesses_json = Column(Text, nullable=True)
+    dealbreaker_warnings_json = Column(Text, nullable=True)
+
+    match_model = Column(String, nullable=True)
+    match_prompt_version = Column(String, nullable=True)
+    matched_at = Column(DateTime, nullable=True)
+    match_error = Column(Text, nullable=True)
+
+    is_current = Column(Boolean, default=True)
     created_at = Column(DateTime, nullable=True)
