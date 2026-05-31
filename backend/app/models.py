@@ -107,7 +107,7 @@ class JobAnalysis(Base):
     __tablename__ = "job_analysis"
 
     analysis_id = Column(Integer, primary_key=True, index=True)
-    job_id = Column(Integer, nullable=False)
+    job_id = Column(Integer, ForeignKey("jobs.job_id"), nullable=False)
 
     analysis_status = Column(String, default="pending", nullable=True)
     analysis_json = Column(Text, nullable=True)

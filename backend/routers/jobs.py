@@ -67,6 +67,72 @@ def get_jobs(
 
     return jobs
 
+
+@router.get("/analyzed")
+def get_analyzed_jobs(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db)
+):
+    rows = (
+        db.query(models.Job, models.JobAnalysis)
+        .join(
+            models.JobAnalysis,
+            models.Job.job_id == models.JobAnalysis.job_id
+        )
+        .filter(
+            models.JobAnalysis.analysis_status == "completed",
+            models.JobAnalysis.is_current == True
+        )
+        .order_by(models.JobAnalysis.analysis_id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    return [
+        {
+            "job_id": job.job_id,
+            "title": job.title,
+            "company_name": job.company_name,
+            "location": job.location,
+            "url": job.url,
+            "source_created_at": job.source_created_at,
+            "fetched_at": job.fetched_at,
+            "last_seen_at": job.last_seen_at,
+
+            "analysis_id": analysis.analysis_id,
+            "analysis_status": analysis.analysis_status,
+            "role_family": analysis.role_family,
+            "role_subfamily": analysis.role_subfamily,
+            "normalized_role_title": analysis.normalized_role_title,
+            "seniority_level": analysis.seniority_level,
+            "work_type": analysis.work_type,
+            "employment_type": analysis.employment_type,
+            "visa_sponsorship": analysis.visa_sponsorship,
+            "analysis_model": analysis.analysis_model,
+            "analysis_prompt_version": analysis.analysis_prompt_version,
+            "analyzed_at": analysis.analyzed_at,
+
+            "required_skills": json.loads(analysis.required_skills_json)
+            if analysis.required_skills_json else [],
+
+            "preferred_skills": json.loads(analysis.preferred_skills_json)
+            if analysis.preferred_skills_json else [],
+
+            "language_requirements": json.loads(analysis.language_requirements_json)
+            if analysis.language_requirements_json else [],
+
+            "dealbreakers": json.loads(analysis.dealbreakers_json)
+            if analysis.dealbreakers_json else [],
+
+            "analysis": json.loads(analysis.analysis_json)
+            if analysis.analysis_json else None
+        }
+        for job, analysis in rows
+    ]
+
+
 @router.get("/fetch-runs")
 def get_job_fetch_runs(
     limit: int = Query(default=20, ge=1, le=100),
@@ -150,7 +216,7 @@ def fetch_jobs(db: Session = Depends(get_db)):
             source="arbeitnow",
             source_job_id=None,
             source_created_at=job.get("created_at"),
-            source_update_at=None,
+            source_updated_at=None,
             fetched_at=now,
             last_seen_at=now,
             created_at=now,
@@ -226,6 +292,8 @@ def fetch_jobs_by_pages(
         elif maxpage is not None:
             fetch_type = "maxpage"
 
+
+    # MOVE TO SERVICES LATER !!!
     def process_page(page: int):
         nonlocal pages_checked, last_checked_page, stopped_reason, jobs_seen_count, duplicate_jobs_count
 
