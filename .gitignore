@@ -1,1 +1,46 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Environment variables / secrets
 .env
+.env.*
+!.env.example
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+uvicorn.log
+
+# SQLite temporary files
+*.db-journal
+*.db-shm
+*.db-wal
+
+# Local DB backups / exported DB copies
+*_backup*.db
+*backup*.db
+apply101_backup*.db
+apply101_deniz_before_pull*.db
+apply101_remote_from_origin*.db
+apply101_my_before_pull*.db
+
+# Local patch / temporary files
+*.patch
+last_24h_jobs
+last_24h_jobs.*
+
+# IDE/editor
+.vscode/
+.idea/
+
+# Uploads / local files
+uploads/
