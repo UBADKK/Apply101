@@ -480,7 +480,7 @@ JOB_ANALYSIS_MODEL = "gpt-4.1-mini"
 JOB_ANALYSIS_PROMPT_VERSION = "job_analysis_v2"
 
 MAX_ANALYZE_JOBS = 10
-MAX_ANALYZE_MISSING_JOBS = 10
+MAX_ANALYZE_MISSING_JOBS = 100
 
 @router.post("/{job_id}/analyze")
 def analyze_job(
