@@ -15,7 +15,7 @@ router = APIRouter(
 
 MATCH_MODEL = "backend_rule_based"
 MATCH_PROMPT_VERSION = "backend_match_v1"
-MAX_BATCH_MATCH_JOBS = 50
+MAX_BATCH_MATCH_JOBS = 200
 
 
 def safe_json_loads(value, default):
