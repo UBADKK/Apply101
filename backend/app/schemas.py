@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, ConfigDict
 from typing import Literal
 
 
@@ -98,3 +98,102 @@ class MatchResult(BaseModel):
         "maybe",
         "weak_match"
     ]
+
+
+
+class ProfileAnalysisStructured(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_summary: str
+    current_role_family: Literal[
+        "engineering", "data", "product", "design", "marketing", "sales",
+        "customer_success", "operations", "business_analysis",
+        "project_management", "finance", "accounting", "hr", "legal",
+        "consulting", "strategy", "it", "cybersecurity", "qa_testing",
+        "devops", "research", "education", "healthcare", "logistics",
+        "supply_chain", "manufacturing", "administration", "support",
+        "content", "media", "other", "unknown"
+    ]
+    target_role_families: list[str]
+    target_role_tags: list[str]
+    target_roles: list[str]
+    excluded_roles: list[str]
+
+    strong_skills: list[str]
+    moderate_skills: list[str]
+    weak_or_basic_skills: list[str]
+    tools: list[str]
+    industries: list[str]
+
+    years_of_experience: float
+    seniority_level: Literal[
+        "intern", "junior", "mid", "senior", "lead", "executive", "unknown"
+    ]
+    education_level: Literal[
+        "high_school", "bachelor", "master", "phd", "bootcamp", "unknown"
+    ]
+    field_of_study: str
+
+    languages: list[ProfileLanguageItem]
+
+    visa_sponsorship_needed: bool
+    work_authorization_status: str
+    relocation_preference: str
+    match_notes: list[str]
+
+
+
+class JobAnalysisStructured(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str
+
+    role_family: Literal[
+        "engineering", "data", "product", "design", "marketing", "sales",
+        "customer_success", "operations", "business_analysis",
+        "project_management", "finance", "accounting", "hr", "legal",
+        "consulting", "strategy", "it", "cybersecurity", "qa_testing",
+        "devops", "research", "education", "healthcare", "logistics",
+        "supply_chain", "manufacturing", "administration", "support",
+        "content", "media", "other", "unknown"
+    ]
+
+    role_subfamily: str
+    normalized_role_title: str
+    role_tags: list[str]
+
+    required_skills: list[str]
+    preferred_skills: list[str]
+    responsibilities: list[str]
+
+    seniority_level: Literal[
+        "intern", "junior", "mid", "senior", "lead", "executive", "unknown"
+    ]
+
+    language_requirements: list[str]
+
+    visa_sponsorship: Literal["yes", "no", "unknown"]
+
+    work_type: Literal["remote", "hybrid", "onsite", "unknown"]
+
+    employment_type: Literal[
+        "full-time",
+        "part-time",
+        "internship",
+        "working-student",
+        "contract",
+        "freelance",
+        "temporary",
+        "unknown"
+    ]
+
+    dealbreakers: list[str]
+
+
+
+class ProfileLanguageItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    language: str
+    level: str
+    scale: str
+

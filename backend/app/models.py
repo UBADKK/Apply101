@@ -98,6 +98,7 @@ class ProfileAnalysis(Base):
     target_roles_json = Column(Text, nullable=True)
     target_role_families_json = Column(Text, nullable=True)
     excluded_roles_json = Column(Text, nullable=True)
+    target_role_tags_json = Column(Text, nullable=True)
 
     visa_sponsorship_needed = Column(Boolean, nullable=True)
     work_authorization_status = Column(String, nullable=True)
@@ -152,6 +153,7 @@ class JobAnalysis(Base):
     role_family = Column(String, nullable=True)
     role_subfamily = Column(String, nullable=True)
     normalized_role_title = Column(String, nullable=True)
+    role_tags_json = Column(Text, nullable=True)
 
     seniority_level = Column(String, nullable=True)
     work_type = Column(String, nullable=True)

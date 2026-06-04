@@ -21,7 +21,7 @@ router = APIRouter(
 )
 
 PROFILE_ANALYSIS_MODEL = "gpt-4.1-mini"
-PROFILE_ANALYSIS_PROMPT_VERSION = "profile_analysis_v1"
+PROFILE_ANALYSIS_PROMPT_VERSION = "profile_analysis_v3"
 
 
 def build_languages_text(languages: list[models.UserLanguage]) -> str:
@@ -142,6 +142,143 @@ def upload_cv(
     return profile
 
 
+@router.get("/{user_id}/profiles/analyzed")
+def get_analyzed_profiles(
+    user_id: int,
+    db: Session = Depends(get_db)
+):
+    user = db.query(models.User).filter(
+        models.User.user_id == user_id
+    ).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    analyzed_profiles = (
+        db.query(models.CandidateProfile, models.ProfileAnalysis)
+        .join(
+            models.ProfileAnalysis,
+            models.CandidateProfile.profile_id == models.ProfileAnalysis.profile_id
+        )
+        .filter(
+            models.CandidateProfile.user_id == user_id,
+            models.ProfileAnalysis.is_current == True,
+            models.ProfileAnalysis.analysis_status == "completed"
+        )
+        .all()
+    )
+
+    result = []
+
+    for profile, analysis in analyzed_profiles:
+        result.append({
+            "profile_id": profile.profile_id,
+            "user_id": profile.user_id,
+            "profile_name": profile.profile_name,
+            "cv_filename": profile.cv_filename,
+
+            "self_description": profile.self_description,
+            "target_role": profile.target_role,
+            "secondary_target_role": profile.secondary_target_role,
+            "target_location": profile.target_location,
+            "preferred_work_type": profile.preferred_work_type,
+            "preferred_technologies": profile.preferred_technologies,
+            "extra_preferences": profile.extra_preferences,
+
+            "visa_sponsorship_needed": profile.visa_sponsorship_needed,
+            "work_authorization_status": profile.work_authorization_status,
+            "relocation_preference": profile.relocation_preference,
+            "years_of_experience": profile.years_of_experience,
+            "seniority_target": profile.seniority_target,
+
+            "analysis": {
+                "analysis_id": analysis.analysis_id,
+                "analysis_status": analysis.analysis_status,
+
+                "candidate_summary": analysis.candidate_summary,
+                "current_role_family": analysis.current_role_family,
+                "seniority_level": analysis.seniority_level,
+                "education_level": analysis.education_level,
+                "field_of_study": analysis.field_of_study,
+
+                "strong_skills": json.loads(analysis.strong_skills_json or "[]"),
+                "moderate_skills": json.loads(analysis.moderate_skills_json or "[]"),
+                "weak_or_basic_skills": json.loads(analysis.weak_or_basic_skills_json or "[]"),
+                "tools": json.loads(analysis.tools_json or "[]"),
+                "languages": json.loads(analysis.languages_json or "[]"),
+                "target_roles": json.loads(analysis.target_roles_json or "[]"),
+                "target_role_families": json.loads(analysis.target_role_families_json or "[]"),
+                "target_role_tags": json.loads(analysis.target_role_tags_json or "[]"),
+                "excluded_roles": json.loads(analysis.excluded_roles_json or "[]"),
+
+                "visa_sponsorship_needed": analysis.visa_sponsorship_needed,
+                "work_authorization_status": analysis.work_authorization_status,
+                "relocation_preference": analysis.relocation_preference,
+
+                "analysis_model": analysis.analysis_model,
+                "analysis_prompt_version": analysis.analysis_prompt_version,
+                "analyzed_at": analysis.analyzed_at,
+                "analysis_error": analysis.analysis_error,
+                "is_current": analysis.is_current,
+                "created_at": analysis.created_at,
+            }
+        })
+
+    return result
+
+
+
+PROFILE_ANALYSIS_PROMPT_VERSION = "profile_analysis_v2"
+
+ALLOWED_ROLE_TAGS = [
+    "software_engineering",
+    "software_development",
+    "backend_development",
+    "frontend_development",
+    "fullstack_development",
+    "api_development",
+    "python_development",
+    "java_development",
+    "javascript_development",
+    "mobile_development",
+    "game_development",
+    "data_analysis",
+    "data_science",
+    "data_engineering",
+    "machine_learning",
+    "ai_engineering",
+    "devops",
+    "cloud_engineering",
+    "qa_testing",
+    "cybersecurity",
+    "it_support",
+    "technical_support",
+    "product_management",
+    "project_management",
+    "business_analysis",
+    "consulting",
+    "sales",
+    "marketing",
+    "customer_support",
+    "education",
+    "finance",
+    "accounting",
+    "hr",
+    "legal",
+    "operations",
+    "logistics",
+    "supply_chain",
+    "manufacturing",
+    "design",
+    "content",
+    "other"
+]
+
+
+
+
+
+
 @router.post("/{user_id}/profiles/{profile_id}/analyze")
 def analyze_profile(
     user_id: int,
@@ -221,8 +358,19 @@ def analyze_profile(
     prompt = f"""
 You are a candidate profile parser for a job matching system.
 
-Extract the key matching signals from this candidate profile.
-Do not invent information. If something is unclear, return "unknown".
+Extract structured matching signals from the candidate profile.
+
+Do not invent skills, experience, languages, authorization, education, or relocation details.
+Use "unknown" for unclear string fields.
+For years_of_experience, use 0 if there is no clear experience.
+For visa_sponsorship_needed, use true only if the profile clearly says sponsorship is needed.
+For target_role_tags, select 5 to 10 tags from the allowed list only.
+Put the closest and most important target_role_tags first.
+Do not create tags outside the allowed list.
+Use "other" only if none of the allowed tags fit.
+
+Allowed role tags:
+{json.dumps(ALLOWED_ROLE_TAGS, ensure_ascii=False)}
 
 User basic information:
 Name: {user.name or ""}
@@ -263,49 +411,6 @@ Self description:
 
 CV text:
 {(profile.cv_text or "")[:12000]}
-
-Return ONLY valid JSON in this exact structure:
-{{
-  "candidate_summary": "short but information-dense summary",
-  "current_role_family": "engineering|data|product|design|marketing|sales|customer_success|operations|business_analysis|project_management|finance|accounting|hr|legal|consulting|strategy|it|cybersecurity|qa_testing|devops|research|education|healthcare|logistics|supply_chain|manufacturing|administration|support|content|media|other|unknown",
-  "target_role_families": ["engineering", "data"],
-  "target_roles": ["backend software engineer", "python developer"],
-  "excluded_roles": ["role 1", "role 2"],
-  "strong_skills": ["skill 1", "skill 2"],
-  "moderate_skills": ["skill 1", "skill 2"],
-  "weak_or_basic_skills": ["skill 1", "skill 2"],
-  "tools": ["tool 1", "tool 2"],
-  "industries": ["industry 1", "industry 2"],
-  "years_of_experience": 0,
-  "seniority_level": "intern|junior|mid|senior|lead|executive|unknown",
-  "education_level": "high_school|bachelor|master|phd|bootcamp|unknown",
-  "field_of_study": "field of study or unknown",
-  "languages": [
-    {{
-      "language": "English",
-      "level": "C1",
-      "scale": "CEFR"
-    }}
-  ],
-  "visa_sponsorship_needed": true,
-  "work_authorization_status": "string or unknown",
-  "relocation_preference": "string or unknown",
-  "match_notes": ["important note 1", "important note 2"]
-}}
-
-Rules:
-- Return only valid JSON.
-- Do not include markdown.
-- Do not invent skills, experience, languages, authorization, or education.
-- Use "unknown" when unclear.
-- current_role_family must be selected from the allowed list.
-- target_role_families must only contain values from the allowed role family list.
-- years_of_experience must be a number. Use 0 if there is no clear experience.
-- Classify skills based on evidence from CV, self description, projects, work experience, and technologies.
-- Put clearly demonstrated skills into strong_skills.
-- Put mentioned but less proven skills into moderate_skills.
-- Put basic, beginner, or lightly mentioned skills into weak_or_basic_skills.
-- Include visa sponsorship and relocation details exactly as provided. Do not guess.
 """
 
     now = datetime.now(timezone.utc)
@@ -314,38 +419,19 @@ Rules:
         response = client.responses.create(
             model=PROFILE_ANALYSIS_MODEL,
             input=prompt,
-            temperature=0
+            temperature=0,
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "profile_analysis",
+                    "schema": schemas.ProfileAnalysisStructured.model_json_schema(),
+                    "strict": True
+                }
+            }
         )
 
         raw_text = response.output_text.strip()
-
-        try:
-            analysis = json.loads(raw_text)
-        except json.JSONDecodeError:
-            failed_analysis = models.ProfileAnalysis(
-                profile_id=profile.profile_id,
-                analysis_status="failed",
-                analysis_json=None,
-                analysis_model=PROFILE_ANALYSIS_MODEL,
-                analysis_prompt_version=PROFILE_ANALYSIS_PROMPT_VERSION,
-                analyzed_at=now,
-                analysis_error=f"AI response was not valid JSON: {raw_text[:1000]}",
-                is_current=False,
-                created_at=now
-            )
-
-            db.add(failed_analysis)
-            db.commit()
-
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "error_code": "ERR_AI_INVALID_JSON",
-                    "message": "AI response was not valid JSON.",
-                    "profile_id": profile.profile_id,
-                    "raw_response": raw_text
-                }
-            )
+        analysis = json.loads(raw_text)
 
         db.query(models.ProfileAnalysis).filter(
             models.ProfileAnalysis.profile_id == profile.profile_id,
@@ -393,6 +479,10 @@ Rules:
                 analysis.get("target_role_families", []),
                 ensure_ascii=False
             ),
+            target_role_tags_json=json.dumps(
+                analysis.get("target_role_tags", []),
+                ensure_ascii=False
+            ),
             excluded_roles_json=json.dumps(
                 analysis.get("excluded_roles", []),
                 ensure_ascii=False
@@ -423,10 +513,9 @@ Rules:
             "analysis": analysis
         }
 
-    except HTTPException:
-        raise
-
     except Exception as e:
+        db.rollback()
+
         failed_analysis = models.ProfileAnalysis(
             profile_id=profile.profile_id,
             analysis_status="failed",
@@ -451,5 +540,3 @@ Rules:
                 "error": str(e)
             }
         )
-    
-    

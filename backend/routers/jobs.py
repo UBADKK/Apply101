@@ -477,10 +477,54 @@ def fetch_jobs_by_pages(
 
 
 JOB_ANALYSIS_MODEL = "gpt-4.1-mini"
-JOB_ANALYSIS_PROMPT_VERSION = "job_analysis_v2"
+JOB_ANALYSIS_PROMPT_VERSION = "job_analysis_v3"
 
 MAX_ANALYZE_JOBS = 10
 MAX_ANALYZE_MISSING_JOBS = 100
+
+ALLOWED_ROLE_TAGS = [
+    "software_engineering",
+    "software_development",
+    "backend_development",
+    "frontend_development",
+    "fullstack_development",
+    "api_development",
+    "python_development",
+    "java_development",
+    "javascript_development",
+    "mobile_development",
+    "game_development",
+    "data_analysis",
+    "data_science",
+    "data_engineering",
+    "machine_learning",
+    "ai_engineering",
+    "devops",
+    "cloud_engineering",
+    "qa_testing",
+    "cybersecurity",
+    "it_support",
+    "technical_support",
+    "product_management",
+    "project_management",
+    "business_analysis",
+    "consulting",
+    "sales",
+    "marketing",
+    "customer_support",
+    "education",
+    "finance",
+    "accounting",
+    "hr",
+    "legal",
+    "operations",
+    "logistics",
+    "supply_chain",
+    "manufacturing",
+    "design",
+    "content",
+    "other"
+]
 
 @router.post("/{job_id}/analyze")
 def analyze_job(
@@ -532,8 +576,33 @@ def analyze_job(
     prompt = f"""
 You are a job posting parser for a job matching system.
 
-Extract the key matching signals from this job posting.
-Do not invent information. If something is unclear, return "unknown".
+Extract structured matching signals from the job posting.
+
+Do not invent information.
+Use "unknown" for unclear string fields.
+Only include hard requirements in dealbreakers.
+Do not include preferred, advantageous, nice-to-have, or optional qualifications in dealbreakers.
+
+For role_tags, select 3 to 6 tags from the allowed list only.
+Put the closest and most important role_tags first.
+Do not create tags outside the allowed list.
+Use "other" only if none of the allowed tags fit.
+
+Rules:
+- role_family must be selected from the allowed role family values in the schema.
+- role_tags must be selected EXACTLY from the allowed role tags list.
+- Do not rename tags.
+- Do not create synonyms.
+- role_subfamily should be a short snake_case normalized subcategory.
+- normalized_role_title should be a concise human-readable normalized title.
+- If German is required, include it in language_requirements and dealbreakers if relevant.
+- If EU work authorization is required, include it in dealbreakers.
+- For working-student roles, if university enrollment is required, set employment_type to "working-student" and include student enrollment requirement in dealbreakers.
+- Do not classify a role as education only because it is a student role, internship, or working-student position.
+- Use education only for teaching, tutoring, training, academic, school, university, or curriculum-related roles.
+
+Allowed role tags:
+{json.dumps(ALLOWED_ROLE_TAGS, ensure_ascii=False)}
 
 Job title:
 {job.title or ""}
@@ -546,37 +615,6 @@ Location:
 
 Job description:
 {(job.description_text or "")[:12000]}
-
-Return ONLY valid JSON in this exact structure:
-{{
-  "summary": "short but information-dense summary",
-  "role_family": "engineering|data|product|design|marketing|sales|customer_success|operations|business_analysis|project_management|finance|accounting|hr|legal|consulting|strategy|it|cybersecurity|qa_testing|devops|research|education|healthcare|logistics|supply_chain|manufacturing|administration|support|content|media|other|unknown",
-  "role_subfamily": "short snake_case normalized subcategory, e.g. backend_engineering, data_analysis, product_management, account_executive",
-  "normalized_role_title": "specific normalized role title, e.g. backend software engineer, business intelligence analyst, customer success manager",
-  "required_skills": ["skill 1", "skill 2"],
-  "preferred_skills": ["skill 1", "skill 2"],
-  "responsibilities": ["responsibility 1", "responsibility 2"],
-  "seniority_level": "intern|junior|mid|senior|lead|executive|unknown",
-  "language_requirements": ["English", "German", "unknown"],
-  "visa_sponsorship": "yes|no|unknown",
-  "work_type": "remote|hybrid|onsite|unknown",
-  "employment_type": "full-time|part-time|internship|working-student|contract|freelance|temporary|unknown",
-  "dealbreakers": ["dealbreaker 1", "dealbreaker 2"]
-}}
-
-Rules:
-- Return only valid JSON.
-- Do not include markdown.
-- Do not infer requirements that are not stated.
-- role_family must be selected from the allowed list.
-- role_subfamily should be a short snake_case normalized subcategory.
-- normalized_role_title should be a concise human-readable normalized title.
-- Do not force a job into an inaccurate category. Use "other" or "unknown" when unclear.
-- If German is required, include it in language_requirements and dealbreakers if relevant.
-- If EU work authorization is required, include it in dealbreakers.
-- Only include hard requirements in dealbreakers.
-- Do not include preferred, advantageous, nice-to-have, or optional qualifications in dealbreakers.
-- For working-student roles, if university enrollment is required, set employment_type to "working-student" and include student enrollment requirement in dealbreakers.
 """
 
     now = datetime.now(timezone.utc)
@@ -585,38 +623,19 @@ Rules:
         response = client.responses.create(
             model=JOB_ANALYSIS_MODEL,
             input=prompt,
-            temperature=0
+            temperature=0,
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "job_analysis",
+                    "schema": schemas.JobAnalysisStructured.model_json_schema(),
+                    "strict": True
+                }
+            }
         )
 
         raw_text = response.output_text.strip()
-
-        try:
-            analysis = json.loads(raw_text)
-        except json.JSONDecodeError:
-            failed_analysis = models.JobAnalysis(
-                job_id=job.job_id,
-                analysis_status="failed",
-                analysis_json=None,
-                analysis_model=JOB_ANALYSIS_MODEL,
-                analysis_prompt_version=JOB_ANALYSIS_PROMPT_VERSION,
-                analyzed_at=now,
-                analysis_error=f"AI response was not valid JSON: {raw_text[:1000]}",
-                is_current=False,
-                created_at=now
-            )
-
-            db.add(failed_analysis)
-            db.commit()
-
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "error_code": "ERR_AI_INVALID_JSON",
-                    "message": "AI response was not valid JSON.",
-                    "job_id": job.job_id,
-                    "raw_response": raw_text
-                }
-            )
+        analysis = json.loads(raw_text)
 
         db.query(models.JobAnalysis).filter(
             models.JobAnalysis.job_id == job.job_id,
@@ -633,6 +652,10 @@ Rules:
             role_family=analysis.get("role_family"),
             role_subfamily=analysis.get("role_subfamily"),
             normalized_role_title=analysis.get("normalized_role_title"),
+            role_tags_json=json.dumps(
+                analysis.get("role_tags", []),
+                ensure_ascii=False
+            ),
 
             seniority_level=analysis.get("seniority_level"),
             work_type=analysis.get("work_type"),
@@ -677,10 +700,9 @@ Rules:
             "analysis": analysis
         }
 
-    except HTTPException:
-        raise
-
     except Exception as e:
+        db.rollback()
+
         failed_analysis = models.JobAnalysis(
             job_id=job.job_id,
             analysis_status="failed",
@@ -705,8 +727,6 @@ Rules:
                 "error": str(e)
             }
         )
-
-
 #This endpoint analyzes jobs with no analysis as batchs by using the analyze endpoint.
 
 @router.post("/analyze-missing")
