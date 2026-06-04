@@ -1,10 +1,8 @@
 import json
-
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from openai import OpenAI
 
 from ..app.database import get_db
 from ..app import models
@@ -15,12 +13,358 @@ router = APIRouter(
     tags=["Job Matching"]
 )
 
-client = OpenAI()
-
-
-MATCH_MODEL = "gpt-4.1-mini"
-MATCH_PROMPT_VERSION = "job_match_v1"
+MATCH_MODEL = "backend_rule_based"
+MATCH_PROMPT_VERSION = "backend_match_v1"
 MAX_BATCH_MATCH_JOBS = 50
+
+
+def safe_json_loads(value, default):
+    if not value:
+        return default
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return default
+
+
+def normalize_text(value: str) -> str:
+    return (value or "").lower().strip()
+
+
+def normalize_list(values):
+    if not values:
+        return []
+    return [normalize_text(v) for v in values if isinstance(v, str) and v.strip()]
+
+
+def overlap_score(candidate_items, job_items):
+    candidate_set = set(normalize_list(candidate_items))
+    job_set = set(normalize_list(job_items))
+
+    if not job_set:
+        return 70
+
+    if not candidate_set:
+        return 0
+
+    matched = candidate_set.intersection(job_set)
+    return round((len(matched) / len(job_set)) * 100)
+
+
+def calculate_role_score(profile_json, job_analysis):
+    target_roles = normalize_list(profile_json.get("target_roles", []))
+    target_families = normalize_list(profile_json.get("target_role_families", []))
+
+    job_title = normalize_text(job_analysis.normalized_role_title)
+    job_family = normalize_text(job_analysis.role_family)
+    job_subfamily = normalize_text(job_analysis.role_subfamily)
+
+    score = 0
+
+    for role in target_roles:
+        if role and role == job_title:
+            score = max(score, 100)
+        elif role and (role in job_title or job_title in role):
+            score = max(score, 85)
+
+    for family in target_families:
+        if family and family == job_family:
+            score = max(score, 75)
+
+    # Basit yakınlık bonusları
+    profile_role_text = " ".join(target_roles)
+
+    if "backend" in profile_role_text and "fullstack" in job_title:
+        score = max(score, 75)
+
+    if "backend" in profile_role_text and "backend" in job_title:
+        score = max(score, 95)
+
+    if "software" in profile_role_text and job_family in ["engineering", "it", "devops", "qa_testing"]:
+        score = max(score, 65)
+
+    if score == 0 and job_subfamily:
+        for role in target_roles:
+            if any(part in job_subfamily for part in role.split()):
+                score = max(score, 50)
+
+    return score
+
+
+def calculate_skills_score(profile_analysis, job_analysis):
+    profile_json = safe_json_loads(profile_analysis.analysis_json, {})
+
+    strong_skills = safe_json_loads(profile_analysis.strong_skills_json, [])
+    moderate_skills = safe_json_loads(profile_analysis.moderate_skills_json, [])
+    weak_skills = safe_json_loads(profile_analysis.weak_or_basic_skills_json, [])
+    tools = safe_json_loads(profile_analysis.tools_json, [])
+
+    required_skills = safe_json_loads(job_analysis.required_skills_json, [])
+    preferred_skills = safe_json_loads(job_analysis.preferred_skills_json, [])
+
+    candidate_strong = normalize_list(strong_skills + tools)
+    candidate_all = normalize_list(strong_skills + moderate_skills + weak_skills + tools)
+
+    required_score = overlap_score(candidate_all, required_skills)
+    preferred_score = overlap_score(candidate_all, preferred_skills)
+
+    # Strong skill bonus
+    strong_required_score = overlap_score(candidate_strong, required_skills)
+
+    return round(
+        required_score * 0.65
+        + preferred_score * 0.20
+        + strong_required_score * 0.15
+    )
+
+
+def calculate_seniority_score(profile_analysis, job_analysis):
+    profile_level = normalize_text(profile_analysis.seniority_level)
+    job_level = normalize_text(job_analysis.seniority_level)
+
+    levels = {
+        "intern": 0,
+        "junior": 1,
+        "mid": 2,
+        "senior": 3,
+        "lead": 4,
+        "executive": 5
+    }
+
+    if not job_level or job_level == "unknown":
+        return 70
+
+    if not profile_level or profile_level == "unknown":
+        return 50
+
+    p = levels.get(profile_level)
+    j = levels.get(job_level)
+
+    if p is None or j is None:
+        return 50
+
+    if p == j:
+        return 100
+
+    if p > j:
+        return 85
+
+    diff = j - p
+
+    if diff == 1:
+        return 55
+
+    if diff == 2:
+        return 25
+
+    return 5
+
+
+def calculate_language_score(profile_analysis, job_analysis):
+    profile_languages = safe_json_loads(profile_analysis.languages_json, [])
+    job_languages = safe_json_loads(job_analysis.language_requirements_json, [])
+
+    normalized_job_langs = normalize_list(job_languages)
+
+    if not normalized_job_langs or "unknown" in normalized_job_langs:
+        return 80
+
+    candidate_lang_names = []
+
+    for lang in profile_languages:
+        if isinstance(lang, dict):
+            candidate_lang_names.append(normalize_text(lang.get("language")))
+        elif isinstance(lang, str):
+            candidate_lang_names.append(normalize_text(lang))
+
+    candidate_langs = set(candidate_lang_names)
+
+    required_langs = set([
+        lang for lang in normalized_job_langs
+        if lang != "unknown"
+    ])
+
+    if not required_langs:
+        return 80
+
+    matched = candidate_langs.intersection(required_langs)
+
+    if len(matched) == len(required_langs):
+        return 100
+
+    if matched:
+        return 60
+
+    return 20
+
+
+def calculate_visa_score(profile_analysis, job_analysis):
+    needs_sponsorship = profile_analysis.visa_sponsorship_needed
+    visa = normalize_text(job_analysis.visa_sponsorship)
+
+    if needs_sponsorship is not True:
+        return 100
+
+    if visa == "yes":
+        return 100
+
+    if visa == "unknown":
+        return 55
+
+    if visa == "no":
+        return 10
+
+    return 50
+
+
+def calculate_work_type_score(profile_json, job_analysis):
+    preferred = normalize_text(profile_json.get("preferred_work_type", ""))
+    job_work_type = normalize_text(job_analysis.work_type)
+
+    if not preferred or preferred == "unknown" or preferred == "any":
+        return 80
+
+    if not job_work_type or job_work_type == "unknown":
+        return 60
+
+    if preferred == job_work_type:
+        return 100
+
+    if preferred == "remote" and job_work_type == "hybrid":
+        return 70
+
+    if preferred == "hybrid" and job_work_type in ["remote", "onsite"]:
+        return 70
+
+    return 40
+
+
+def calculate_location_score(profile_json, job):
+    target_location = normalize_text(profile_json.get("target_location", ""))
+    job_location = normalize_text(job.location)
+
+    if not target_location:
+        return 70
+
+    if not job_location:
+        return 60
+
+    if target_location in job_location or job_location in target_location:
+        return 100
+
+    if "germany" in target_location and any(x in job_location for x in ["germany", "berlin", "munich", "hamburg", "köln", "cologne"]):
+        return 90
+
+    if "remote" in job_location:
+        return 85
+
+    return 45
+
+
+def calculate_dealbreaker_warnings(profile_analysis, job_analysis):
+    warnings = []
+
+    dealbreakers = safe_json_loads(job_analysis.dealbreakers_json, [])
+    dealbreakers_text = " ".join(normalize_list(dealbreakers))
+
+    if "german" in dealbreakers_text:
+        warnings.append("German language appears to be a hard requirement.")
+
+    if "work authorization" in dealbreakers_text or "eu work authorization" in dealbreakers_text:
+        warnings.append("Work authorization appears to be a hard requirement.")
+
+    if "student" in dealbreakers_text or "university enrollment" in dealbreakers_text:
+        warnings.append("Student enrollment appears to be required.")
+
+    return warnings
+
+
+def recommendation_from_score(score):
+    if score >= 85:
+        return "strong_apply"
+    if score >= 70:
+        return "apply"
+    if score >= 50:
+        return "maybe"
+    return "weak_match"
+
+
+def calculate_backend_match(profile, profile_analysis, job, job_analysis):
+    profile_json = safe_json_loads(profile_analysis.analysis_json, {})
+
+    role_score = calculate_role_score(profile_json, job_analysis)
+    skills_score = calculate_skills_score(profile_analysis, job_analysis)
+    seniority_score = calculate_seniority_score(profile_analysis, job_analysis)
+    experience_score = seniority_score
+    language_score = calculate_language_score(profile_analysis, job_analysis)
+    visa_score = calculate_visa_score(profile_analysis, job_analysis)
+    work_type_score = calculate_work_type_score(profile_json, job_analysis)
+    location_score = calculate_location_score(profile_json, job)
+
+    base_score = round(
+        role_score * 0.30
+        + skills_score * 0.45
+        + experience_score * 0.10
+        + seniority_score * 0.15
+    )
+
+    practical_score = round(
+        location_score * 0.25
+        + work_type_score * 0.20
+        + language_score * 0.25
+        + visa_score * 0.30
+    )
+
+    overall_score = round(
+        base_score * 0.70
+        + practical_score * 0.30
+    )
+
+    warnings = calculate_dealbreaker_warnings(profile_analysis, job_analysis)
+
+    if visa_score <= 20:
+        overall_score = min(overall_score, 45)
+
+    if language_score <= 25:
+        overall_score = min(overall_score, 55)
+
+    strengths = []
+    weaknesses = []
+
+    if role_score >= 75:
+        strengths.append("Role is close to the candidate target role.")
+    else:
+        weaknesses.append("Role is not very close to the candidate target role.")
+
+    if skills_score >= 70:
+        strengths.append("Candidate skills match many job requirements.")
+    else:
+        weaknesses.append("Required skills do not strongly overlap with the candidate profile.")
+
+    if visa_score <= 30:
+        weaknesses.append("Visa or work authorization may be a problem.")
+
+    if language_score <= 40:
+        weaknesses.append("Language requirements may be a problem.")
+
+    return {
+        "role_fit_score": role_score,
+        "skills_fit_score": skills_score,
+        "experience_fit_score": experience_score,
+        "seniority_fit_score": seniority_score,
+        "location_fit_score": location_score,
+        "work_type_fit_score": work_type_score,
+        "language_fit_score": language_score,
+        "visa_fit_score": visa_score,
+        "base_match_score": base_score,
+        "practical_match_score": practical_score,
+        "overall_score": overall_score,
+        "recommendation": recommendation_from_score(overall_score),
+        "summary": f"Backend rule-based score is {overall_score}.",
+        "strengths": strengths,
+        "weaknesses": weaknesses,
+        "dealbreaker_warnings": warnings
+    }
 
 @router.post("/{user_id}/profiles/{profile_id}/jobs/{job_id}/match")
 def match_profile_with_job(
@@ -130,114 +474,16 @@ def match_profile_with_job(
             if existing_match.match_json else None
         }
 
-    try:
-        profile_analysis_json = json.loads(profile_analysis.analysis_json)
-        job_analysis_json = json.loads(job_analysis.analysis_json)
-    except json.JSONDecodeError:
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error_code": "ERR_ANALYSIS_JSON_INVALID",
-                "message": "Profile analysis or job analysis contains invalid JSON."
-            }
-        )
-
-    prompt = f"""
-You are a job matching engine for a job search product.
-
-Compare the candidate profile analysis with the job analysis.
-Give explainable scores.
-
-Candidate profile analysis:
-{json.dumps(profile_analysis_json, ensure_ascii=False, indent=2)}
-
-Job analysis:
-{json.dumps(job_analysis_json, ensure_ascii=False, indent=2)}
-
-Return ONLY valid JSON in this exact structure:
-{{
-  "role_fit_score": 0,
-  "skills_fit_score": 0,
-  "experience_fit_score": 0,
-  "seniority_fit_score": 0,
-  "location_fit_score": 0,
-  "work_type_fit_score": 0,
-  "language_fit_score": 0,
-  "visa_fit_score": 0,
-  "base_match_score": 0,
-  "practical_match_score": 0,
-  "overall_score": 0,
-  "recommendation": "strong_apply|apply|maybe|weak_match|do_not_apply",
-  "summary": "short explanation of the match",
-  "strengths": ["strength 1", "strength 2"],
-  "weaknesses": ["weakness 1", "weakness 2"],
-  "dealbreaker_warnings": ["warning 1", "warning 2"]
-}}
-
-Scoring rules:
-- All scores must be integers between 0 and 100.
-- role_fit_score: how well the candidate target/current role matches the job role.
-- skills_fit_score: how well candidate skills match required and preferred job skills.
-- experience_fit_score: how well years and depth of experience match.
-- seniority_fit_score: how well candidate seniority matches job seniority.
-- location_fit_score: location and relocation fit.
-- work_type_fit_score: remote/hybrid/onsite preference fit.
-- language_fit_score: language requirement fit.
-- visa_fit_score: visa sponsorship / work authorization fit.
-
-Important:
-- base_match_score should focus mostly on role, skills, experience, and seniority.
-- practical_match_score should focus mostly on location, work type, language, and visa.
-- overall_score should combine both.
-- If there is a hard dealbreaker, overall_score should be low even if skills fit is good.
-- If German is required and the candidate does not have enough German, language_fit_score must be low.
-- If EU work authorization is required and the candidate needs sponsorship, visa_fit_score must be low.
-- Do not invent candidate skills or job requirements.
-- Use only the provided analyses.
-- Return only valid JSON.
-- Do not include markdown.
-"""
 
     now = datetime.now(timezone.utc)
 
     try:
-        response = client.responses.create(
-            model=MATCH_MODEL,
-            input=prompt,
-            temperature=0
+        match_result = calculate_backend_match(
+            profile=profile,
+            profile_analysis=profile_analysis,
+            job=job,
+            job_analysis=job_analysis
         )
-
-        raw_text = response.output_text.strip()
-
-        try:
-            match_result = json.loads(raw_text)
-        except json.JSONDecodeError:
-            failed_match = models.JobMatch(
-                profile_id=profile_id,
-                job_id=job_id,
-                profile_analysis_id=profile_analysis.analysis_id,
-                job_analysis_id=job_analysis.analysis_id,
-                match_status="failed",
-                match_json=None,
-                match_model=MATCH_MODEL,
-                match_prompt_version=MATCH_PROMPT_VERSION,
-                matched_at=now,
-                match_error=f"AI response was not valid JSON: {raw_text[:1000]}",
-                is_current=False,
-                created_at=now
-            )
-
-            db.add(failed_match)
-            db.commit()
-
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "error_code": "ERR_AI_INVALID_JSON",
-                    "message": "AI response was not valid JSON.",
-                    "raw_response": raw_text
-                }
-            )
 
         db.query(models.JobMatch).filter(
             models.JobMatch.profile_id == profile_id,
@@ -309,10 +555,9 @@ Important:
             "match": match_result
         }
 
-    except HTTPException:
-        raise
-
     except Exception as e:
+        db.rollback()
+
         failed_match = models.JobMatch(
             profile_id=profile_id,
             job_id=job_id,
@@ -334,16 +579,13 @@ Important:
         raise HTTPException(
             status_code=500,
             detail={
-                "error_code": "ERR_JOB_MATCH_FAILED",
-                "message": "Job match failed.",
+                "error_code": "ERR_BACKEND_MATCH_FAILED",
+                "message": "Backend job match failed.",
                 "profile_id": profile_id,
                 "job_id": job_id,
                 "error": str(e)
             }
         )
-    
-    MAX_BATCH_MATCH_JOBS = 50
-
 
 @router.post("/{user_id}/profiles/{profile_id}/jobs/match-analyzed")
 def match_profile_with_analyzed_jobs(
