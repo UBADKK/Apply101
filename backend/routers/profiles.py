@@ -228,8 +228,6 @@ def get_analyzed_profiles(
 
 
 
-PROFILE_ANALYSIS_PROMPT_VERSION = "profile_analysis_v2"
-
 ALLOWED_ROLE_TAGS = [
     "software_engineering",
     "software_development",
@@ -273,10 +271,6 @@ ALLOWED_ROLE_TAGS = [
     "content",
     "other"
 ]
-
-
-
-
 
 
 @router.post("/{user_id}/profiles/{profile_id}/analyze")

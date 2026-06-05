@@ -119,18 +119,7 @@ def calculate_role_tag_score(profile_analysis, job_analysis):
     if not matched_tags:
         return 0
 
-    overlap_ratio = len(matched_tags) / len(job_tags)
-
-    if overlap_ratio >= 0.6:
-        return 100
-
-    if overlap_ratio >= 0.4:
-        return 85
-
-    if overlap_ratio >= 0.25:
-        return 70
-
-    return 55
+    return 100
 
 SKILL_ALIASES = {
     "rest api": "rest apis",
