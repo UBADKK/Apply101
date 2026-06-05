@@ -51,7 +51,9 @@ def overlap_score(candidate_items, job_items):
     return round((len(matched) / len(job_set)) * 100)
 
 
-def calculate_role_score(profile_json, job_analysis):
+def calculate_role_score(profile_json, profile_analysis, job_analysis):
+    tag_score = calculate_role_tag_score(profile_analysis, job_analysis)
+
     target_roles = normalize_list(profile_json.get("target_roles", []))
     target_families = normalize_list(profile_json.get("target_role_families", []))
 
@@ -59,41 +61,165 @@ def calculate_role_score(profile_json, job_analysis):
     job_family = normalize_text(job_analysis.role_family)
     job_subfamily = normalize_text(job_analysis.role_subfamily)
 
-    score = 0
+    title_score = 0
 
     for role in target_roles:
         if role and role == job_title:
-            score = max(score, 100)
+            title_score = max(title_score, 100)
         elif role and (role in job_title or job_title in role):
-            score = max(score, 85)
+            title_score = max(title_score, 85)
+
+    family_score = 0
 
     for family in target_families:
         if family and family == job_family:
-            score = max(score, 75)
+            family_score = max(family_score, 70)
 
-    # Basit yakınlık bonusları
     profile_role_text = " ".join(target_roles)
 
     if "backend" in profile_role_text and "fullstack" in job_title:
-        score = max(score, 75)
+        title_score = max(title_score, 75)
 
     if "backend" in profile_role_text and "backend" in job_title:
-        score = max(score, 95)
+        title_score = max(title_score, 95)
 
     if "software" in profile_role_text and job_family in ["engineering", "it", "devops", "qa_testing"]:
-        score = max(score, 65)
+        family_score = max(family_score, 60)
 
-    if score == 0 and job_subfamily:
+    if title_score == 0 and job_subfamily:
         for role in target_roles:
             if any(part in job_subfamily for part in role.split()):
-                score = max(score, 50)
+                title_score = max(title_score, 50)
 
-    return score
+    return round(
+        tag_score * 0.60
+        + title_score * 0.30
+        + family_score * 0.10
+    )
+
+
+def calculate_role_tag_score(profile_analysis, job_analysis):
+    profile_tags = set(
+        normalize_list(
+            safe_json_loads(profile_analysis.target_role_tags_json, [])
+        )
+    )
+
+    job_tags = set(
+        normalize_list(
+            safe_json_loads(job_analysis.role_tags_json, [])
+        )
+    )
+
+    if not profile_tags or not job_tags:
+        return 0
+
+    matched_tags = profile_tags.intersection(job_tags)
+
+    if not matched_tags:
+        return 0
+
+    overlap_ratio = len(matched_tags) / len(job_tags)
+
+    if overlap_ratio >= 0.6:
+        return 100
+
+    if overlap_ratio >= 0.4:
+        return 85
+
+    if overlap_ratio >= 0.25:
+        return 70
+
+    return 55
+
+SKILL_ALIASES = {
+    "rest api": "rest apis",
+    "rest": "rest apis",
+    "api": "rest apis",
+    "apis": "rest apis",
+
+    "postgres": "postgresql",
+    "sql": "database",
+    "sqlite": "database",
+    "postgresql": "database",
+
+    "backend development": "backend",
+    "backend developer": "backend",
+
+    "openai": "openai api",
+    "ai integration": "ai integrations",
+    "ai integrations": "ai integrations",
+
+    "js": "javascript",
+}
+
+
+def normalize_skill(value: str) -> str:
+    value = normalize_text(value)
+
+    value = value.replace("-", " ")
+    value = value.replace("_", " ")
+    value = value.replace("/", " ")
+    value = " ".join(value.split())
+
+    return SKILL_ALIASES.get(value, value)
+
+
+def normalize_skill_list(values):
+    if not values:
+        return []
+
+    return [
+        normalize_skill(v)
+        for v in values
+        if isinstance(v, str) and v.strip()
+    ]
+
+
+def fuzzy_skill_match(candidate_skill, job_skill):
+    candidate_skill = normalize_skill(candidate_skill)
+    job_skill = normalize_skill(job_skill)
+
+    if candidate_skill == job_skill:
+        return True
+
+    if candidate_skill in job_skill or job_skill in candidate_skill:
+        return True
+
+    candidate_parts = set(candidate_skill.split())
+    job_parts = set(job_skill.split())
+
+    if not candidate_parts or not job_parts:
+        return False
+
+    overlap = candidate_parts.intersection(job_parts)
+
+    return len(overlap) >= 2
+
+
+def skill_match_score(candidate_skills, job_skills):
+    candidate_skills = normalize_skill_list(candidate_skills)
+    job_skills = normalize_skill_list(job_skills)
+
+    if not job_skills:
+        return 70
+
+    if not candidate_skills:
+        return 0
+
+    matched_count = 0
+
+    for job_skill in job_skills:
+        if any(
+            fuzzy_skill_match(candidate_skill, job_skill)
+            for candidate_skill in candidate_skills
+        ):
+            matched_count += 1
+
+    return round((matched_count / len(job_skills)) * 100)
 
 
 def calculate_skills_score(profile_analysis, job_analysis):
-    profile_json = safe_json_loads(profile_analysis.analysis_json, {})
-
     strong_skills = safe_json_loads(profile_analysis.strong_skills_json, [])
     moderate_skills = safe_json_loads(profile_analysis.moderate_skills_json, [])
     weak_skills = safe_json_loads(profile_analysis.weak_or_basic_skills_json, [])
@@ -102,14 +228,12 @@ def calculate_skills_score(profile_analysis, job_analysis):
     required_skills = safe_json_loads(job_analysis.required_skills_json, [])
     preferred_skills = safe_json_loads(job_analysis.preferred_skills_json, [])
 
-    candidate_strong = normalize_list(strong_skills + tools)
-    candidate_all = normalize_list(strong_skills + moderate_skills + weak_skills + tools)
+    candidate_strong = strong_skills + tools
+    candidate_all = strong_skills + moderate_skills + weak_skills + tools
 
-    required_score = overlap_score(candidate_all, required_skills)
-    preferred_score = overlap_score(candidate_all, preferred_skills)
-
-    # Strong skill bonus
-    strong_required_score = overlap_score(candidate_strong, required_skills)
+    required_score = skill_match_score(candidate_all, required_skills)
+    preferred_score = skill_match_score(candidate_all, preferred_skills)
+    strong_required_score = skill_match_score(candidate_strong, required_skills)
 
     return round(
         required_score * 0.65
@@ -292,7 +416,7 @@ def recommendation_from_score(score):
 def calculate_backend_match(profile, profile_analysis, job, job_analysis):
     profile_json = safe_json_loads(profile_analysis.analysis_json, {})
 
-    role_score = calculate_role_score(profile_json, job_analysis)
+    role_score = calculate_role_score(profile_json, profile_analysis, job_analysis)
     skills_score = calculate_skills_score(profile_analysis, job_analysis)
     seniority_score = calculate_seniority_score(profile_analysis, job_analysis)
     experience_score = seniority_score
