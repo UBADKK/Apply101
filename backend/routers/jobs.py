@@ -106,6 +106,8 @@ def get_analyzed_jobs(
             "role_family": analysis.role_family,
             "role_subfamily": analysis.role_subfamily,
             "normalized_role_title": analysis.normalized_role_title,
+            "role_tags": json.loads(analysis.role_tags_json)
+            if analysis.role_tags_json else [],
             "seniority_level": analysis.seniority_level,
             "work_type": analysis.work_type,
             "employment_type": analysis.employment_type,
@@ -493,7 +495,7 @@ def fetch_jobs_by_pages(
 
 
 JOB_ANALYSIS_MODEL = "gpt-4.1-mini"
-JOB_ANALYSIS_PROMPT_VERSION = "job_analysis_v2"
+JOB_ANALYSIS_PROMPT_VERSION = "job_analysis_v5"
 
 MAX_ANALYZE_JOBS = 10
 MAX_ANALYZE_MISSING_JOBS = 100
@@ -546,62 +548,51 @@ def analyze_job(
         }
 
     prompt = f"""
-You are a job posting parser for a job matching system.
+    You are a job posting parser for a job matching system.
 
-Extract the key matching signals from this job posting.
-Do not invent information. If something is unclear, return "unknown".
+    Extract the key matching signals from this job posting.
 
-Job title:
-{job.title or ""}
+    Rules:
+    - Do not invent information. If something is unclear, return "unknown".
+    - role_family must be selected from the schema allowed values.
+    - role_subfamily should be a short snake_case normalized subcategory.
+    - normalized_role_title should be a concise human-readable normalized title.
+    - role_tags should describe the actual job role, not every mentioned skill.
+    - For role_tags, select 3 to 8 relevant tags.
+    - Do not force a job into an inaccurate category. Use "other" or "unknown" when unclear.
+    - If German is required, include it in language_requirements and dealbreakers if relevant.
+    - If EU work authorization is required, include it in dealbreakers.
+    - Only include hard requirements in dealbreakers.
+    - Do not include preferred, advantageous, nice-to-have, or optional qualifications in dealbreakers.
+    - For working-student roles, if university enrollment is required, set employment_type to "working-student" and include student enrollment requirement in dealbreakers.
 
-Company:
-{job.company_name or ""}
+    Job title:
+    {job.title or ""}
 
-Location:
-{job.location or ""}
+    Company:
+    {job.company_name or ""}
 
-Job description:
-{(job.description_text or "")[:12000]}
+    Location:
+    {job.location or ""}
 
-Return ONLY valid JSON in this exact structure:
-{{
-  "summary": "short but information-dense summary",
-  "role_family": "engineering|data|product|design|marketing|sales|customer_success|operations|business_analysis|project_management|finance|accounting|hr|legal|consulting|strategy|it|cybersecurity|qa_testing|devops|research|education|healthcare|logistics|supply_chain|manufacturing|administration|support|content|media|other|unknown",
-  "role_subfamily": "short snake_case normalized subcategory, e.g. backend_engineering, data_analysis, product_management, account_executive",
-  "normalized_role_title": "specific normalized role title, e.g. backend software engineer, business intelligence analyst, customer success manager",
-  "required_skills": ["skill 1", "skill 2"],
-  "preferred_skills": ["skill 1", "skill 2"],
-  "responsibilities": ["responsibility 1", "responsibility 2"],
-  "seniority_level": "intern|junior|mid|senior|lead|executive|unknown",
-  "language_requirements": ["English", "German", "unknown"],
-  "visa_sponsorship": "yes|no|unknown",
-  "work_type": "remote|hybrid|onsite|unknown",
-  "employment_type": "full-time|part-time|internship|working-student|contract|freelance|temporary|unknown",
-  "dealbreakers": ["dealbreaker 1", "dealbreaker 2"]
-}}
-
-Rules:
-- Return only valid JSON.
-- Do not include markdown.
-- Do not infer requirements that are not stated.
-- role_family must be selected from the allowed list.
-- role_subfamily should be a short snake_case normalized subcategory.
-- normalized_role_title should be a concise human-readable normalized title.
-- Do not force a job into an inaccurate category. Use "other" or "unknown" when unclear.
-- If German is required, include it in language_requirements and dealbreakers if relevant.
-- If EU work authorization is required, include it in dealbreakers.
-- Only include hard requirements in dealbreakers.
-- Do not include preferred, advantageous, nice-to-have, or optional qualifications in dealbreakers.
-- For working-student roles, if university enrollment is required, set employment_type to "working-student" and include student enrollment requirement in dealbreakers.
-"""
-
+    Job description:
+    {(job.description_text or "")[:12000]}
+    """
     now = datetime.now(timezone.utc)
 
     try:
         response = client.responses.create(
             model=JOB_ANALYSIS_MODEL,
             input=prompt,
-            temperature=0
+            temperature=0,
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "job_analysis",
+                    "schema": schemas.JobAnalysisStructured.model_json_schema(),
+                    "strict": True
+                }
+            }
         )
 
         raw_text = response.output_text.strip()
@@ -649,6 +640,10 @@ Rules:
             role_family=analysis.get("role_family"),
             role_subfamily=analysis.get("role_subfamily"),
             normalized_role_title=analysis.get("normalized_role_title"),
+            role_tags_json=json.dumps(
+                analysis.get("role_tags", []),
+                ensure_ascii=False
+            ),
 
             seniority_level=analysis.get("seniority_level"),
             work_type=analysis.get("work_type"),

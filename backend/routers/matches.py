@@ -479,6 +479,7 @@ def calculate_backend_match(profile, profile_analysis, job, job_analysis):
         "dealbreaker_warnings": warnings
     }
 
+
 @router.post("/{user_id}/profiles/{profile_id}/jobs/{job_id}/match")
 def match_profile_with_job(
     user_id: int,
@@ -699,6 +700,7 @@ def match_profile_with_job(
                 "error": str(e)
             }
         )
+
 
 @router.post("/{user_id}/profiles/{profile_id}/jobs/match-analyzed")
 def match_profile_with_analyzed_jobs(

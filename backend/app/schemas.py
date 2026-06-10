@@ -100,7 +100,6 @@ class MatchResult(BaseModel):
     ]
 
 
-
 class ProfileAnalysisStructured(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -142,6 +141,12 @@ class ProfileAnalysisStructured(BaseModel):
     match_notes: list[str]
 
 
+class ProfileLanguageItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    language: str
+    level: str
+    scale: str
+
 
 class JobAnalysisStructured(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -160,7 +165,49 @@ class JobAnalysisStructured(BaseModel):
 
     role_subfamily: str
     normalized_role_title: str
-    role_tags: list[str]
+    role_tags: list[Literal[
+        "software_engineering",
+        "software_development",
+        "backend_development",
+        "frontend_development",
+        "fullstack_development",
+        "api_development",
+        "python_development",
+        "java_development",
+        "javascript_development",
+        "mobile_development",
+        "game_development",
+        "data_analysis",
+        "data_science",
+        "data_engineering",
+        "machine_learning",
+        "ai_engineering",
+        "devops",
+        "cloud_engineering",
+        "qa_testing",
+        "cybersecurity",
+        "it_support",
+        "technical_support",
+        "product_management",
+        "project_management",
+        "business_analysis",
+        "consulting",
+        "sales",
+        "marketing",
+        "customer_support",
+        "education",
+        "finance",
+        "accounting",
+        "hr",
+        "legal",
+        "operations",
+        "logistics",
+        "supply_chain",
+        "manufacturing",
+        "design",
+        "content",
+        "other"
+    ]]
 
     required_skills: list[str]
     preferred_skills: list[str]
@@ -189,11 +236,4 @@ class JobAnalysisStructured(BaseModel):
 
     dealbreakers: list[str]
 
-
-
-class ProfileLanguageItem(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    language: str
-    level: str
-    scale: str
 
