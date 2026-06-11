@@ -28,6 +28,21 @@ class UserResponse(BaseModel):
         from_attributes = True
 
 
+class ProfileLanguageItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    language: str
+    level: str
+    scale: str
+
+
+class UserLanguageInput(BaseModel):
+    language_code: str
+    language_name: str
+    proficiency_level: str | None = None
+    proficiency_scale: str | None = "CEFR"
+    is_primary: bool = False
+    
+
 class CandidateProfileCreate(BaseModel):
     self_description: str | None = None
 
@@ -39,6 +54,8 @@ class CandidateProfileCreate(BaseModel):
 
     preferred_technologies: str | None = None
     extra_preferences: str | None = None
+
+    languages: list[UserLanguageInput] | None = None
 
 
 class CandidateProfileResponse(BaseModel):
@@ -141,13 +158,6 @@ class ProfileAnalysisStructured(BaseModel):
     match_notes: list[str]
 
 
-class ProfileLanguageItem(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    language: str
-    level: str
-    scale: str
-
-
 class JobAnalysisStructured(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -235,5 +245,4 @@ class JobAnalysisStructured(BaseModel):
     ]
 
     dealbreakers: list[str]
-
 

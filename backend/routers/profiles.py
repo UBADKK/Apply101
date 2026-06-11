@@ -96,6 +96,27 @@ def create_candidate_profile(
     )
 
     db.add(new_profile)
+
+    if profile.languages is not None:
+        db.query(models.UserLanguage).filter(
+            models.UserLanguage.user_id == user_id
+        ).delete()
+
+        now = datetime.now(timezone.utc)
+
+        for language in profile.languages:
+            new_language = models.UserLanguage(
+                user_id=user_id,
+                language_code=language.language_code,
+                language_name=language.language_name,
+                proficiency_level=language.proficiency_level,
+                proficiency_scale=language.proficiency_scale,
+                is_primary=language.is_primary,
+                created_at=now
+            )
+
+            db.add(new_language)
+
     db.commit()
     db.refresh(new_profile)
 
