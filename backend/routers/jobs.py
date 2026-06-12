@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 
 from ..app.database import get_db
 from ..app import models, schemas
+from ..app.taxonomy import ROLE_FAMILIES, ROLE_SUBFAMILIES, ROLE_TAGS, SKILL_TAGS
+
 
 client = OpenAI()
 
@@ -17,6 +19,12 @@ router = APIRouter(
     prefix="/jobs",
     tags=["Jobs"]
 )
+
+JOB_ANALYSIS_MODEL = "gpt-4.1-mini"
+JOB_ANALYSIS_PROMPT_VERSION = "job_analysis_v6"
+
+MAX_ANALYZE_JOBS = 10
+MAX_ANALYZE_MISSING_JOBS = 100
 
 
 def html_to_text(html: str) -> str:
@@ -82,6 +90,8 @@ def get_analyzed_jobs(
         )
         .filter(
             models.JobAnalysis.analysis_status == "completed",
+            models.JobAnalysis.analysis_model == JOB_ANALYSIS_MODEL,
+            models.JobAnalysis.analysis_prompt_version == JOB_ANALYSIS_PROMPT_VERSION,
             models.JobAnalysis.is_current == True
         )
         .order_by(models.JobAnalysis.analysis_id.desc())
@@ -493,13 +503,6 @@ def fetch_jobs_by_pages(
     }
 
 
-
-JOB_ANALYSIS_MODEL = "gpt-4.1-mini"
-JOB_ANALYSIS_PROMPT_VERSION = "job_analysis_v5"
-
-MAX_ANALYZE_JOBS = 10
-MAX_ANALYZE_MISSING_JOBS = 100
-
 @router.post("/{job_id}/analyze")
 def analyze_job(
     job_id: int,
@@ -550,21 +553,67 @@ def analyze_job(
     prompt = f"""
     You are a job posting parser for a job matching system.
 
-    Extract the key matching signals from this job posting.
+    Extract structured matching signals from this job posting.
 
-    Rules:
-    - Do not invent information. If something is unclear, return "unknown".
-    - role_family must be selected from the schema allowed values.
-    - role_subfamily should be a short snake_case normalized subcategory.
-    - normalized_role_title should be a concise human-readable normalized title.
-    - role_tags should describe the actual job role, not every mentioned skill.
-    - For role_tags, select 3 to 8 relevant tags.
-    - Do not force a job into an inaccurate category. Use "other" or "unknown" when unclear.
-    - If German is required, include it in language_requirements and dealbreakers if relevant.
-    - If EU work authorization is required, include it in dealbreakers.
+    Do not invent information. If something is unclear, use "unknown" for free-text or non-taxonomy fields.
+
+    Use only the allowed canonical taxonomy values where applicable.
+
+    For role_family:
+    - Choose exactly one value from the allowed role families.
+    - Use "other" if unclear or if none of the allowed values fit.
+
+    For role_subfamily:
+    - Choose exactly one value from the allowed role subfamilies.
+    - Do not invent new role subfamily names.
+    - Use "other" if unclear or if none of the allowed values fit.
+
+    For role_tags:
+    - Select 3 to 8 tags from the allowed role tags only.
+    - Role tags should describe the actual job role, not every mentioned skill.
+    - Put the closest and most important role_tags first.
+    - Do not create tags outside the allowed list.
+    - Use "other" only if none of the allowed tags fit.
+
+    For required_skills and preferred_skills:
+    - Use only values from the allowed skill tags.
+    - required_skills should include hard required skills only.
+    - preferred_skills should include nice-to-have or advantageous skills.
+    - Do not create skill names outside the allowed list.
+    - If no exact skill tag exists, use "other".
+
+    For seniority_level:
+    - Use only: intern, junior, mid, senior, lead, executive, unknown.
+
+    For visa_sponsorship:
+    - Use only: yes, no, unknown.
+
+    For work_type:
+    - Use only: remote, hybrid, onsite, unknown.
+
+    For employment_type:
+    - Use only: full_time, part_time, internship, working_student, contract, freelance, temporary, unknown.
+    - For working student roles, set employment_type to "working_student".
+    - Do not use "full-time", "part-time", or "working-student".
+
+    Dealbreaker rules:
     - Only include hard requirements in dealbreakers.
     - Do not include preferred, advantageous, nice-to-have, or optional qualifications in dealbreakers.
-    - For working-student roles, if university enrollment is required, set employment_type to "working-student" and include student enrollment requirement in dealbreakers.
+    - If German is required, include it in language_requirements and dealbreakers if relevant.
+    - If EU work authorization is required, include it in dealbreakers.
+    - For working student roles, if university enrollment is required, include student enrollment requirement in dealbreakers.
+
+    Allowed role families:
+    {json.dumps(ROLE_FAMILIES, ensure_ascii=False)}
+
+    Allowed role subfamilies:
+    {json.dumps(ROLE_SUBFAMILIES, ensure_ascii=False)}
+
+    Allowed role tags:
+    {json.dumps(ROLE_TAGS, ensure_ascii=False)}
+
+    Allowed skill tags:
+    {json.dumps(SKILL_TAGS, ensure_ascii=False)}
 
     Job title:
     {job.title or ""}
@@ -624,6 +673,9 @@ def analyze_job(
                     "raw_response": raw_text
                 }
             )
+
+        validated_analysis = schemas.JobAnalysisStructured.model_validate(analysis)
+        analysis = validated_analysis.model_dump()
 
         db.query(models.JobAnalysis).filter(
             models.JobAnalysis.job_id == job.job_id,
@@ -719,7 +771,6 @@ def analyze_job(
 
 
 #This endpoint analyzes jobs with no analysis as batchs by using the analyze endpoint.
-
 @router.post("/analyze-missing")
 def analyze_missing_jobs(
     limit: int = Query(default=3, ge=1, le=MAX_ANALYZE_MISSING_JOBS),
@@ -817,8 +868,8 @@ def analyze_missing_jobs(
         "results": results
     }
 
-# This endpoint sends selected job details to LLM for sample analysis.
 
+# This endpoint sends selected job details to LLM for sample analysis.
 @router.post("/analyze-sample")
 def analyze_sample_jobs(
     limit: int = Query(default=3, ge=1),

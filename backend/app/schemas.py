@@ -1,5 +1,7 @@
-from pydantic import BaseModel, EmailStr, ConfigDict
+from pydantic import BaseModel, EmailStr, ConfigDict, field_validator
 from typing import Literal
+
+from .taxonomy import ROLE_FAMILIES, ROLE_SUBFAMILIES, ROLE_TAGS, SKILL_TAGS
 
 
 class UserCreate(BaseModel):
@@ -121,17 +123,10 @@ class ProfileAnalysisStructured(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     candidate_summary: str
-    current_role_family: Literal[
-        "engineering", "data", "product", "design", "marketing", "sales",
-        "customer_success", "operations", "business_analysis",
-        "project_management", "finance", "accounting", "hr", "legal",
-        "consulting", "strategy", "it", "cybersecurity", "qa_testing",
-        "devops", "research", "education", "healthcare", "logistics",
-        "supply_chain", "manufacturing", "administration", "support",
-        "content", "media", "other", "unknown"
-    ]
+    current_role_family: str
     target_role_families: list[str]
     target_role_tags: list[str]
+
     target_roles: list[str]
     excluded_roles: list[str]
 
@@ -157,67 +152,39 @@ class ProfileAnalysisStructured(BaseModel):
     relocation_preference: str
     match_notes: list[str]
 
+    @field_validator("current_role_family")
+    @classmethod
+    def validate_current_role_family(cls, value: str) -> str:
+        if value not in ROLE_FAMILIES:
+            raise ValueError(f"Invalid role family: {value}")
+        return value
+
+    @field_validator("target_role_families")
+    @classmethod
+    def validate_target_role_families(cls, values: list[str]) -> list[str]:
+        invalid_values = [value for value in values if value not in ROLE_FAMILIES]
+        if invalid_values:
+            raise ValueError(f"Invalid role families: {invalid_values}")
+        return values
+
+    @field_validator("target_role_tags")
+    @classmethod
+    def validate_target_role_tags(cls, values: list[str]) -> list[str]:
+        invalid_values = [value for value in values if value not in ROLE_TAGS]
+        if invalid_values:
+            raise ValueError(f"Invalid role tags: {invalid_values}")
+        return values
+
 
 class JobAnalysisStructured(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     summary: str
 
-    role_family: Literal[
-        "engineering", "data", "product", "design", "marketing", "sales",
-        "customer_success", "operations", "business_analysis",
-        "project_management", "finance", "accounting", "hr", "legal",
-        "consulting", "strategy", "it", "cybersecurity", "qa_testing",
-        "devops", "research", "education", "healthcare", "logistics",
-        "supply_chain", "manufacturing", "administration", "support",
-        "content", "media", "other", "unknown"
-    ]
-
+    role_family: str
     role_subfamily: str
     normalized_role_title: str
-    role_tags: list[Literal[
-        "software_engineering",
-        "software_development",
-        "backend_development",
-        "frontend_development",
-        "fullstack_development",
-        "api_development",
-        "python_development",
-        "java_development",
-        "javascript_development",
-        "mobile_development",
-        "game_development",
-        "data_analysis",
-        "data_science",
-        "data_engineering",
-        "machine_learning",
-        "ai_engineering",
-        "devops",
-        "cloud_engineering",
-        "qa_testing",
-        "cybersecurity",
-        "it_support",
-        "technical_support",
-        "product_management",
-        "project_management",
-        "business_analysis",
-        "consulting",
-        "sales",
-        "marketing",
-        "customer_support",
-        "education",
-        "finance",
-        "accounting",
-        "hr",
-        "legal",
-        "operations",
-        "logistics",
-        "supply_chain",
-        "manufacturing",
-        "design",
-        "content",
-        "other"
-    ]]
+    role_tags: list[str]
 
     required_skills: list[str]
     preferred_skills: list[str]
@@ -234,10 +201,10 @@ class JobAnalysisStructured(BaseModel):
     work_type: Literal["remote", "hybrid", "onsite", "unknown"]
 
     employment_type: Literal[
-        "full-time",
-        "part-time",
+        "full_time",
+        "part_time",
         "internship",
-        "working-student",
+        "working_student",
         "contract",
         "freelance",
         "temporary",
@@ -246,3 +213,40 @@ class JobAnalysisStructured(BaseModel):
 
     dealbreakers: list[str]
 
+    @field_validator("role_family")
+    @classmethod
+    def validate_role_family(cls, value: str) -> str:
+        if value not in ROLE_FAMILIES:
+            raise ValueError(f"Invalid role family: {value}")
+        return value
+
+    @field_validator("role_subfamily")
+    @classmethod
+    def validate_role_subfamily(cls, value: str) -> str:
+        if value not in ROLE_SUBFAMILIES:
+            raise ValueError(f"Invalid role subfamily: {value}")
+        return value
+
+    @field_validator("role_tags")
+    @classmethod
+    def validate_role_tags(cls, values: list[str]) -> list[str]:
+        invalid_values = [value for value in values if value not in ROLE_TAGS]
+        if invalid_values:
+            raise ValueError(f"Invalid role tags: {invalid_values}")
+        return values
+
+    @field_validator("required_skills")
+    @classmethod
+    def validate_required_skills(cls, values: list[str]) -> list[str]:
+        invalid_values = [value for value in values if value not in SKILL_TAGS]
+        if invalid_values:
+            raise ValueError(f"Invalid required skills: {invalid_values}")
+        return values
+
+    @field_validator("preferred_skills")
+    @classmethod
+    def validate_preferred_skills(cls, values: list[str]) -> list[str]:
+        invalid_values = [value for value in values if value not in SKILL_TAGS]
+        if invalid_values:
+            raise ValueError(f"Invalid preferred skills: {invalid_values}")
+        return values

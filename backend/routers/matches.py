@@ -13,9 +13,13 @@ router = APIRouter(
     tags=["Job Matching"]
 )
 
+
 MATCH_MODEL = "backend_rule_based"
 MATCH_PROMPT_VERSION = "backend_match_v1"
 MAX_BATCH_MATCH_JOBS = 200
+
+REQUIRED_JOB_ANALYSIS_MODEL = "gpt-4.1-mini"
+REQUIRED_JOB_ANALYSIS_PROMPT_VERSION = "job_analysis_v5"
 
 
 def safe_json_loads(value, default):
@@ -549,18 +553,47 @@ def match_profile_with_job(
     job_analysis = db.query(models.JobAnalysis).filter(
         models.JobAnalysis.job_id == job_id,
         models.JobAnalysis.analysis_status == "completed",
-        models.JobAnalysis.is_current == True
+        models.JobAnalysis.analysis_model == REQUIRED_JOB_ANALYSIS_MODEL,
+        models.JobAnalysis.analysis_prompt_version == REQUIRED_JOB_ANALYSIS_PROMPT_VERSION,
+        models.JobAnalysis.is_current == True,
+        models.JobAnalysis.role_tags_json.isnot(None),
+        models.JobAnalysis.role_tags_json != "[]"
     ).order_by(
         models.JobAnalysis.analysis_id.desc()
     ).first()
 
     if not job_analysis:
+        latest_analysis = db.query(models.JobAnalysis).filter(
+            models.JobAnalysis.job_id == job_id,
+            models.JobAnalysis.analysis_status == "completed"
+        ).order_by(
+            models.JobAnalysis.analysis_id.desc()
+        ).first()
+
         raise HTTPException(
             status_code=400,
             detail={
-                "error_code": "ERR_JOB_ANALYSIS_MISSING",
-                "message": "Job must be analyzed before matching.",
-                "job_id": job_id
+                "error_code": "ERR_JOB_ANALYSIS_OUTDATED_OR_MISSING",
+                "message": (
+                    "Job must be analyzed with the latest job analysis version "
+                    "before matching."
+                ),
+                "job_id": job_id,
+                "required_analysis_model": REQUIRED_JOB_ANALYSIS_MODEL,
+                "required_analysis_prompt_version": REQUIRED_JOB_ANALYSIS_PROMPT_VERSION,
+                "latest_existing_analysis_id": (
+                    latest_analysis.analysis_id if latest_analysis else None
+                ),
+                "latest_existing_analysis_model": (
+                    latest_analysis.analysis_model if latest_analysis else None
+                ),
+                "latest_existing_analysis_prompt_version": (
+                    latest_analysis.analysis_prompt_version if latest_analysis else None
+                ),
+                "hint": (
+                    f"Run POST /jobs/{job_id}/analyze?force_reanalyze=true "
+                    "and then try matching again."
+                )
             }
         )
 
@@ -764,7 +797,11 @@ def match_profile_with_analyzed_jobs(
         )
         .filter(
             models.JobAnalysis.analysis_status == "completed",
-            models.JobAnalysis.is_current == True
+            models.JobAnalysis.analysis_model == REQUIRED_JOB_ANALYSIS_MODEL,
+            models.JobAnalysis.analysis_prompt_version == REQUIRED_JOB_ANALYSIS_PROMPT_VERSION,
+            models.JobAnalysis.is_current == True,
+            models.JobAnalysis.role_tags_json.isnot(None),
+            models.JobAnalysis.role_tags_json != "[]"
         )
         .order_by(models.Job.job_id.desc())
         .offset(offset)

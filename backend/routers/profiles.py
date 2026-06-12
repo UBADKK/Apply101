@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 from ..app.database import get_db
 from ..app import models, schemas
+from ..app.taxonomy import ROLE_FAMILIES, ROLE_TAGS, SKILL_TAGS
 
 client = OpenAI()
 
@@ -21,7 +22,7 @@ router = APIRouter(
 )
 
 PROFILE_ANALYSIS_MODEL = "gpt-4.1-mini"
-PROFILE_ANALYSIS_PROMPT_VERSION = "profile_analysis_v3"
+PROFILE_ANALYSIS_PROMPT_VERSION = "profile_analysis_v4"
 
 
 def build_languages_text(languages: list[models.UserLanguage]) -> str:
@@ -248,52 +249,6 @@ def get_analyzed_profiles(
     return result
 
 
-
-ALLOWED_ROLE_TAGS = [
-    "software_engineering",
-    "software_development",
-    "backend_development",
-    "frontend_development",
-    "fullstack_development",
-    "api_development",
-    "python_development",
-    "java_development",
-    "javascript_development",
-    "mobile_development",
-    "game_development",
-    "data_analysis",
-    "data_science",
-    "data_engineering",
-    "machine_learning",
-    "ai_engineering",
-    "devops",
-    "cloud_engineering",
-    "qa_testing",
-    "cybersecurity",
-    "it_support",
-    "technical_support",
-    "product_management",
-    "project_management",
-    "business_analysis",
-    "consulting",
-    "sales",
-    "marketing",
-    "customer_support",
-    "education",
-    "finance",
-    "accounting",
-    "hr",
-    "legal",
-    "operations",
-    "logistics",
-    "supply_chain",
-    "manufacturing",
-    "design",
-    "content",
-    "other"
-]
-
-
 @router.post("/{user_id}/profiles/{profile_id}/analyze")
 def analyze_profile(
     user_id: int,
@@ -376,16 +331,38 @@ You are a candidate profile parser for a job matching system.
 Extract structured matching signals from the candidate profile.
 
 Do not invent skills, experience, languages, authorization, education, or relocation details.
-Use "unknown" for unclear string fields.
+Use "unknown" for unclear free-text string fields.
+For taxonomy fields such as current_role_family, target_role_families, and target_role_tags, use only the allowed taxonomy values.
+For taxonomy fields, use "other" if unclear or if none of the allowed values fit.
 For years_of_experience, use 0 if there is no clear experience.
 For visa_sponsorship_needed, use true only if the profile clearly says sponsorship is needed.
-For target_role_tags, select 5 to 10 tags from the allowed list only.
-Put the closest and most important target_role_tags first.
-Do not create tags outside the allowed list.
-Use "other" only if none of the allowed tags fit.
+
+Use only the allowed canonical taxonomy values where applicable.
+
+For current_role_family and target_role_families:
+- Choose only from the allowed role families.
+- Do not invent new role family names.
+- Use "other" only if none of the allowed role families fit.
+
+For target_role_tags:
+- Select 5 to 10 tags from the allowed role tags only.
+- Put the closest and most important target_role_tags first.
+- Do not create tags outside the allowed list.
+- Use "other" only if none of the allowed tags fit.
+
+For strong_skills, moderate_skills, weak_or_basic_skills, and tools:
+- Prefer canonical skill tags from the allowed skill tags list when there is a clear match.
+- Do not force everything into the allowed list if it would lose important detail.
+- If a skill/tool is important but not in the allowed list, keep the original clear name.
+
+Allowed role families:
+{json.dumps(ROLE_FAMILIES, ensure_ascii=False)}
 
 Allowed role tags:
-{json.dumps(ALLOWED_ROLE_TAGS, ensure_ascii=False)}
+{json.dumps(ROLE_TAGS, ensure_ascii=False)}
+
+Allowed skill tags:
+{json.dumps(SKILL_TAGS, ensure_ascii=False)}
 
 User basic information:
 Name: {user.name or ""}
@@ -447,6 +424,9 @@ CV text:
 
         raw_text = response.output_text.strip()
         analysis = json.loads(raw_text)
+
+        validated_analysis = schemas.ProfileAnalysisStructured.model_validate(analysis)
+        analysis = validated_analysis.model_dump()
 
         db.query(models.ProfileAnalysis).filter(
             models.ProfileAnalysis.profile_id == profile.profile_id,
@@ -555,3 +535,5 @@ CV text:
                 "error": str(e)
             }
         )
+    
+
