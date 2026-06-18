@@ -3,6 +3,120 @@ from typing import Literal
 
 from .taxonomy import ROLE_FAMILIES, ROLE_SUBFAMILIES, ROLE_TAGS, SKILL_TAGS
 
+ROLE_TAG_ALIASES = {
+    "rest_api": "api_development",
+    "rest_apis": "api_development",
+    "api": "api_development",
+    "api_design": "api_development",
+
+    "backend": "backend_development",
+    "frontend": "frontend_development",
+    "fullstack": "fullstack_development",
+
+    "python": "python_development",
+    "django": "django_development",
+    "fastapi": "fastapi_development",
+    "java": "java_development",
+    "javascript": "javascript_development",
+    "typescript": "typescript_development",
+    "react": "react_development",
+
+    "machine_learning_engineering": "machine_learning",
+    "ml_engineering": "machine_learning",
+    "openai_api": "ai_engineering",
+
+    "software_testing": "qa_testing",
+    "automation_testing": "qa_testing",
+    "automated_testing": "qa_testing",
+    "testing": "qa_testing",
+
+    "affiliate_marketing": "marketing",
+    "content_creation": "marketing",
+    "social_media_marketing": "marketing",
+    "community_management": "marketing",
+
+    "leadership": "operations",
+    "non_profit": "operations",
+}
+
+
+def normalize_role_tags(values: list[str]) -> list[str]:
+    normalized_values = []
+
+    for raw_value in values:
+        value = str(raw_value).strip().lower().replace("-", "_").replace(" ", "_")
+        value = ROLE_TAG_ALIASES.get(value, value)
+
+        if value not in ROLE_TAGS:
+            value = "other"
+
+        if value not in normalized_values:
+            normalized_values.append(value)
+
+    return normalized_values
+
+
+SKILL_TAG_ALIASES = {
+    "rest_apis": "rest_api",
+    "api": "rest_api",
+    "api_design": "rest_api",
+
+    "github": "git",
+
+    "microsoft_office": "excel",
+    "ms_office": "excel",
+
+    "automated_testing": "other",
+    "automation_testing": "other",
+    "software_testing": "other",
+    "test_methods": "other",
+    "test_tools": "other",
+
+    "sap": "other",
+    "sap_abap": "other",
+    "sap_gui": "other",
+    "sap_fiori": "other",
+
+    "fundraising": "other",
+    "budgeting": "other",
+    "project_management": "jira",
+
+    "leadership": "other",
+    "communication": "other",
+    "time_management": "other",
+    "problem_solving": "other",
+}
+
+LANGUAGE_SKILL_VALUES = {
+    "german",
+    "english",
+    "turkish",
+    "deutsch",
+    "englisch",
+    "türkisch",
+}
+
+
+def normalize_skill_tags(values: list[str]) -> list[str]:
+    normalized_values = []
+
+    for raw_value in values:
+        value = str(raw_value).strip().lower().replace("-", "_").replace(" ", "_")
+
+        if value in LANGUAGE_SKILL_VALUES:
+            continue
+
+        value = SKILL_TAG_ALIASES.get(value, value)
+
+        if value not in SKILL_TAGS:
+            value = "other"
+
+        if value not in normalized_values:
+            normalized_values.append(value)
+
+    return normalized_values
+
+
 
 class UserCreate(BaseModel):
     name: str
@@ -167,14 +281,11 @@ class ProfileAnalysisStructured(BaseModel):
             raise ValueError(f"Invalid role families: {invalid_values}")
         return values
 
+
     @field_validator("target_role_tags")
     @classmethod
     def validate_target_role_tags(cls, values: list[str]) -> list[str]:
-        invalid_values = [value for value in values if value not in ROLE_TAGS]
-        if invalid_values:
-            raise ValueError(f"Invalid role tags: {invalid_values}")
-        return values
-
+        return normalize_role_tags(values)
 
 class JobAnalysisStructured(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -230,23 +341,14 @@ class JobAnalysisStructured(BaseModel):
     @field_validator("role_tags")
     @classmethod
     def validate_role_tags(cls, values: list[str]) -> list[str]:
-        invalid_values = [value for value in values if value not in ROLE_TAGS]
-        if invalid_values:
-            raise ValueError(f"Invalid role tags: {invalid_values}")
-        return values
+        return normalize_role_tags(values)
 
     @field_validator("required_skills")
     @classmethod
     def validate_required_skills(cls, values: list[str]) -> list[str]:
-        invalid_values = [value for value in values if value not in SKILL_TAGS]
-        if invalid_values:
-            raise ValueError(f"Invalid required skills: {invalid_values}")
-        return values
+        return normalize_skill_tags(values)
 
     @field_validator("preferred_skills")
     @classmethod
     def validate_preferred_skills(cls, values: list[str]) -> list[str]:
-        invalid_values = [value for value in values if value not in SKILL_TAGS]
-        if invalid_values:
-            raise ValueError(f"Invalid preferred skills: {invalid_values}")
-        return values
+        return normalize_skill_tags(values)

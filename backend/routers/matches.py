@@ -19,7 +19,7 @@ MATCH_PROMPT_VERSION = "backend_match_v1"
 MAX_BATCH_MATCH_JOBS = 200
 
 REQUIRED_JOB_ANALYSIS_MODEL = "gpt-4.1-mini"
-REQUIRED_JOB_ANALYSIS_PROMPT_VERSION = "job_analysis_v5"
+REQUIRED_JOB_ANALYSIS_PROMPT_VERSION = "job_analysis_v6"
 
 
 def safe_json_loads(value, default):
@@ -103,17 +103,19 @@ def calculate_role_score(profile_json, profile_analysis, job_analysis):
 
 
 def calculate_role_tag_score(profile_analysis, job_analysis):
+    ignored_tags = {"other"}
+
     profile_tags = set(
         normalize_list(
             safe_json_loads(profile_analysis.target_role_tags_json, [])
         )
-    )
+    ) - ignored_tags
 
     job_tags = set(
         normalize_list(
             safe_json_loads(job_analysis.role_tags_json, [])
         )
-    )
+    ) - ignored_tags
 
     if not profile_tags or not job_tags:
         return 0
@@ -123,7 +125,14 @@ def calculate_role_tag_score(profile_analysis, job_analysis):
     if not matched_tags:
         return 0
 
-    return 100
+    job_coverage = len(matched_tags) / len(job_tags)
+    profile_coverage = len(matched_tags) / len(profile_tags)
+
+    return round(
+        job_coverage * 75
+        + profile_coverage * 25
+    )
+
 
 SKILL_ALIASES = {
     "rest api": "rest apis",
@@ -399,9 +408,9 @@ def calculate_dealbreaker_warnings(profile_analysis, job_analysis):
 def recommendation_from_score(score):
     if score >= 85:
         return "strong_apply"
-    if score >= 70:
+    if score >= 72:
         return "apply"
-    if score >= 50:
+    if score >= 58:
         return "maybe"
     return "weak_match"
 
@@ -444,6 +453,23 @@ def calculate_backend_match(profile, profile_analysis, job, job_analysis):
 
     if language_score <= 25:
         overall_score = min(overall_score, 55)
+
+    job_level = normalize_text(job_analysis.seniority_level)
+
+    if role_score == 0:
+        overall_score = min(overall_score, 45)
+
+    if role_score < 25 and skills_score < 40:
+        overall_score = min(overall_score, 45)
+
+    if role_score < 40 and skills_score < 30:
+        overall_score = min(overall_score, 50)
+
+    if job_level in ["senior", "lead", "executive"]:
+        overall_score = min(overall_score, 55)
+
+    if job_level in ["lead", "executive"]:
+        overall_score = min(overall_score, 45)
 
     strengths = []
     weaknesses = []
