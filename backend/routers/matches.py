@@ -16,7 +16,7 @@ router = APIRouter(
 
 MATCH_MODEL = "backend_rule_based"
 MATCH_PROMPT_VERSION = "backend_match_v1"
-MAX_BATCH_MATCH_JOBS = 200
+MAX_BATCH_MATCH_JOBS = 500
 
 REQUIRED_JOB_ANALYSIS_MODEL = "gpt-4.1-mini"
 REQUIRED_JOB_ANALYSIS_PROMPT_VERSION = "job_analysis_v6"
