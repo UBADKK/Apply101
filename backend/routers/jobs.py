@@ -4,6 +4,7 @@ import json
 
 from bs4 import BeautifulSoup
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from openai import OpenAI
 from datetime import datetime, timezone
@@ -11,6 +12,11 @@ from datetime import datetime, timezone
 from ..app.database import get_db
 from ..app import models, schemas
 from ..app.taxonomy import ROLE_FAMILIES, ROLE_SUBFAMILIES, ROLE_TAGS, SKILL_TAGS
+from ..app.analysis_contract import (
+    JOB_ANALYSIS_MODEL,
+    JOB_ANALYSIS_PROMPT_VERSION,
+)
+from ..app.job_analysis_sanitizer import sanitize_job_analysis_requirements
 
 
 client = OpenAI()
@@ -20,11 +26,61 @@ router = APIRouter(
     tags=["Jobs"]
 )
 
-JOB_ANALYSIS_MODEL = "gpt-4.1-mini"
-JOB_ANALYSIS_PROMPT_VERSION = "job_analysis_v6"
 
 MAX_ANALYZE_JOBS = 10
 MAX_ANALYZE_MISSING_JOBS = 100
+MAX_AUTOMATIC_ANALYSIS_FAILURES_PER_JOB = 3
+
+
+def is_recoverable_analysis_failure(error_message: str | None) -> bool:
+    """Failures fixed by deterministic parser fallbacks may be retried automatically."""
+    normalized_error = (error_message or "").lower()
+    return (
+        "invalid role subfamily" in normalized_error
+        or "invalid role family" in normalized_error
+    )
+
+
+def get_automatic_retry_blocked_job_ids(db: Session) -> set[int]:
+    repeated_failure_rows = (
+        db.query(
+            models.JobAnalysis.job_id,
+            func.count(models.JobAnalysis.analysis_id).label("failure_count"),
+        )
+        .filter(
+            models.JobAnalysis.analysis_status == "failed",
+            models.JobAnalysis.analysis_model == JOB_ANALYSIS_MODEL,
+            models.JobAnalysis.analysis_prompt_version == JOB_ANALYSIS_PROMPT_VERSION,
+        )
+        .group_by(models.JobAnalysis.job_id)
+        .having(
+            func.count(models.JobAnalysis.analysis_id)
+            >= MAX_AUTOMATIC_ANALYSIS_FAILURES_PER_JOB
+        )
+        .all()
+    )
+
+    blocked_job_ids: set[int] = set()
+
+    for job_id, _failure_count in repeated_failure_rows:
+        latest_failure = (
+            db.query(models.JobAnalysis)
+            .filter(
+                models.JobAnalysis.job_id == job_id,
+                models.JobAnalysis.analysis_status == "failed",
+                models.JobAnalysis.analysis_model == JOB_ANALYSIS_MODEL,
+                models.JobAnalysis.analysis_prompt_version == JOB_ANALYSIS_PROMPT_VERSION,
+            )
+            .order_by(models.JobAnalysis.analysis_id.desc())
+            .first()
+        )
+
+        if not latest_failure or not is_recoverable_analysis_failure(
+            latest_failure.analysis_error
+        ):
+            blocked_job_ids.add(job_id)
+
+    return blocked_job_ids
 
 
 def html_to_text(html: str) -> str:
@@ -585,8 +641,50 @@ def analyze_job(
     For seniority_level:
     - Use only: intern, junior, mid, senior, lead, executive, unknown.
 
+    Evidence rule for every hard requirement:
+    - A hard requirement is valid only when the job description explicitly states it.
+    - Store a short exact excerpt from the job title or description in the matching evidence field.
+    - The evidence must be copied from the title or description, not paraphrased or invented.
+    - If no exact excerpt supports the requirement, do not create that hard requirement.
+    - Do not infer requirements from company country, job location, listing language, onsite work, hybrid work, or general legal assumptions.
+    - A title may be used only when it explicitly states the requirement, such as "Werkstudent" or "Working Student".
+
+    For language_requirements:
+    - Return one object per explicitly hard-required language.
+    - Each object must contain: language, minimum_level, required, evidence.
+    - evidence must be an exact excerpt that explicitly mentions that language requirement.
+    - Never infer German merely because the listing is written in German or the job is in Germany.
+    - Never infer English merely because the company is international.
+    - minimum_level must be one of: a1, a2, b1, b2, c1, c2, native, unknown.
+    - Use an explicitly stated CEFR level exactly.
+    - Map "native" or "mother tongue" to native.
+    - Map "fluent", "business fluent", "professional proficiency", "fließend", or "verhandlungssicher" to c1.
+    - Map "very good", "advanced", or "sehr gute" to b2.
+    - Map "basic knowledge" or "Grundkenntnisse" to a2.
+    - For vague wording such as "good", "secure", "language skills", "gute Kenntnisse", or "sichere Kenntnisse", use unknown rather than inventing a CEFR level.
+    - Do not include optional or preferred languages with required=true.
+
     For visa_sponsorship:
     - Use only: yes, no, unknown.
+    - Also return visa_sponsorship_evidence.
+    - Use yes or no only when sponsorship availability is explicitly stated and supported by an exact excerpt.
+    - If sponsorship is not mentioned, use unknown and null evidence.
+
+    For hard_requirements:
+    - student_enrollment_required: true when active university enrollment is explicitly mandatory.
+    - Treat an explicit "Werkstudent" or "Working Student" role label as requiring active enrollment.
+    - student_enrollment_evidence: exact supporting title or description excerpt, otherwise null.
+    - work_authorization: use germany when an existing valid right to work in Germany is explicitly mandatory; eu_eea when EU/EEA status is explicitly mandatory; any_valid when existing local authorization is explicitly required but the exact type is unclear; none when no hard authorization requirement is stated; unknown only when authorization is discussed ambiguously.
+    - work_authorization_evidence: exact supporting excerpt, otherwise null.
+    - Do not infer work authorization from the fact that the job is located in Germany or requires onsite/hybrid work.
+    - residency: use germany, eu_eea, specific_location, none, or unknown.
+    - residency is a hard requirement only when the candidate must already reside in the stated place at application time.
+    - Do not infer residency from office location, job location, commuting expectations, onsite work, hybrid work, or possible relocation.
+    - residency_locations: list required residence locations only when explicit current residence is mandatory; otherwise return an empty list.
+    - residency_evidence: exact supporting excerpt, otherwise null.
+    - minimum_years_experience: return the minimum explicitly mandatory years as a number, or null when no numeric hard minimum is stated.
+    - minimum_years_experience_evidence: exact supporting excerpt containing the number of years, otherwise null.
+    - Do not convert preferred, ideal, advantageous, or "first experience" wording into a numeric hard requirement.
 
     For work_type:
     - Use only: remote, hybrid, onsite, unknown.
@@ -597,11 +695,10 @@ def analyze_job(
     - Do not use "full-time", "part-time", or "working-student".
 
     Dealbreaker rules:
-    - Only include hard requirements in dealbreakers.
-    - Do not include preferred, advantageous, nice-to-have, or optional qualifications in dealbreakers.
-    - If German is required, include it in language_requirements and dealbreakers if relevant.
-    - If EU work authorization is required, include it in dealbreakers.
-    - For working student roles, if university enrollment is required, include student enrollment requirement in dealbreakers.
+    - Only include hard requirements supported by exact evidence excerpts.
+    - Do not include preferred, advantageous, nice-to-have, optional, assumed, or legally typical qualifications.
+    - Keep dealbreakers consistent with the structured language_requirements and hard_requirements fields.
+    - For working student roles, set student_enrollment_required=true when the title or description explicitly says "Werkstudent" or "Working Student".
 
     Allowed role families:
     {json.dumps(ROLE_FAMILIES, ensure_ascii=False)}
@@ -676,6 +773,14 @@ def analyze_job(
 
         validated_analysis = schemas.JobAnalysisStructured.model_validate(analysis)
         analysis = validated_analysis.model_dump()
+        analysis_source_text = "\n".join([
+            job.title or "",
+            job.description_text or "",
+        ])
+        analysis = sanitize_job_analysis_requirements(
+            analysis,
+            analysis_source_text,
+        )
 
         db.query(models.JobAnalysis).filter(
             models.JobAnalysis.job_id == job.job_id,
@@ -715,7 +820,10 @@ def analyze_job(
                 ensure_ascii=False
             ),
             dealbreakers_json=json.dumps(
-                analysis.get("dealbreakers", []),
+                {
+                    "hard_requirements": analysis.get("hard_requirements", {}),
+                    "notes": analysis.get("dealbreakers", []),
+                },
                 ensure_ascii=False
             ),
 
@@ -786,12 +894,21 @@ def analyze_missing_jobs(
         )
     )
 
+    automatic_retry_blocked_job_ids = get_automatic_retry_blocked_job_ids(db)
+
+    job_filters = [
+        models.Job.description_text.isnot(None),
+        ~models.Job.job_id.in_(completed_analysis_job_ids),
+    ]
+
+    if automatic_retry_blocked_job_ids:
+        job_filters.append(
+            ~models.Job.job_id.in_(automatic_retry_blocked_job_ids)
+        )
+
     jobs = (
         db.query(models.Job)
-        .filter(
-            models.Job.description_text.isnot(None),
-            ~models.Job.job_id.in_(completed_analysis_job_ids)
-        )
+        .filter(*job_filters)
         .order_by(models.Job.job_id.desc())
         .limit(limit)
         .all()
@@ -804,6 +921,7 @@ def analyze_missing_jobs(
             "max_allowed_limit": MAX_ANALYZE_MISSING_JOBS,
             "analyzed_count": 0,
             "failed_count": 0,
+            "automatic_retry_blocked_count": len(automatic_retry_blocked_job_ids),
             "results": []
         }
 
@@ -865,6 +983,7 @@ def analyze_missing_jobs(
         "selected_job_count": len(jobs),
         "analyzed_count": analyzed_count,
         "failed_count": failed_count,
+        "automatic_retry_blocked_count": len(automatic_retry_blocked_job_ids),
         "results": results
     }
 

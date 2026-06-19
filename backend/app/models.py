@@ -71,6 +71,9 @@ class CandidateProfile(Base):
     years_of_experience = Column(Float, nullable=True)
     seniority_target = Column(String, nullable=True)
 
+    current_residence_country = Column(String, nullable=True)
+    student_status = Column(String, nullable=True)
+
     created_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, nullable=True)
 

@@ -13,6 +13,10 @@ from datetime import datetime, timezone
 from ..app.database import get_db
 from ..app import models, schemas
 from ..app.taxonomy import ROLE_FAMILIES, ROLE_TAGS, SKILL_TAGS
+from ..app.analysis_contract import (
+    PROFILE_ANALYSIS_MODEL,
+    PROFILE_ANALYSIS_PROMPT_VERSION,
+)
 
 client = OpenAI()
 
@@ -21,8 +25,6 @@ router = APIRouter(
     tags=["Candidate Profiles"]
 )
 
-PROFILE_ANALYSIS_MODEL = "gpt-4.1-mini"
-PROFILE_ANALYSIS_PROMPT_VERSION = "profile_analysis_v4"
 
 
 def build_languages_text(languages: list[models.UserLanguage]) -> str:
@@ -94,6 +96,13 @@ def create_candidate_profile(
         preferred_work_type=profile.preferred_work_type,
         preferred_technologies=profile.preferred_technologies,
         extra_preferences=profile.extra_preferences,
+        visa_sponsorship_needed=profile.visa_sponsorship_needed,
+        work_authorization_status=profile.work_authorization_status,
+        relocation_preference=profile.relocation_preference,
+        years_of_experience=profile.years_of_experience,
+        seniority_target=profile.seniority_target,
+        current_residence_country=profile.current_residence_country,
+        student_status=profile.student_status,
     )
 
     db.add(new_profile)
@@ -122,6 +131,49 @@ def create_candidate_profile(
     db.refresh(new_profile)
 
     return new_profile
+
+
+@router.patch("/{user_id}/profiles/{profile_id}", response_model=schemas.CandidateProfileResponse)
+def update_candidate_profile(
+    user_id: int,
+    profile_id: int,
+    profile_update: schemas.CandidateProfileUpdate,
+    db: Session = Depends(get_db),
+):
+    profile = db.query(models.CandidateProfile).filter(
+        models.CandidateProfile.profile_id == profile_id,
+        models.CandidateProfile.user_id == user_id,
+    ).first()
+
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    update_data = profile_update.model_dump(exclude_unset=True)
+    languages = update_data.pop("languages", None)
+
+    for field, value in update_data.items():
+        setattr(profile, field, value)
+
+    if languages is not None:
+        db.query(models.UserLanguage).filter(
+            models.UserLanguage.user_id == user_id
+        ).delete()
+
+        now = datetime.now(timezone.utc)
+        for language in languages:
+            db.add(models.UserLanguage(
+                user_id=user_id,
+                language_code=language["language_code"],
+                language_name=language["language_name"],
+                proficiency_level=language.get("proficiency_level"),
+                proficiency_scale=language.get("proficiency_scale") or "CEFR",
+                is_primary=language.get("is_primary", False),
+                created_at=now,
+            ))
+
+    db.commit()
+    db.refresh(profile)
+    return profile
 
 
 #PDF Upload
@@ -185,7 +237,9 @@ def get_analyzed_profiles(
         .filter(
             models.CandidateProfile.user_id == user_id,
             models.ProfileAnalysis.is_current == True,
-            models.ProfileAnalysis.analysis_status == "completed"
+            models.ProfileAnalysis.analysis_status == "completed",
+            models.ProfileAnalysis.analysis_model == PROFILE_ANALYSIS_MODEL,
+            models.ProfileAnalysis.analysis_prompt_version == PROFILE_ANALYSIS_PROMPT_VERSION
         )
         .all()
     )
@@ -212,6 +266,8 @@ def get_analyzed_profiles(
             "relocation_preference": profile.relocation_preference,
             "years_of_experience": profile.years_of_experience,
             "seniority_target": profile.seniority_target,
+            "current_residence_country": profile.current_residence_country,
+            "student_status": profile.student_status,
 
             "analysis": {
                 "analysis_id": analysis.analysis_id,
@@ -334,8 +390,15 @@ Do not invent skills, experience, languages, authorization, education, or reloca
 Use "unknown" for unclear free-text string fields.
 For taxonomy fields such as current_role_family, target_role_families, and target_role_tags, use only the allowed taxonomy values.
 For taxonomy fields, use "other" if unclear or if none of the allowed values fit.
-For years_of_experience, use 0 if there is no clear experience.
-For visa_sponsorship_needed, use true only if the profile clearly says sponsorship is needed.
+For years_of_experience, use null if there is no clear evidence.
+For visa_sponsorship_needed, use only: yes, no, unknown.
+- Use yes when the candidate clearly needs employer sponsorship for the target country.
+- Use no when the candidate clearly has valid authorization for the target country.
+- Use unknown when the available data is not enough.
+For work_authorization_status, use only: germany, eu_eea, other_country_only, none, unknown.
+For student_status, use only: currently_enrolled, not_enrolled, unknown.
+For current_residence_country, return a lowercase country name or unknown.
+Do not treat a completed degree as current student enrollment.
 
 Use only the allowed canonical taxonomy values where applicable.
 
@@ -390,6 +453,8 @@ Visa and relocation:
 Visa sponsorship needed: {profile.visa_sponsorship_needed}
 Work authorization status: {profile.work_authorization_status or ""}
 Relocation preference: {profile.relocation_preference or ""}
+Current residence country: {profile.current_residence_country or ""}
+Student status: {profile.student_status or ""}
 
 Experience and seniority:
 Years of experience: {profile.years_of_experience if profile.years_of_experience is not None else "unknown"}
@@ -483,7 +548,11 @@ CV text:
                 ensure_ascii=False
             ),
 
-            visa_sponsorship_needed=analysis.get("visa_sponsorship_needed"),
+            visa_sponsorship_needed=(
+                True if analysis.get("visa_sponsorship_needed") == "yes"
+                else False if analysis.get("visa_sponsorship_needed") == "no"
+                else None
+            ),
             work_authorization_status=analysis.get("work_authorization_status"),
             relocation_preference=analysis.get("relocation_preference"),
 

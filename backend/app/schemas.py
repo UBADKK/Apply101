@@ -3,6 +3,36 @@ from typing import Literal
 
 from .taxonomy import ROLE_FAMILIES, ROLE_SUBFAMILIES, ROLE_TAGS, SKILL_TAGS
 
+
+ROLE_FAMILY_ALIASES = {
+    "software": "engineering",
+    "software_engineering": "engineering",
+    "hardware": "engineering",
+    "hardware_engineering": "engineering",
+    "embedded": "engineering",
+    "embedded_engineering": "engineering",
+}
+
+ROLE_SUBFAMILY_ALIASES = {
+    "embedded_engineering": "software_engineering_general",
+    "embedded_software_engineering": "software_engineering_general",
+    "firmware_engineering": "software_engineering_general",
+    "firmware_development": "software_engineering_general",
+    "hardware_engineering": "other",
+    "electronics_engineering": "other",
+    "electrical_engineering": "other",
+}
+
+
+def normalize_taxonomy_value(
+    raw_value: str,
+    allowed_values: list[str],
+    aliases: dict[str, str],
+) -> str:
+    value = str(raw_value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    value = aliases.get(value, value)
+    return value if value in allowed_values else "other"
+
 ROLE_TAG_ALIASES = {
     "rest_api": "api_development",
     "rest_apis": "api_development",
@@ -144,13 +174,6 @@ class UserResponse(BaseModel):
         from_attributes = True
 
 
-class ProfileLanguageItem(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    language: str
-    level: str
-    scale: str
-
-
 class UserLanguageInput(BaseModel):
     language_code: str
     language_name: str
@@ -171,6 +194,40 @@ class CandidateProfileCreate(BaseModel):
     preferred_technologies: str | None = None
     extra_preferences: str | None = None
 
+    visa_sponsorship_needed: bool | None = None
+    work_authorization_status: Literal[
+        "germany", "eu_eea", "other_country_only", "none", "unknown"
+    ] | None = None
+    relocation_preference: str | None = None
+    years_of_experience: float | None = None
+    seniority_target: str | None = None
+    current_residence_country: str | None = None
+    student_status: Literal[
+        "currently_enrolled", "not_enrolled", "unknown"
+    ] | None = None
+
+    languages: list[UserLanguageInput] | None = None
+
+
+class CandidateProfileUpdate(BaseModel):
+    self_description: str | None = None
+    target_role: str | None = None
+    secondary_target_role: str | None = None
+    target_location: str | None = None
+    preferred_work_type: str | None = None
+    preferred_technologies: str | None = None
+    extra_preferences: str | None = None
+    visa_sponsorship_needed: bool | None = None
+    work_authorization_status: Literal[
+        "germany", "eu_eea", "other_country_only", "none", "unknown"
+    ] | None = None
+    relocation_preference: str | None = None
+    years_of_experience: float | None = None
+    seniority_target: str | None = None
+    current_residence_country: str | None = None
+    student_status: Literal[
+        "currently_enrolled", "not_enrolled", "unknown"
+    ] | None = None
     languages: list[UserLanguageInput] | None = None
 
 
@@ -192,6 +249,14 @@ class CandidateProfileResponse(BaseModel):
 
     preferred_technologies: str | None = None
     extra_preferences: str | None = None
+
+    visa_sponsorship_needed: bool | None = None
+    work_authorization_status: str | None = None
+    relocation_preference: str | None = None
+    years_of_experience: float | None = None
+    seniority_target: str | None = None
+    current_residence_country: str | None = None
+    student_status: str | None = None
 
     is_active: bool
 
@@ -229,8 +294,89 @@ class MatchResult(BaseModel):
         "strong_apply",
         "apply",
         "maybe",
-        "weak_match"
+        "weak_match",
+        "manual_review",
+        "ineligible",
     ]
+
+
+CEFR_LEVELS = {"a1", "a2", "b1", "b2", "c1", "c2", "native", "unknown"}
+LANGUAGE_LEVEL_ALIASES = {
+    "beginner": "a1",
+    "basic": "a2",
+    "elementary": "a2",
+    "intermediate": "b1",
+    "upper_intermediate": "b2",
+    "upper-intermediate": "b2",
+    "good": "b2",
+    "professional": "c1",
+    "business_fluent": "c1",
+    "business-fluent": "c1",
+    "fluent": "c1",
+    "advanced": "c1",
+    "mother_tongue": "native",
+    "mother-tongue": "native",
+    "native_speaker": "native",
+}
+
+
+def normalize_language_level(value: str) -> str:
+    normalized = str(value or "unknown").strip().lower().replace(" ", "_")
+    normalized = LANGUAGE_LEVEL_ALIASES.get(normalized, normalized)
+    return normalized if normalized in CEFR_LEVELS else "unknown"
+
+
+class ProfileLanguageItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    language: str
+    level: str
+    scale: str
+
+    @field_validator("language")
+    @classmethod
+    def normalize_language(cls, value: str) -> str:
+        return str(value or "unknown").strip().lower()
+
+    @field_validator("level")
+    @classmethod
+    def normalize_level(cls, value: str) -> str:
+        return normalize_language_level(value)
+
+
+class JobLanguageRequirement(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    language: str
+    minimum_level: Literal["a1", "a2", "b1", "b2", "c1", "c2", "native", "unknown"]
+    required: bool
+    evidence: str | None
+
+    @field_validator("language")
+    @classmethod
+    def normalize_language(cls, value: str) -> str:
+        return str(value or "unknown").strip().lower()
+
+    @field_validator("minimum_level", mode="before")
+    @classmethod
+    def normalize_minimum_level(cls, value: str) -> str:
+        return normalize_language_level(value)
+
+
+class JobHardRequirements(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    student_enrollment_required: bool
+    student_enrollment_evidence: str | None
+    work_authorization: Literal[
+        "germany", "eu_eea", "any_valid", "none", "unknown"
+    ]
+    work_authorization_evidence: str | None
+    residency: Literal[
+        "germany", "eu_eea", "specific_location", "none", "unknown"
+    ]
+    residency_locations: list[str]
+    residency_evidence: str | None
+    minimum_years_experience: float | None
+    minimum_years_experience_evidence: str | None
 
 
 class ProfileAnalysisStructured(BaseModel):
@@ -250,7 +396,7 @@ class ProfileAnalysisStructured(BaseModel):
     tools: list[str]
     industries: list[str]
 
-    years_of_experience: float
+    years_of_experience: float | None
     seniority_level: Literal[
         "intern", "junior", "mid", "senior", "lead", "executive", "unknown"
     ]
@@ -261,9 +407,15 @@ class ProfileAnalysisStructured(BaseModel):
 
     languages: list[ProfileLanguageItem]
 
-    visa_sponsorship_needed: bool
-    work_authorization_status: str
+    visa_sponsorship_needed: Literal["yes", "no", "unknown"]
+    work_authorization_status: Literal[
+        "germany", "eu_eea", "other_country_only", "none", "unknown"
+    ]
     relocation_preference: str
+    current_residence_country: str
+    student_status: Literal[
+        "currently_enrolled", "not_enrolled", "unknown"
+    ]
     match_notes: list[str]
 
     @field_validator("current_role_family")
@@ -281,11 +433,16 @@ class ProfileAnalysisStructured(BaseModel):
             raise ValueError(f"Invalid role families: {invalid_values}")
         return values
 
-
     @field_validator("target_role_tags")
     @classmethod
     def validate_target_role_tags(cls, values: list[str]) -> list[str]:
         return normalize_role_tags(values)
+
+    @field_validator("current_residence_country")
+    @classmethod
+    def normalize_country(cls, value: str) -> str:
+        return str(value or "unknown").strip().lower()
+
 
 class JobAnalysisStructured(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -305,9 +462,10 @@ class JobAnalysisStructured(BaseModel):
         "intern", "junior", "mid", "senior", "lead", "executive", "unknown"
     ]
 
-    language_requirements: list[str]
+    language_requirements: list[JobLanguageRequirement]
 
     visa_sponsorship: Literal["yes", "no", "unknown"]
+    visa_sponsorship_evidence: str | None
 
     work_type: Literal["remote", "hybrid", "onsite", "unknown"]
 
@@ -322,21 +480,26 @@ class JobAnalysisStructured(BaseModel):
         "unknown"
     ]
 
+    hard_requirements: JobHardRequirements
     dealbreakers: list[str]
 
     @field_validator("role_family")
     @classmethod
     def validate_role_family(cls, value: str) -> str:
-        if value not in ROLE_FAMILIES:
-            raise ValueError(f"Invalid role family: {value}")
-        return value
+        return normalize_taxonomy_value(
+            value,
+            ROLE_FAMILIES,
+            ROLE_FAMILY_ALIASES,
+        )
 
     @field_validator("role_subfamily")
     @classmethod
     def validate_role_subfamily(cls, value: str) -> str:
-        if value not in ROLE_SUBFAMILIES:
-            raise ValueError(f"Invalid role subfamily: {value}")
-        return value
+        return normalize_taxonomy_value(
+            value,
+            ROLE_SUBFAMILIES,
+            ROLE_SUBFAMILY_ALIASES,
+        )
 
     @field_validator("role_tags")
     @classmethod
