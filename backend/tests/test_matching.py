@@ -92,8 +92,8 @@ class MatchingContractTests(unittest.TestCase):
         self.assertEqual(PROFILE_ANALYSIS_MODEL, "gpt-4.1-mini")
         self.assertEqual(PROFILE_ANALYSIS_PROMPT_VERSION, "profile_analysis_v5")
         self.assertEqual(JOB_ANALYSIS_MODEL, "gpt-4.1-mini")
-        self.assertEqual(JOB_ANALYSIS_PROMPT_VERSION, "job_analysis_v12")
-        self.assertEqual(MATCH_VERSION, "backend_match_v5")
+        self.assertEqual(JOB_ANALYSIS_PROMPT_VERSION, "job_analysis_v13")
+        self.assertEqual(MATCH_VERSION, "backend_match_v6")
 
     def test_work_type_preferences_support_multiple_values(self):
         self.assertEqual(
@@ -716,6 +716,161 @@ class MatchingContractTests(unittest.TestCase):
             skill_match_score(["python", "other"], ["python", "other"]),
             50,
         )
+
+    def test_german_speaking_title_creates_unknown_level_requirement(self):
+        analysis = {
+            "employment_type": "full_time",
+            "language_requirements": [],
+            "visa_sponsorship": "unknown",
+            "visa_sponsorship_evidence": None,
+            "hard_requirements": {
+                "student_enrollment_required": False,
+                "student_enrollment_evidence": None,
+                "work_authorization": "none",
+                "work_authorization_evidence": None,
+                "residency": "none",
+                "residency_locations": [],
+                "residency_evidence": None,
+                "minimum_years_experience": None,
+                "minimum_years_experience_evidence": None,
+            },
+            "dealbreakers": [],
+        }
+        source_text = (
+            "Teamleiter im Finanzvertrieb (German Speaking)\n"
+            "Lead and coach a team of financial advisors."
+        )
+
+        sanitized = sanitize_job_analysis_requirements(analysis, source_text)
+
+        self.assertEqual(len(sanitized["language_requirements"]), 1)
+        requirement = sanitized["language_requirements"][0]
+        self.assertEqual(requirement["language"], "german")
+        self.assertEqual(requirement["minimum_level"], "unknown")
+        self.assertEqual(requirement["evidence"].casefold(), "german speaking")
+
+    def test_unknown_required_language_level_needs_manual_review(self):
+        job_analysis = self.make_job_analysis(languages=[{
+            "language": "german",
+            "minimum_level": "unknown",
+            "required": True,
+        }])
+
+        failures, reviews = evaluate_hard_requirements(
+            self.profile, self.profile_analysis, job_analysis
+        )
+
+        self.assertEqual(failures, [])
+        self.assertIn(
+            "required_language_level_unknown",
+            {issue["code"] for issue in reviews},
+        )
+
+    def test_very_good_language_wording_is_normalized_to_c1(self):
+        analysis = {
+            "employment_type": "full_time",
+            "language_requirements": [],
+            "visa_sponsorship": "unknown",
+            "visa_sponsorship_evidence": None,
+            "hard_requirements": {
+                "student_enrollment_required": False,
+                "student_enrollment_evidence": None,
+                "work_authorization": "none",
+                "work_authorization_evidence": None,
+                "residency": "none",
+                "residency_locations": [],
+                "residency_evidence": None,
+                "minimum_years_experience": None,
+                "minimum_years_experience_evidence": None,
+            },
+            "dealbreakers": [],
+        }
+        source_text = "Sehr gute Deutsch/- und Englischkenntnisse in Wort und Schrift."
+
+        sanitized = sanitize_job_analysis_requirements(analysis, source_text)
+        levels = {
+            item["language"]: item["minimum_level"]
+            for item in sanitized["language_requirements"]
+        }
+
+        self.assertEqual(levels, {"german": "c1", "english": "c1"})
+
+    def test_language_alternatives_are_grouped_and_evaluated_as_or(self):
+        analysis = {
+            "employment_type": "internship",
+            "language_requirements": [
+                {
+                    "language": "german",
+                    "minimum_level": "native",
+                    "required": True,
+                    "evidence": "Native-level proficiency in at least one of German, French or Italian",
+                },
+                {
+                    "language": "french",
+                    "minimum_level": "native",
+                    "required": True,
+                    "evidence": "Native-level proficiency in at least one of German, French or Italian",
+                },
+                {
+                    "language": "italian",
+                    "minimum_level": "native",
+                    "required": True,
+                    "evidence": "Native-level proficiency in at least one of German, French or Italian",
+                },
+            ],
+            "visa_sponsorship": "unknown",
+            "visa_sponsorship_evidence": None,
+            "hard_requirements": {
+                "student_enrollment_required": False,
+                "student_enrollment_evidence": None,
+                "work_authorization": "none",
+                "work_authorization_evidence": None,
+                "residency": "none",
+                "residency_locations": [],
+                "residency_evidence": None,
+                "minimum_years_experience": None,
+                "minimum_years_experience_evidence": None,
+            },
+            "dealbreakers": [],
+        }
+        source_text = (
+            "Native-level proficiency in at least one of German, French or Italian, "
+            "combined with very good English."
+        )
+        sanitized = sanitize_job_analysis_requirements(analysis, source_text)
+        grouped = [
+            item for item in sanitized["language_requirements"]
+            if item.get("alternative_group")
+        ]
+
+        self.assertEqual(len(grouped), 3)
+        self.assertEqual(
+            {item["alternative_group"] for item in grouped},
+            {"language_alternative_1"},
+        )
+
+        job_analysis = self.make_job_analysis(languages=grouped)
+        failures, reviews = evaluate_hard_requirements(
+            self.profile, self.profile_analysis, job_analysis
+        )
+        self.assertEqual(reviews, [])
+        self.assertEqual(
+            [issue["code"] for issue in failures],
+            ["required_language_alternative_not_met"],
+        )
+
+        native_profile_analysis = SimpleNamespace(
+            analysis_json=self.profile_analysis.analysis_json,
+            languages_json=json.dumps([
+                {"language": "german", "level": "native", "scale": "CEFR"},
+                {"language": "english", "level": "c1", "scale": "CEFR"},
+            ]),
+        )
+        passing_failures, passing_reviews = evaluate_hard_requirements(
+            self.profile, native_profile_analysis, job_analysis
+        )
+        self.assertEqual(passing_failures, [])
+        self.assertEqual(passing_reviews, [])
 
     def test_employment_type_mismatch_is_nonblocking_warning(self):
         job_analysis = self.make_job_analysis(visa_sponsorship="yes")

@@ -30,6 +30,37 @@ EXPLICIT_LANGUAGE_REQUIREMENT_MARKERS = re.compile(
     flags=re.IGNORECASE,
 )
 
+SOFT_LANGUAGE_REQUIREMENT_MARKERS = re.compile(
+    r"\b(?:preferred|preferably|nice\s+to\s+have|optional|bonus|"
+    r"wünschenswert|wuenschenswert|von\s+vorteil|ideally|idealerweise)\b",
+    flags=re.IGNORECASE,
+)
+
+TITLE_LANGUAGE_REQUIREMENT_PATTERNS = {
+    "german": [
+        r"\bgerman[ -]speaking\b",
+        r"\bdeutschsprachig(?:e|er|es|en)?\b",
+    ],
+    "english": [
+        r"\benglish[ -]speaking\b",
+        r"\benglischsprachig(?:e|er|es|en)?\b",
+    ],
+    "french": [r"\bfrench[ -]speaking\b"],
+    "spanish": [r"\bspanish[ -]speaking\b"],
+    "italian": [r"\bitalian[ -]speaking\b"],
+}
+
+QUALITATIVE_LANGUAGE_REQUIREMENT_PATTERNS = [
+    r"\bsehr\s+gute(?:n|r|s)?\b[^.\n;]{0,160}",
+    r"\bvery\s+good\b[^.\n;]{0,160}",
+]
+
+ALTERNATIVE_LANGUAGE_MARKERS = [
+    r"\bat\s+least\s+one\s+of\b",
+    r"\bone\s+of\b",
+    r"\bmindestens\s+eine(?:r|s)?\s+(?:der|von)\b",
+]
+
 WORK_AUTHORIZATION_EVIDENCE_TERMS = {
     "work authorization",
     "right to work",
@@ -379,6 +410,137 @@ def infer_explicit_language_requirements(
     return list(best_by_language.values())
 
 
+def infer_title_language_requirements(
+    source_text: str | None,
+) -> list[dict]:
+    """Treat explicit title labels such as 'German Speaking' as mandatory."""
+    text = str(source_text or "")
+    title = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    requirements = []
+
+    for language, patterns in TITLE_LANGUAGE_REQUIREMENT_PATTERNS.items():
+        evidence = find_exact_pattern_excerpt(title, patterns)
+        if evidence:
+            requirements.append({
+                "language": language,
+                "minimum_level": "unknown",
+                "required": True,
+                "evidence": evidence,
+            })
+
+    return requirements
+
+
+def _context_has_soft_language_marker(
+    source_text: str,
+    match: re.Match[str],
+) -> bool:
+    start = max(0, match.start() - 70)
+    end = min(len(source_text), match.end() + 70)
+    return SOFT_LANGUAGE_REQUIREMENT_MARKERS.search(source_text[start:end]) is not None
+
+
+def infer_qualitative_language_requirements(
+    source_text: str | None,
+) -> list[dict]:
+    """Normalize explicit 'very good / sehr gute' language wording to C1."""
+    text = str(source_text or "")
+    inferred: dict[str, dict] = {}
+
+    for pattern in QUALITATIVE_LANGUAGE_REQUIREMENT_PATTERNS:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE | re.DOTALL):
+            if _context_has_soft_language_marker(text, match):
+                continue
+            evidence = match.group(0).strip(" \t\r\n-–—•,.;:()[]")
+            for language, aliases in LANGUAGE_EVIDENCE_ALIASES.items():
+                if evidence_contains_any(evidence, aliases):
+                    inferred[language] = {
+                        "language": language,
+                        "minimum_level": "c1",
+                        "required": True,
+                        "evidence": evidence,
+                    }
+
+    return list(inferred.values())
+
+
+def _sentence_around_match(text: str, match: re.Match[str]) -> str:
+    left_candidates = [text.rfind(separator, 0, match.start()) for separator in ("\n", ".", ";", "•")]
+    right_candidates = [text.find(separator, match.end()) for separator in ("\n", ".", ";", "•")]
+    start = max(left_candidates) + 1
+    valid_right = [value for value in right_candidates if value >= 0]
+    end = min(valid_right) if valid_right else min(len(text), match.end() + 180)
+    return text[start:end].strip(" \t\r\n-–—•,.;:()[]")
+
+
+def _infer_language_level_from_evidence(evidence: str) -> str:
+    explicit = re.search(r"\b(a1|a2|b1|b2|c1|c2)\b", evidence, flags=re.IGNORECASE)
+    if explicit:
+        return explicit.group(1).casefold()
+    if re.search(r"\b(?:native(?:[- ]level)?|mother\s+tongue|muttersprachlich)\b", evidence, flags=re.IGNORECASE):
+        return "native"
+    if re.search(
+        r"\b(?:fluent|business\s+fluent|professional\s+proficiency|"
+        r"fließend|fliessend|verhandlungssicher|very\s+good|sehr\s+gute)\b",
+        evidence,
+        flags=re.IGNORECASE,
+    ):
+        return "c1"
+    return "unknown"
+
+
+def infer_alternative_language_groups(
+    source_text: str | None,
+) -> list[dict]:
+    """Infer OR language groups such as 'at least one of German, French or Italian'."""
+    text = str(source_text or "")
+    groups = []
+    group_number = 1
+    seen_marker_positions: list[int] = []
+
+    for pattern in ALTERNATIVE_LANGUAGE_MARKERS:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            if any(abs(match.start() - position) <= 20 for position in seen_marker_positions):
+                continue
+            seen_marker_positions.append(match.start())
+            evidence = _sentence_around_match(text, match)
+            if _context_has_soft_language_marker(text, match):
+                continue
+
+            list_tail = text[match.end():match.end() + 180]
+            qualifier_boundary = re.search(
+                r",\s*(?:combined|together|plus|along\s+with|with)\b|[;\n.]",
+                list_tail,
+                flags=re.IGNORECASE,
+            )
+            language_list_text = (
+                list_tail[:qualifier_boundary.start()]
+                if qualifier_boundary
+                else list_tail
+            )
+
+            languages = []
+            for language, aliases in LANGUAGE_EVIDENCE_ALIASES.items():
+                if evidence_contains_any(language_list_text, aliases):
+                    languages.append(language)
+
+            if len(languages) < 2:
+                continue
+
+            group_id = f"language_alternative_{group_number}"
+            group_number += 1
+            level = _infer_language_level_from_evidence(evidence)
+            groups.append({
+                "group_id": group_id,
+                "languages": languages,
+                "minimum_level": level,
+                "minimum_required_count": 1,
+                "evidence": evidence,
+            })
+
+    return groups
+
+
 def normalize_evidence_text(value: str | None) -> str:
     text = str(value or "").casefold()
     text = re.sub(r"\s+", " ", text)
@@ -456,15 +618,99 @@ def merge_language_requirements(
     return [merged[language] for language in order]
 
 
+def replace_language_requirements(
+    requirements: list[dict],
+    authoritative: list[dict],
+) -> list[dict]:
+    """Replace a language requirement when deterministic evidence is stronger."""
+    merged = {
+        normalize_evidence_text(item.get("language")): item
+        for item in requirements
+        if normalize_evidence_text(item.get("language"))
+    }
+    order = [
+        normalize_evidence_text(item.get("language"))
+        for item in requirements
+        if normalize_evidence_text(item.get("language"))
+    ]
+
+    for item in authoritative:
+        language = normalize_evidence_text(item.get("language"))
+        if not language:
+            continue
+        if language not in merged:
+            order.append(language)
+        merged[language] = item
+
+    return [merged[language] for language in order]
+
+
+def apply_alternative_language_groups(
+    requirements: list[dict],
+    groups: list[dict],
+) -> list[dict]:
+    by_language = {
+        normalize_evidence_text(item.get("language")): dict(item)
+        for item in requirements
+        if normalize_evidence_text(item.get("language"))
+    }
+    order = list(by_language)
+
+    for group in groups:
+        for language in group["languages"]:
+            requirement = by_language.get(language, {
+                "language": language,
+                "minimum_level": group["minimum_level"],
+                "required": True,
+                "evidence": group["evidence"],
+            })
+            if LANGUAGE_LEVEL_ORDER.get(group["minimum_level"], 0) > LANGUAGE_LEVEL_ORDER.get(
+                normalize_evidence_text(requirement.get("minimum_level", "unknown")),
+                0,
+            ):
+                requirement["minimum_level"] = group["minimum_level"]
+                requirement["evidence"] = group["evidence"]
+            requirement["alternative_group"] = group["group_id"]
+            requirement["minimum_required_count"] = group["minimum_required_count"]
+            requirement["alternative_group_evidence"] = group["evidence"]
+            if language not in by_language:
+                order.append(language)
+            by_language[language] = requirement
+
+    return [by_language[language] for language in order]
+
+
 def build_structured_dealbreaker_notes(analysis: dict) -> list[str]:
     notes: list[str] = []
+
+    grouped_requirements: dict[str, list[dict]] = {}
+    ungrouped_requirements = []
 
     for requirement in analysis.get("language_requirements", []):
         if not requirement.get("required"):
             continue
+        group_id = requirement.get("alternative_group")
+        if group_id:
+            grouped_requirements.setdefault(group_id, []).append(requirement)
+        else:
+            ungrouped_requirements.append(requirement)
+
+    for requirement in ungrouped_requirements:
         language = requirement.get("language", "unknown")
         level = requirement.get("minimum_level", "unknown")
         notes.append(f"Required language: {language} (minimum {level}).")
+
+    for requirements in grouped_requirements.values():
+        languages = ", ".join(
+            requirement.get("language", "unknown")
+            for requirement in requirements
+        )
+        level = requirements[0].get("minimum_level", "unknown")
+        minimum_count = requirements[0].get("minimum_required_count", 1)
+        notes.append(
+            f"Required language alternative: at least {minimum_count} of "
+            f"{languages} (minimum {level})."
+        )
 
     visa_sponsorship = analysis.get("visa_sponsorship", "unknown")
     if visa_sponsorship == "no":
@@ -509,10 +755,22 @@ def sanitize_job_analysis_requirements(
         ):
             supported_languages.append(requirement)
 
-    inferred_languages = infer_explicit_language_requirements(source_text)
-    analysis["language_requirements"] = merge_language_requirements(
+    inferred_title_languages = infer_title_language_requirements(source_text)
+    inferred_qualitative_languages = infer_qualitative_language_requirements(
+        source_text
+    )
+    inferred_explicit_languages = infer_explicit_language_requirements(source_text)
+    merged_languages = merge_language_requirements(
         supported_languages,
-        inferred_languages,
+        [*inferred_title_languages, *inferred_qualitative_languages],
+    )
+    merged_languages = replace_language_requirements(
+        merged_languages,
+        inferred_explicit_languages,
+    )
+    analysis["language_requirements"] = apply_alternative_language_groups(
+        merged_languages,
+        infer_alternative_language_groups(source_text),
     )
 
     sponsorship = analysis.get("visa_sponsorship", "unknown")

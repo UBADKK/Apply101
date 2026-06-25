@@ -4,8 +4,8 @@ No database migration is required.
 
 1. Replace the files from this patch.
 2. Run `python -m unittest discover backend/tests`.
-3. Reanalyze selected jobs with `force_reanalyze=true`; they must return `job_analysis_v12`.
-4. Rematch with `force_rematch=true`; results must return `backend_match_v5`.
+3. Reanalyze selected jobs with `force_reanalyze=true`; they must return `job_analysis_v13`.
+4. Rematch with `force_rematch=true`; results must return `backend_match_v6`.
 
 Expected behavior:
 - A `Werkstudent` job is ineligible for a profile with `student_status=not_enrolled`, using reason code `student_enrollment_required`.

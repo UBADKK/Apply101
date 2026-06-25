@@ -400,12 +400,21 @@ def get_job_language_requirements(job_analysis) -> list[dict]:
             language = normalize_language_name(item.get("language"))
             minimum_level = normalize_language_level(item.get("minimum_level"))
             required = bool(item.get("required", True))
+            alternative_group = normalize_text(item.get("alternative_group"))
+            try:
+                minimum_required_count = int(
+                    item.get("minimum_required_count", 1)
+                )
+            except (TypeError, ValueError):
+                minimum_required_count = 1
         elif isinstance(item, str):
             # Defensive compatibility for malformed v7 data. Matching only accepts
             # v7, but this keeps a single bad row from crashing the batch.
             language = normalize_language_name(item)
             minimum_level = "unknown"
             required = True
+            alternative_group = ""
+            minimum_required_count = 1
         else:
             continue
 
@@ -414,6 +423,8 @@ def get_job_language_requirements(job_analysis) -> list[dict]:
                 "language": language,
                 "minimum_level": minimum_level,
                 "required": True,
+                "alternative_group": alternative_group or None,
+                "minimum_required_count": max(1, minimum_required_count),
             })
 
     return requirements
@@ -430,7 +441,16 @@ def evaluate_language_requirements(profile_analysis, job_analysis):
     review_reasons = []
     scores = []
 
+    grouped_requirements = {}
+    ungrouped_requirements = []
     for requirement in requirements:
+        group_id = requirement.get("alternative_group")
+        if group_id:
+            grouped_requirements.setdefault(group_id, []).append(requirement)
+        else:
+            ungrouped_requirements.append(requirement)
+
+    for requirement in ungrouped_requirements:
         language = requirement["language"]
         minimum_level = requirement["minimum_level"]
         candidate_level = candidate_languages.get(language)
@@ -446,7 +466,16 @@ def evaluate_language_requirements(profile_analysis, job_analysis):
             continue
 
         if minimum_level == "unknown":
-            scores.append(85)
+            scores.append(55)
+            review_reasons.append(make_requirement_issue(
+                "required_language_level_unknown",
+                (
+                    f"The job explicitly requires {language}, but the required "
+                    "proficiency level is not specified."
+                ),
+                language=language,
+                candidate_level=candidate_level,
+            ))
             continue
 
         if candidate_level == "unknown":
@@ -485,6 +514,84 @@ def evaluate_language_requirements(profile_analysis, job_analysis):
             ))
         else:
             scores.append(100)
+
+    for group_id, alternatives in grouped_requirements.items():
+        minimum_required_count = max(
+            1,
+            min(
+                alternatives[0].get("minimum_required_count", 1),
+                len(alternatives),
+            ),
+        )
+        qualifying_languages = []
+        potentially_qualifying_languages = []
+        evaluated_scores = []
+
+        for requirement in alternatives:
+            language = requirement["language"]
+            minimum_level = requirement["minimum_level"]
+            candidate_level = candidate_languages.get(language)
+
+            if candidate_level is None:
+                evaluated_scores.append(0)
+                continue
+
+            if minimum_level == "unknown":
+                potentially_qualifying_languages.append(language)
+                evaluated_scores.append(55)
+                continue
+
+            if candidate_level == "unknown":
+                potentially_qualifying_languages.append(language)
+                evaluated_scores.append(55)
+                continue
+
+            candidate_rank = CEFR_RANKS.get(candidate_level)
+            required_rank = CEFR_RANKS.get(minimum_level)
+            if candidate_rank is None or required_rank is None:
+                potentially_qualifying_languages.append(language)
+                evaluated_scores.append(55)
+            elif candidate_rank >= required_rank:
+                qualifying_languages.append(language)
+                evaluated_scores.append(100)
+            else:
+                evaluated_scores.append(
+                    max(0, 100 - ((required_rank - candidate_rank) * 35))
+                )
+
+        if len(qualifying_languages) >= minimum_required_count:
+            scores.append(100)
+            continue
+
+        if (
+            len(qualifying_languages) + len(potentially_qualifying_languages)
+            >= minimum_required_count
+        ):
+            scores.append(55)
+            review_reasons.append(make_requirement_issue(
+                "language_alternative_requires_review",
+                "The candidate may satisfy an alternative language requirement, but the level cannot be confirmed.",
+                alternative_group=group_id,
+                required_count=minimum_required_count,
+                alternatives=[item["language"] for item in alternatives],
+                qualifying_languages=qualifying_languages,
+                unresolved_languages=potentially_qualifying_languages,
+            ))
+            continue
+
+        scores.append(max(evaluated_scores) if evaluated_scores else 0)
+        hard_failures.append(make_requirement_issue(
+            "required_language_alternative_not_met",
+            (
+                f"Candidate does not meet the requirement to know at least "
+                f"{minimum_required_count} of the listed languages."
+            ),
+            alternative_group=group_id,
+            required_count=minimum_required_count,
+            alternatives=[item["language"] for item in alternatives],
+            minimum_level=alternatives[0].get("minimum_level", "unknown"),
+            qualifying_languages=qualifying_languages,
+        ))
 
     return round(sum(scores) / len(scores)), hard_failures, review_reasons
 

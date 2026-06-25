@@ -145,8 +145,8 @@ hand-reviewed test set.
 
 ## Phase 2.2 contract updates
 
-- Current job analysis contract: `job_analysis_v12`.
-- Current backend matcher: `backend_match_v5`.
+- Current job analysis contract: `job_analysis_v13`.
+- Current backend matcher: `backend_match_v6`.
 - Explicit `Werkstudent` / `Working Student` labels are treated as evidence that active student enrollment is required, unless the listing also offers a non-student part-time or full-time alternative.
 - Explicit numeric or written minimum expressions such as `mind. 1-3 Jahre`, `mindestens drei Jahre`, `at least four years`, and `3+ years` are normalized into `minimum_years_experience`.
 - Explicit CEFR minimums such as `German B2 minimum` are normalized into required language requirements.

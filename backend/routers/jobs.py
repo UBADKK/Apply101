@@ -114,6 +114,46 @@ def build_saved_job_sample(job: models.Job):
     }
 
 
+def build_analyzed_job_response(
+    job: models.Job,
+    analysis: models.JobAnalysis,
+) -> dict:
+    return {
+        "job_id": job.job_id,
+        "title": job.title,
+        "company_name": job.company_name,
+        "location": job.location,
+        "url": job.url,
+        "source_created_at": job.source_created_at,
+        "fetched_at": job.fetched_at,
+        "last_seen_at": job.last_seen_at,
+        "analysis_id": analysis.analysis_id,
+        "analysis_status": analysis.analysis_status,
+        "role_family": analysis.role_family,
+        "role_subfamily": analysis.role_subfamily,
+        "normalized_role_title": analysis.normalized_role_title,
+        "role_tags": json.loads(analysis.role_tags_json)
+        if analysis.role_tags_json else [],
+        "seniority_level": analysis.seniority_level,
+        "work_type": analysis.work_type,
+        "employment_type": analysis.employment_type,
+        "visa_sponsorship": analysis.visa_sponsorship,
+        "analysis_model": analysis.analysis_model,
+        "analysis_prompt_version": analysis.analysis_prompt_version,
+        "analyzed_at": analysis.analyzed_at,
+        "required_skills": json.loads(analysis.required_skills_json)
+        if analysis.required_skills_json else [],
+        "preferred_skills": json.loads(analysis.preferred_skills_json)
+        if analysis.preferred_skills_json else [],
+        "language_requirements": json.loads(analysis.language_requirements_json)
+        if analysis.language_requirements_json else [],
+        "dealbreakers": json.loads(analysis.dealbreakers_json)
+        if analysis.dealbreakers_json else [],
+        "analysis": json.loads(analysis.analysis_json)
+        if analysis.analysis_json else None,
+    }
+
+
 # Get jobs from DB
 @router.get("/", response_model=list[schemas.JobResponse])
 def get_jobs(
@@ -157,48 +197,53 @@ def get_analyzed_jobs(
     )
 
     return [
-        {
-            "job_id": job.job_id,
-            "title": job.title,
-            "company_name": job.company_name,
-            "location": job.location,
-            "url": job.url,
-            "source_created_at": job.source_created_at,
-            "fetched_at": job.fetched_at,
-            "last_seen_at": job.last_seen_at,
-
-            "analysis_id": analysis.analysis_id,
-            "analysis_status": analysis.analysis_status,
-            "role_family": analysis.role_family,
-            "role_subfamily": analysis.role_subfamily,
-            "normalized_role_title": analysis.normalized_role_title,
-            "role_tags": json.loads(analysis.role_tags_json)
-            if analysis.role_tags_json else [],
-            "seniority_level": analysis.seniority_level,
-            "work_type": analysis.work_type,
-            "employment_type": analysis.employment_type,
-            "visa_sponsorship": analysis.visa_sponsorship,
-            "analysis_model": analysis.analysis_model,
-            "analysis_prompt_version": analysis.analysis_prompt_version,
-            "analyzed_at": analysis.analyzed_at,
-
-            "required_skills": json.loads(analysis.required_skills_json)
-            if analysis.required_skills_json else [],
-
-            "preferred_skills": json.loads(analysis.preferred_skills_json)
-            if analysis.preferred_skills_json else [],
-
-            "language_requirements": json.loads(analysis.language_requirements_json)
-            if analysis.language_requirements_json else [],
-
-            "dealbreakers": json.loads(analysis.dealbreakers_json)
-            if analysis.dealbreakers_json else [],
-
-            "analysis": json.loads(analysis.analysis_json)
-            if analysis.analysis_json else None
-        }
+        build_analyzed_job_response(job, analysis)
         for job, analysis in rows
     ]
+
+
+@router.get("/analyzed/{job_id}")
+def get_analyzed_job(
+    job_id: int,
+    db: Session = Depends(get_db),
+):
+    row = (
+        db.query(models.Job, models.JobAnalysis)
+        .join(
+            models.JobAnalysis,
+            models.Job.job_id == models.JobAnalysis.job_id,
+        )
+        .filter(
+            models.Job.job_id == job_id,
+            models.JobAnalysis.analysis_status == "completed",
+            models.JobAnalysis.analysis_model == JOB_ANALYSIS_MODEL,
+            models.JobAnalysis.analysis_prompt_version == JOB_ANALYSIS_PROMPT_VERSION,
+            models.JobAnalysis.is_current == True,
+        )
+        .order_by(models.JobAnalysis.analysis_id.desc())
+        .first()
+    )
+
+    if row is None:
+        job_exists = (
+            db.query(models.Job.job_id)
+            .filter(models.Job.job_id == job_id)
+            .first()
+        )
+
+        if job_exists is None:
+            raise HTTPException(status_code=404, detail="Job not found.")
+
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "No current completed analysis exists for this job "
+                f"with {JOB_ANALYSIS_PROMPT_VERSION}."
+            ),
+        )
+
+    job, analysis = row
+    return build_analyzed_job_response(job, analysis)
 
 
 @router.get("/fetch-runs")
@@ -659,10 +704,11 @@ def analyze_job(
     - Use an explicitly stated CEFR level exactly.
     - Map "native" or "mother tongue" to native.
     - Map "fluent", "business fluent", "professional proficiency", "fließend", or "verhandlungssicher" to c1.
-    - Map "very good", "advanced", or "sehr gute" to b2.
+    - Map "very good", "advanced", or "sehr gute" to c1.
     - Map "basic knowledge" or "Grundkenntnisse" to a2.
     - For vague wording such as "good", "secure", "language skills", "gute Kenntnisse", or "sichere Kenntnisse", use unknown rather than inventing a CEFR level.
     - Do not include optional or preferred languages with required=true.
+    - When the posting requires at least one language from a list, return each mentioned language; the sanitizer will preserve the OR relationship.
 
     For visa_sponsorship:
     - Use only: yes, no, unknown.
