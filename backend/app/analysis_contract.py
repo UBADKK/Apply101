@@ -8,7 +8,7 @@ PROFILE_ANALYSIS_MODEL = "gpt-4.1-mini"
 PROFILE_ANALYSIS_PROMPT_VERSION = "profile_analysis_v5"
 
 JOB_ANALYSIS_MODEL = "gpt-4.1-mini"
-JOB_ANALYSIS_PROMPT_VERSION = "job_analysis_v11"
+JOB_ANALYSIS_PROMPT_VERSION = "job_analysis_v12"
 
 MATCH_MODEL = "backend_rule_based"
-MATCH_VERSION = "backend_match_v4"
+MATCH_VERSION = "backend_match_v5"

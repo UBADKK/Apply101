@@ -90,8 +90,9 @@ def calculate_role_score(profile_json, profile_analysis, job_analysis):
             family_score = max(family_score, 70)
 
     profile_role_text = " ".join(target_roles)
+    compact_job_title = re.sub(r"[\s_-]+", "", job_title)
 
-    if "backend" in profile_role_text and "fullstack" in job_title:
+    if "backend" in profile_role_text and "fullstack" in compact_job_title:
         title_score = max(title_score, 75)
 
     if "backend" in profile_role_text and "backend" in job_title:
@@ -177,6 +178,9 @@ def normalize_skill(value: str) -> str:
     return SKILL_ALIASES.get(value, value)
 
 
+SKILL_PLACEHOLDERS = {"other", "unknown", "none", "n a", "na"}
+
+
 def normalize_skill_list(values):
     if not values:
         return []
@@ -210,7 +214,14 @@ def fuzzy_skill_match(candidate_skill, job_skill):
 
 
 def skill_match_score(candidate_skills, job_skills):
-    candidate_skills = normalize_skill_list(candidate_skills)
+    # Candidate-side placeholders must never satisfy an unknown job skill.
+    # Job-side "other" remains as an unmatched specialized requirement so
+    # taxonomy gaps (for example Shopify/Liquid) still reduce the score.
+    candidate_skills = [
+        value
+        for value in normalize_skill_list(candidate_skills)
+        if value not in SKILL_PLACEHOLDERS
+    ]
     job_skills = normalize_skill_list(job_skills)
 
     if not job_skills:

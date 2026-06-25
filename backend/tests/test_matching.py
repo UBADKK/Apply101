@@ -20,6 +20,8 @@ from backend.routers.matches import (
     calculate_experience_score,
     calculate_language_score,
     calculate_location_score,
+    calculate_role_score,
+    skill_match_score,
     calculate_work_type_score,
     evaluate_hard_requirements,
     extract_employment_type_preferences,
@@ -90,8 +92,8 @@ class MatchingContractTests(unittest.TestCase):
         self.assertEqual(PROFILE_ANALYSIS_MODEL, "gpt-4.1-mini")
         self.assertEqual(PROFILE_ANALYSIS_PROMPT_VERSION, "profile_analysis_v5")
         self.assertEqual(JOB_ANALYSIS_MODEL, "gpt-4.1-mini")
-        self.assertEqual(JOB_ANALYSIS_PROMPT_VERSION, "job_analysis_v11")
-        self.assertEqual(MATCH_VERSION, "backend_match_v4")
+        self.assertEqual(JOB_ANALYSIS_PROMPT_VERSION, "job_analysis_v12")
+        self.assertEqual(MATCH_VERSION, "backend_match_v5")
 
     def test_work_type_preferences_support_multiple_values(self):
         self.assertEqual(
@@ -597,6 +599,123 @@ class MatchingContractTests(unittest.TestCase):
         self.assertEqual(requirement["minimum_level"], "b2")
         self.assertTrue(requirement["required"])
         self.assertIn("B2 minimum", requirement["evidence"])
+
+    def test_plain_experience_ranges_are_inferred_as_hard_minimums(self):
+        examples = [
+            ("3-5 years of relevant experience are required.", 3.0),
+            ("Du bringst 3–5 Jahre Berufserfahrung mit.", 3.0),
+            ("4 to 7 years in finance and controlling.", 4.0),
+            ("Gesucht werden 3 bis 5 Jahre Erfahrung.", 3.0),
+            (
+                "4–7 years in finance, FP&A, or controlling, ideally in SaaS.",
+                4.0,
+            ),
+            (
+                "3–5 Jahre Erfahrung als Product Owner – idealerweise mit Data Analytics.",
+                3.0,
+            ),
+        ]
+
+        for source_text, expected_years in examples:
+            with self.subTest(source_text=source_text):
+                analysis = {
+                    "employment_type": "full_time",
+                    "language_requirements": [],
+                    "visa_sponsorship": "unknown",
+                    "visa_sponsorship_evidence": None,
+                    "hard_requirements": {
+                        "student_enrollment_required": False,
+                        "student_enrollment_evidence": None,
+                        "work_authorization": "none",
+                        "work_authorization_evidence": None,
+                        "residency": "none",
+                        "residency_locations": [],
+                        "residency_evidence": None,
+                        "minimum_years_experience": None,
+                        "minimum_years_experience_evidence": None,
+                    },
+                    "dealbreakers": [],
+                }
+
+                sanitized = sanitize_job_analysis_requirements(analysis, source_text)
+
+                self.assertEqual(
+                    sanitized["hard_requirements"]["minimum_years_experience"],
+                    expected_years,
+                )
+
+    def test_soft_plain_experience_ranges_are_not_hard_minimums(self):
+        examples = [
+            "Idealerweise 1 bis 2 Jahre Berufserfahrung.",
+            "Ideally 2-4 years of experience.",
+            "Nice to have: 3–5 years in e-commerce.",
+            "2 to 3 years would be preferred.",
+            "Ideally at least 3 years of relevant experience.",
+            "Wünschenswert sind 3+ Jahre Erfahrung.",
+        ]
+
+        for source_text in examples:
+            with self.subTest(source_text=source_text):
+                analysis = {
+                    "employment_type": "full_time",
+                    "language_requirements": [],
+                    "visa_sponsorship": "unknown",
+                    "visa_sponsorship_evidence": None,
+                    "hard_requirements": {
+                        "student_enrollment_required": False,
+                        "student_enrollment_evidence": None,
+                        "work_authorization": "none",
+                        "work_authorization_evidence": None,
+                        "residency": "none",
+                        "residency_locations": [],
+                        "residency_evidence": None,
+                        "minimum_years_experience": None,
+                        "minimum_years_experience_evidence": None,
+                    },
+                    "dealbreakers": [],
+                }
+
+                sanitized = sanitize_job_analysis_requirements(analysis, source_text)
+
+                self.assertIsNone(
+                    sanitized["hard_requirements"]["minimum_years_experience"]
+                )
+
+    def test_backend_target_recognizes_full_stack_title_spelling(self):
+        profile_json = {
+            "target_roles": ["junior backend developer"],
+            "target_role_families": ["engineering"],
+        }
+        profile_analysis = SimpleNamespace(
+            target_role_tags_json=json.dumps([
+                "backend_development",
+                "api_development",
+                "python_development",
+            ])
+        )
+        job_analysis = SimpleNamespace(
+            normalized_role_title="Shopify Full Stack Developer",
+            role_family="engineering",
+            role_subfamily="fullstack_engineering",
+            role_tags_json=json.dumps([
+                "fullstack_development",
+                "api_development",
+                "backend_development",
+                "python_development",
+                "other",
+            ]),
+        )
+
+        score = calculate_role_score(profile_json, profile_analysis, job_analysis)
+
+        self.assertGreaterEqual(score, 69)
+
+    def test_other_skill_placeholder_never_creates_a_false_match(self):
+        self.assertEqual(skill_match_score(["other"], ["other"]), 0)
+        self.assertEqual(
+            skill_match_score(["python", "other"], ["python", "other"]),
+            50,
+        )
 
     def test_employment_type_mismatch_is_nonblocking_warning(self):
         job_analysis = self.make_job_analysis(visa_sponsorship="yes")

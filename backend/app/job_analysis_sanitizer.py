@@ -158,6 +158,25 @@ MINIMUM_EXPERIENCE_PATTERNS = [
     rf"(?P<number>{_NUMBER_TOKEN_PATTERN})\s*\+\s*(?:jahre|jahren|years?)",
 ]
 
+PLAIN_EXPERIENCE_RANGE_PATTERNS = [
+    rf"(?P<number>{_NUMBER_TOKEN_PATTERN})\s*(?:[-–—]|to|bis)\s*"
+    rf"{_NUMBER_TOKEN_PATTERN}\s*(?:jahre|jahren|years?)",
+]
+
+SOFT_EXPERIENCE_PREFIX_MARKERS = re.compile(
+    r"\b(?:ideally|ideal(?:erweise)?|preferably|preferred|nice\s+to\s+have|"
+    r"wünschenswert|wuenschenswert|von\s+vorteil|optional|bonus)\b",
+    flags=re.IGNORECASE,
+)
+
+SOFT_EXPERIENCE_SUFFIX_MARKERS = re.compile(
+    r"^\s*(?:[,;:–—-]\s*)?(?:(?:would|should)\s+be\s+|"
+    r"(?:is|are|wäre|waere|wären|waeren|ist|sind)\s+)?"
+    r"(?:preferred|preferable|wünschenswert|wuenschenswert|optional|"
+    r"von\s+vorteil|nice\s+to\s+have)\b",
+    flags=re.IGNORECASE,
+)
+
 VISA_SPONSORSHIP_EVIDENCE_TERMS = {
     "visa sponsorship",
     "sponsorship",
@@ -220,17 +239,65 @@ def parse_year_value(raw_value: str | None) -> float | None:
         return None
 
 
+def experience_range_has_soft_context(
+    source_text: str,
+    match: re.Match[str],
+) -> bool:
+    """Reject ranges only when wording clearly makes the years optional."""
+    context_start = max(0, match.start() - 100)
+    context_end = min(len(source_text), match.end() + 100)
+    context = source_text[context_start:context_end]
+
+    # Keep the check local to the current sentence/bullet so a marker in a
+    # neighboring requirement does not suppress a hard range.
+    relative_start = match.start() - context_start
+    relative_end = match.end() - context_start
+    left_boundaries = [
+        context.rfind(separator, 0, relative_start)
+        for separator in ("\n", ".", ";", "•")
+    ]
+    right_boundaries = [
+        context.find(separator, relative_end)
+        for separator in ("\n", ".", ";", "•")
+    ]
+    sentence_start = max(left_boundaries) + 1
+    valid_right_boundaries = [value for value in right_boundaries if value >= 0]
+    sentence_end = min(valid_right_boundaries) if valid_right_boundaries else len(context)
+
+    before = context[sentence_start:relative_start]
+    after = context[relative_end:sentence_end]
+
+    # Prefix markers directly frame the amount as optional, e.g.
+    # "ideally 1-2 years" or "nice to have: 3-5 years".
+    if SOFT_EXPERIENCE_PREFIX_MARKERS.search(before[-80:]):
+        return True
+
+    # Suffix markers must immediately describe the amount. This intentionally
+    # does not reject "4-7 years in finance, ideally in SaaS", where "ideally"
+    # qualifies the industry rather than the number of years.
+    return SOFT_EXPERIENCE_SUFFIX_MARKERS.search(after[:60]) is not None
+
+
 def infer_minimum_experience(
     source_text: str | None,
 ) -> tuple[float | None, str | None]:
     text = str(source_text or "")
     for pattern in MINIMUM_EXPERIENCE_PATTERNS:
         match = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
-        if not match:
+        if not match or experience_range_has_soft_context(text, match):
             continue
         years = parse_year_value(match.group("number"))
         if years is not None:
             return years, match.group(0).strip()
+
+    for pattern in PLAIN_EXPERIENCE_RANGE_PATTERNS:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE | re.DOTALL):
+            if experience_range_has_soft_context(text, match):
+                continue
+            years = parse_year_value(match.group("number"))
+            if years is not None:
+                return years, match.group(0).strip()
+
     return None, None
 
 
