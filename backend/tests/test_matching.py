@@ -90,7 +90,7 @@ class MatchingContractTests(unittest.TestCase):
         self.assertEqual(PROFILE_ANALYSIS_MODEL, "gpt-4.1-mini")
         self.assertEqual(PROFILE_ANALYSIS_PROMPT_VERSION, "profile_analysis_v5")
         self.assertEqual(JOB_ANALYSIS_MODEL, "gpt-4.1-mini")
-        self.assertEqual(JOB_ANALYSIS_PROMPT_VERSION, "job_analysis_v9")
+        self.assertEqual(JOB_ANALYSIS_PROMPT_VERSION, "job_analysis_v11")
         self.assertEqual(MATCH_VERSION, "backend_match_v4")
 
     def test_work_type_preferences_support_multiple_values(self):
@@ -464,6 +464,139 @@ class MatchingContractTests(unittest.TestCase):
             "mind. 1-3 Jahre",
             sanitized["hard_requirements"]["minimum_years_experience_evidence"],
         )
+
+    def test_working_student_with_part_time_alternative_is_not_student_only(self):
+        analysis = {
+            "employment_type": "working_student",
+            "language_requirements": [],
+            "visa_sponsorship": "unknown",
+            "visa_sponsorship_evidence": None,
+            "hard_requirements": {
+                "student_enrollment_required": True,
+                "student_enrollment_evidence": "Werkstudent",
+                "work_authorization": "none",
+                "work_authorization_evidence": None,
+                "residency": "none",
+                "residency_locations": [],
+                "residency_evidence": None,
+                "minimum_years_experience": None,
+                "minimum_years_experience_evidence": None,
+            },
+            "dealbreakers": [],
+        }
+        source_text = (
+            "Wir suchen Dich als Werkstudent oder in Teilzeit als Visitenkarte "
+            "unseres Shared Office Centers."
+        )
+
+        sanitized = sanitize_job_analysis_requirements(analysis, source_text)
+
+        self.assertFalse(
+            sanitized["hard_requirements"]["student_enrollment_required"]
+        )
+        self.assertIsNone(
+            sanitized["hard_requirements"]["student_enrollment_evidence"]
+        )
+        self.assertEqual(sanitized["employment_type"], "part_time")
+
+    def test_written_minimum_experience_is_inferred_in_english_and_german(self):
+        examples = [
+            ("At least four years of relevant project experience.", 4.0),
+            ("Mit mindestens drei Jahren Berufspraxis.", 3.0),
+        ]
+
+        for source_text, expected_years in examples:
+            with self.subTest(source_text=source_text):
+                analysis = {
+                    "employment_type": "full_time",
+                    "language_requirements": [],
+                    "visa_sponsorship": "unknown",
+                    "visa_sponsorship_evidence": None,
+                    "hard_requirements": {
+                        "student_enrollment_required": False,
+                        "student_enrollment_evidence": None,
+                        "work_authorization": "none",
+                        "work_authorization_evidence": None,
+                        "residency": "none",
+                        "residency_locations": [],
+                        "residency_evidence": None,
+                        "minimum_years_experience": None,
+                        "minimum_years_experience_evidence": None,
+                    },
+                    "dealbreakers": [],
+                }
+
+                sanitized = sanitize_job_analysis_requirements(
+                    analysis,
+                    source_text,
+                )
+
+                self.assertEqual(
+                    sanitized["hard_requirements"]["minimum_years_experience"],
+                    expected_years,
+                )
+
+    def test_soft_experience_preference_is_not_a_hard_minimum(self):
+        analysis = {
+            "employment_type": "full_time",
+            "language_requirements": [],
+            "visa_sponsorship": "unknown",
+            "visa_sponsorship_evidence": None,
+            "hard_requirements": {
+                "student_enrollment_required": False,
+                "student_enrollment_evidence": None,
+                "work_authorization": "none",
+                "work_authorization_evidence": None,
+                "residency": "none",
+                "residency_locations": [],
+                "residency_evidence": None,
+                "minimum_years_experience": 1,
+                "minimum_years_experience_evidence": "Ideally 1 to 3 years of experience",
+            },
+            "dealbreakers": [],
+        }
+        source_text = "Ideally 1 to 3 years of experience in operations."
+
+        sanitized = sanitize_job_analysis_requirements(analysis, source_text)
+
+        self.assertIsNone(
+            sanitized["hard_requirements"]["minimum_years_experience"]
+        )
+        self.assertIsNone(
+            sanitized["hard_requirements"]["minimum_years_experience_evidence"]
+        )
+
+    def test_explicit_cefr_language_minimum_is_inferred(self):
+        analysis = {
+            "employment_type": "full_time",
+            "language_requirements": [],
+            "visa_sponsorship": "unknown",
+            "visa_sponsorship_evidence": None,
+            "hard_requirements": {
+                "student_enrollment_required": False,
+                "student_enrollment_evidence": None,
+                "work_authorization": "none",
+                "work_authorization_evidence": None,
+                "residency": "none",
+                "residency_locations": [],
+                "residency_evidence": None,
+                "minimum_years_experience": None,
+                "minimum_years_experience_evidence": None,
+            },
+            "dealbreakers": [],
+        }
+        source_text = (
+            "Strong professional English and good German skills ( B2 minimum )."
+        )
+
+        sanitized = sanitize_job_analysis_requirements(analysis, source_text)
+
+        self.assertEqual(len(sanitized["language_requirements"]), 1)
+        requirement = sanitized["language_requirements"][0]
+        self.assertEqual(requirement["language"], "german")
+        self.assertEqual(requirement["minimum_level"], "b2")
+        self.assertTrue(requirement["required"])
+        self.assertIn("B2 minimum", requirement["evidence"])
 
     def test_employment_type_mismatch_is_nonblocking_warning(self):
         job_analysis = self.make_job_analysis(visa_sponsorship="yes")

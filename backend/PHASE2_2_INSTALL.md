@@ -4,7 +4,7 @@ No database migration is required.
 
 1. Replace the files from this patch.
 2. Run `python -m unittest discover backend/tests`.
-3. Reanalyze selected jobs with `force_reanalyze=true`; they must return `job_analysis_v9`.
+3. Reanalyze selected jobs with `force_reanalyze=true`; they must return `job_analysis_v11`.
 4. Rematch with `force_rematch=true`; results must return `backend_match_v4`.
 
 Expected behavior:

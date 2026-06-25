@@ -145,9 +145,11 @@ hand-reviewed test set.
 
 ## Phase 2.2 contract updates
 
-- Current job analysis contract: `job_analysis_v9`.
+- Current job analysis contract: `job_analysis_v11`.
 - Current backend matcher: `backend_match_v4`.
-- Explicit `Werkstudent` / `Working Student` labels are treated as evidence that active student enrollment is required.
-- Explicit numeric minimum expressions such as `mind. 1-3 Jahre`, `at least 2 years`, and `3+ years` are normalized into `minimum_years_experience`.
+- Explicit `Werkstudent` / `Working Student` labels are treated as evidence that active student enrollment is required, unless the listing also offers a non-student part-time or full-time alternative.
+- Explicit numeric or written minimum expressions such as `mind. 1-3 Jahre`, `mindestens drei Jahre`, `at least four years`, and `3+ years` are normalized into `minimum_years_experience`.
+- Explicit CEFR minimums such as `German B2 minimum` are normalized into required language requirements.
+- Soft experience preferences such as `ideally 1-3 years` are not treated as hard minimums.
 - Unknown visa sponsorship policy is a non-blocking warning. It does not by itself produce `review_required`.
 - Employment-type preference mismatches reduce fit and produce a warning, but do not by themselves make a candidate ineligible.
