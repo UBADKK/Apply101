@@ -1398,6 +1398,109 @@ def calculate_backend_match(profile, profile_analysis, job, job_analysis):
     }
 
 
+@router.get("/{user_id}/profiles/{profile_id}/matches")
+def get_profile_matches(
+    user_id: int,
+    profile_id: int,
+    limit: int = Query(default=100, ge=1, le=MAX_BATCH_MATCH_JOBS),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+):
+    user = db.query(models.User).filter(
+        models.User.user_id == user_id
+    ).first()
+
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_code": "ERR_USER_NOT_FOUND",
+                "message": f"User with id {user_id} was not found."
+            }
+        )
+
+    profile = db.query(models.CandidateProfile).filter(
+        models.CandidateProfile.profile_id == profile_id,
+        models.CandidateProfile.user_id == user_id
+    ).first()
+
+    if not profile:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error_code": "ERR_PROFILE_NOT_FOUND",
+                "message": f"Profile with id {profile_id} was not found for user {user_id}."
+            }
+        )
+
+    current_matches_query = (
+        db.query(models.JobMatch, models.Job)
+        .join(
+            models.Job,
+            models.Job.job_id == models.JobMatch.job_id
+        )
+        .filter(
+            models.JobMatch.profile_id == profile_id,
+            models.JobMatch.match_status == "completed",
+            models.JobMatch.match_model == MATCH_MODEL,
+            models.JobMatch.match_prompt_version == MATCH_PROMPT_VERSION,
+            models.JobMatch.is_current == True
+        )
+    )
+
+    total_count = current_matches_query.count()
+
+    rows = (
+        current_matches_query
+        .order_by(
+            models.JobMatch.overall_score.desc(),
+            models.JobMatch.match_id.desc()
+        )
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    results = []
+
+    for match, job in rows:
+        match_data = safe_json_loads(match.match_json, {})
+
+        results.append({
+            "match_id": match.match_id,
+            "profile_id": match.profile_id,
+            "job_id": match.job_id,
+            "title": job.title,
+            "company_name": job.company_name,
+            "location": job.location,
+            "url": job.url,
+            "profile_analysis_id": match.profile_analysis_id,
+            "job_analysis_id": match.job_analysis_id,
+            "match_status": match.match_status,
+            "match_model": match.match_model,
+            "match_version": match.match_prompt_version,
+            "eligibility_status": match_data.get("eligibility_status"),
+            "overall_score": match.overall_score,
+            "recommendation": match.recommendation,
+            "summary": match.summary,
+            "matched_at": match.matched_at,
+            "match": match_data,
+        })
+
+    return {
+        "status": "completed",
+        "user_id": user_id,
+        "profile_id": profile_id,
+        "match_model": MATCH_MODEL,
+        "match_version": MATCH_VERSION,
+        "total_count": total_count,
+        "returned_count": len(results),
+        "limit": limit,
+        "offset": offset,
+        "results": results,
+    }
+
+
 @router.post("/{user_id}/profiles/{profile_id}/jobs/{job_id}/match")
 def match_profile_with_job(
     user_id: int,
