@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, ForeignKey, Text, DateTime
+from sqlalchemy import Column, Integer, String, Float, Boolean, ForeignKey, Text, DateTime, false
 from sqlalchemy.orm import relationship
 from .database import Base
 
@@ -23,6 +23,12 @@ class User(Base):
     master = Column(Boolean, default=False)
     phd = Column(Boolean, default=False)
     abitur = Column(Boolean, default=False)
+
+    # Nullable: existing rows have no password until explicitly migrated
+    # (see backend/migrations/phase3_auth_fields.py). Never expose this
+    # column in an API response schema.
+    password_hash = Column(String, nullable=True)
+    is_admin = Column(Boolean, nullable=False, default=False, server_default=false())
 
 
     # Link to CandidateProfile
