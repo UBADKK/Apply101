@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 from ..app.database import get_db
 from ..app import models, schemas
+from ..app.auth_dependencies import get_current_admin, get_current_user
 from ..app.taxonomy import ROLE_FAMILIES, ROLE_SUBFAMILIES, ROLE_TAGS, SKILL_TAGS
 from ..app.analysis_contract import (
     JOB_ANALYSIS_MODEL,
@@ -159,6 +160,7 @@ def build_analyzed_job_response(
 def get_jobs(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     jobs = (
@@ -176,6 +178,7 @@ def get_jobs(
 def get_analyzed_jobs(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     rows = (
@@ -205,6 +208,7 @@ def get_analyzed_jobs(
 @router.get("/analyzed/{job_id}")
 def get_analyzed_job(
     job_id: int,
+    current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     row = (
@@ -250,6 +254,7 @@ def get_analyzed_job(
 def get_job_fetch_runs(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    current_admin: models.User = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
     fetch_runs = (
@@ -264,7 +269,10 @@ def get_job_fetch_runs(
 
 # Fetch first page of jobs from Arbeitnow
 @router.post("/fetch")
-def fetch_jobs(db: Session = Depends(get_db)):
+def fetch_jobs(
+    current_admin: models.User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
     url = "https://www.arbeitnow.com/api/job-board-api"
 
     headers = {
@@ -361,6 +369,7 @@ def fetch_jobs_by_pages(
     alljobs: bool = Query(..., description="True ise tüm sayfaları çeker. False ise maxpage veya thispage kullanılır."),
     maxpage: int | None = Query(None, ge=1, description="İlk kaç sayfanın çekileceğini belirler."),
     thispage: int | None = Query(None, ge=1, description="Sadece belirli bir sayfayı çeker."),
+    current_admin: models.User = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
     base_url = "https://www.arbeitnow.com/api/job-board-api"
@@ -604,12 +613,17 @@ def fetch_jobs_by_pages(
     }
 
 
-@router.post("/{job_id}/analyze")
-def analyze_job(
+def _analyze_job_impl(
+    *,
     job_id: int,
-    force_reanalyze: bool = Query(default=False),
-    db: Session = Depends(get_db)
+    force_reanalyze: bool,
+    db: Session,
 ):
+    """Business logic for analyzing a single job. No Depends(), no
+    authentication -- callers (the single-analyze route and the
+    analyze-missing batch route) must already have authorized the request
+    before calling this. Never call this from anywhere that hasn't.
+    """
     job = db.query(models.Job).filter(
         models.Job.job_id == job_id
     ).first()
@@ -924,10 +938,25 @@ def analyze_job(
         )
 
 
+@router.post("/{job_id}/analyze")
+def analyze_job(
+    job_id: int,
+    force_reanalyze: bool = Query(default=False),
+    current_admin: models.User = Depends(get_current_admin),
+    db: Session = Depends(get_db)
+):
+    return _analyze_job_impl(
+        job_id=job_id,
+        force_reanalyze=force_reanalyze,
+        db=db,
+    )
+
+
 #This endpoint analyzes jobs with no analysis as batchs by using the analyze endpoint.
 @router.post("/analyze-missing")
 def analyze_missing_jobs(
     limit: int = Query(default=3, ge=1, le=MAX_ANALYZE_MISSING_JOBS),
+    current_admin: models.User = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
     completed_analysis_job_ids = (
@@ -975,10 +1004,10 @@ def analyze_missing_jobs(
 
     for job in jobs:
         try:
-            result = analyze_job(
+            result = _analyze_job_impl(
                 job_id=job.job_id,
                 force_reanalyze=False,
-                db=db
+                db=db,
             )
 
             results.append({
@@ -1042,6 +1071,7 @@ def analyze_sample_jobs(
         None,
         description="Analyze only the jobs with these job IDs."
     ),
+    current_admin: models.User = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
     if limit > MAX_ANALYZE_JOBS:
