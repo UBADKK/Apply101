@@ -1,8 +1,11 @@
 annotated-doc==0.0.4
 annotated-types==0.7.0
 anyio==4.13.0
+argon2-cffi==25.1.0
+argon2-cffi-bindings==25.1.0
 beautifulsoup4==4.14.3
 certifi==2026.4.22
+cffi==2.1.1
 charset-normalizer==3.4.7
 click==8.3.3
 colorama==0.4.6
@@ -18,8 +21,10 @@ httpx==0.28.1
 idna==3.13
 jiter==0.15.0
 openai==2.38.0
+pycparser==3.0
 pydantic==2.13.4
 pydantic_core==2.46.4
+PyJWT==2.13.0
 pypdf==6.11.0
 python-dotenv==1.2.2
 python-multipart==0.0.28
