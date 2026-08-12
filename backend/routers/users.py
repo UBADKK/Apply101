@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from ..app.database import get_db
 from ..app import models, schemas
+from ..app.auth_dependencies import get_current_admin, require_user_access
 
 
 router = APIRouter(
@@ -13,7 +14,10 @@ router = APIRouter(
 
 #Get users from DB
 @router.get("/", response_model=list[schemas.UserResponse])
-def get_users(db: Session = Depends(get_db)):
+def get_users(
+    current_admin: models.User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
     users = db.query(models.User).all()
 
     return users
@@ -21,7 +25,11 @@ def get_users(db: Session = Depends(get_db)):
 
 # Create a new user to DB
 @router.post("/", response_model=schemas.UserResponse)
-def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
+def create_user(
+    user: schemas.UserCreate,
+    current_admin: models.User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+):
     existing_user = db.query(models.User).filter(
         models.User.mail == user.mail
     ).first()
@@ -55,7 +63,11 @@ def create_user(user: schemas.UserCreate, db: Session = Depends(get_db)):
 
 # Delete user and related data from DB
 @router.delete("/{user_id}")
-def delete_user(user_id: int, db: Session = Depends(get_db)):
+def delete_user(
+    user_id: int,
+    current_user: models.User = Depends(require_user_access),
+    db: Session = Depends(get_db),
+):
     user = db.query(models.User).filter(
         models.User.user_id == user_id
     ).first()

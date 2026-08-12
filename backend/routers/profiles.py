@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 from ..app.database import get_db
 from ..app import models, schemas
+from ..app.auth_dependencies import get_owned_profile, require_user_access
 from ..app.taxonomy import ROLE_FAMILIES, ROLE_TAGS, SKILL_TAGS
 from ..app.analysis_contract import (
     PROFILE_ANALYSIS_MODEL,
@@ -62,7 +63,11 @@ def extract_text_from_pdf(file_path: str) -> str:
 
 # Get user's profiles from DB
 @router.get("/{user_id}/profiles", response_model=list[schemas.CandidateProfileResponse])
-def get_user_profiles(user_id: int, db: Session = Depends(get_db)):
+def get_user_profiles(
+    user_id: int,
+    current_user: models.User = Depends(require_user_access),
+    db: Session = Depends(get_db),
+):
     user = db.query(models.User).filter(models.User.user_id == user_id).first()
 
     if not user:
@@ -80,6 +85,7 @@ def get_user_profiles(user_id: int, db: Session = Depends(get_db)):
 def create_candidate_profile(
     user_id: int,
     profile: schemas.CandidateProfileCreate,
+    current_user: models.User = Depends(require_user_access),
     db: Session = Depends(get_db)
 ):
     user = db.query(models.User).filter(models.User.user_id == user_id).first()
@@ -138,16 +144,9 @@ def update_candidate_profile(
     user_id: int,
     profile_id: int,
     profile_update: schemas.CandidateProfileUpdate,
+    profile: models.CandidateProfile = Depends(get_owned_profile),
     db: Session = Depends(get_db),
 ):
-    profile = db.query(models.CandidateProfile).filter(
-        models.CandidateProfile.profile_id == profile_id,
-        models.CandidateProfile.user_id == user_id,
-    ).first()
-
-    if not profile:
-        raise HTTPException(status_code=404, detail="Profile not found")
-
     update_data = profile_update.model_dump(exclude_unset=True)
     languages = update_data.pop("languages", None)
 
@@ -182,18 +181,11 @@ def upload_cv(
     user_id: int,
     profile_id: int,
     file: UploadFile = File(...),
+    profile: models.CandidateProfile = Depends(get_owned_profile),
     db: Session = Depends(get_db)
 ):
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported for now")
-
-    profile = db.query(models.CandidateProfile).filter(
-        models.CandidateProfile.profile_id == profile_id,
-        models.CandidateProfile.user_id == user_id
-    ).first()
-
-    if not profile:
-        raise HTTPException(status_code=404, detail="Profile not found")
 
     upload_dir = "uploads"
     os.makedirs(upload_dir, exist_ok=True)
@@ -219,6 +211,7 @@ def upload_cv(
 @router.get("/{user_id}/profiles/analyzed")
 def get_analyzed_profiles(
     user_id: int,
+    current_user: models.User = Depends(require_user_access),
     db: Session = Depends(get_db)
 ):
     user = db.query(models.User).filter(
@@ -310,8 +303,12 @@ def analyze_profile(
     user_id: int,
     profile_id: int,
     force_reanalyze: bool = Query(default=False),
+    profile: models.CandidateProfile = Depends(get_owned_profile),
     db: Session = Depends(get_db)
 ):
+    # Still queried directly (not just implied by get_owned_profile): the
+    # analysis prompt below needs this user's own data, which matters in
+    # particular when an admin is analyzing another user's profile.
     user = db.query(models.User).filter(
         models.User.user_id == user_id
     ).first()
@@ -322,20 +319,6 @@ def analyze_profile(
             detail={
                 "error_code": "ERR_USER_NOT_FOUND",
                 "message": f"User with id {user_id} was not found."
-            }
-        )
-
-    profile = db.query(models.CandidateProfile).filter(
-        models.CandidateProfile.profile_id == profile_id,
-        models.CandidateProfile.user_id == user_id
-    ).first()
-
-    if not profile:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error_code": "ERR_PROFILE_NOT_FOUND",
-                "message": f"Profile with id {profile_id} was not found for user {user_id}."
             }
         )
 
