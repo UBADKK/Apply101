@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from ..app.database import get_db
 from ..app import models
+from ..app.auth_dependencies import get_owned_profile
 from ..app.analysis_contract import (
     JOB_ANALYSIS_MODEL,
     JOB_ANALYSIS_PROMPT_VERSION,
@@ -1404,35 +1405,9 @@ def get_profile_matches(
     profile_id: int,
     limit: int = Query(default=100, ge=1, le=MAX_BATCH_MATCH_JOBS),
     offset: int = Query(default=0, ge=0),
+    profile: models.CandidateProfile = Depends(get_owned_profile),
     db: Session = Depends(get_db),
 ):
-    user = db.query(models.User).filter(
-        models.User.user_id == user_id
-    ).first()
-
-    if not user:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error_code": "ERR_USER_NOT_FOUND",
-                "message": f"User with id {user_id} was not found."
-            }
-        )
-
-    profile = db.query(models.CandidateProfile).filter(
-        models.CandidateProfile.profile_id == profile_id,
-        models.CandidateProfile.user_id == user_id
-    ).first()
-
-    if not profile:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error_code": "ERR_PROFILE_NOT_FOUND",
-                "message": f"Profile with id {profile_id} was not found for user {user_id}."
-            }
-        )
-
     current_matches_query = (
         db.query(models.JobMatch, models.Job)
         .join(
@@ -1501,41 +1476,21 @@ def get_profile_matches(
     }
 
 
-@router.post("/{user_id}/profiles/{profile_id}/jobs/{job_id}/match")
-def match_profile_with_job(
+def _match_profile_with_job_impl(
+    *,
     user_id: int,
     profile_id: int,
     job_id: int,
-    force_rematch: bool = Query(default=False),
-    db: Session = Depends(get_db)
+    force_rematch: bool,
+    profile: models.CandidateProfile,
+    db: Session,
 ):
-    user = db.query(models.User).filter(
-        models.User.user_id == user_id
-    ).first()
-
-    if not user:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error_code": "ERR_USER_NOT_FOUND",
-                "message": f"User with id {user_id} was not found."
-            }
-        )
-
-    profile = db.query(models.CandidateProfile).filter(
-        models.CandidateProfile.profile_id == profile_id,
-        models.CandidateProfile.user_id == user_id
-    ).first()
-
-    if not profile:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error_code": "ERR_PROFILE_NOT_FOUND",
-                "message": f"Profile with id {profile_id} was not found for user {user_id}."
-            }
-        )
-
+    """Business logic for a single profile/job match. No Depends(), no
+    authentication, no ownership re-checking -- callers (the single-match
+    route and the batch route) must already have authorized the request and
+    resolved `profile` via get_owned_profile before calling this. Never
+    call this from anywhere that hasn't already done that.
+    """
     job = db.query(models.Job).filter(
         models.Job.job_id == job_id
     ).first()
@@ -1782,6 +1737,25 @@ def match_profile_with_job(
         )
 
 
+@router.post("/{user_id}/profiles/{profile_id}/jobs/{job_id}/match")
+def match_profile_with_job(
+    user_id: int,
+    profile_id: int,
+    job_id: int,
+    force_rematch: bool = Query(default=False),
+    profile: models.CandidateProfile = Depends(get_owned_profile),
+    db: Session = Depends(get_db)
+):
+    return _match_profile_with_job_impl(
+        user_id=user_id,
+        profile_id=profile_id,
+        job_id=job_id,
+        force_rematch=force_rematch,
+        profile=profile,
+        db=db,
+    )
+
+
 @router.post("/{user_id}/profiles/{profile_id}/jobs/match-analyzed")
 def match_profile_with_analyzed_jobs(
     user_id: int,
@@ -1789,35 +1763,9 @@ def match_profile_with_analyzed_jobs(
     limit: int = Query(default=20, ge=1, le=MAX_BATCH_MATCH_JOBS),
     offset: int = Query(default=0, ge=0),
     force_rematch: bool = Query(default=False),
+    profile: models.CandidateProfile = Depends(get_owned_profile),
     db: Session = Depends(get_db)
 ):
-    user = db.query(models.User).filter(
-        models.User.user_id == user_id
-    ).first()
-
-    if not user:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error_code": "ERR_USER_NOT_FOUND",
-                "message": f"User with id {user_id} was not found."
-            }
-        )
-
-    profile = db.query(models.CandidateProfile).filter(
-        models.CandidateProfile.profile_id == profile_id,
-        models.CandidateProfile.user_id == user_id
-    ).first()
-
-    if not profile:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error_code": "ERR_PROFILE_NOT_FOUND",
-                "message": f"Profile with id {profile_id} was not found for user {user_id}."
-            }
-        )
-
     profile_analysis = db.query(models.ProfileAnalysis).filter(
         models.ProfileAnalysis.profile_id == profile_id,
         models.ProfileAnalysis.analysis_status == "completed",
@@ -1899,12 +1847,13 @@ def match_profile_with_analyzed_jobs(
 
     for job in analyzed_jobs:
         try:
-            result = match_profile_with_job(
+            result = _match_profile_with_job_impl(
                 user_id=user_id,
                 profile_id=profile_id,
                 job_id=job.job_id,
                 force_rematch=force_rematch,
-                db=db
+                profile=profile,
+                db=db,
             )
 
             results.append({
