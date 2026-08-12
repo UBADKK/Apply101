@@ -20,6 +20,9 @@ env/
 *.log
 uvicorn.log
 
+# SQLite database (runtime/user data, not source)
+apply101.db
+
 # SQLite temporary files
 *.db-journal
 *.db-shm
