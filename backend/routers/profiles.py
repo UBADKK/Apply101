@@ -1,6 +1,6 @@
 import os
-import shutil
 import json
+import tempfile
 
 from pypdf import PdfReader
 
@@ -175,6 +175,32 @@ def update_candidate_profile(
     return profile
 
 
+# Maximum accepted CV upload size. Enforced while streaming (not via the
+# client-controlled Content-Length header), so an attacker cannot bypass it
+# by omitting or lying about that header.
+MAX_CV_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MiB
+_CV_UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1 MiB
+
+
+def _validate_cv_display_filename(filename: str | None) -> str:
+    """Validates the client-supplied filename as display metadata only.
+    This is NOT the security boundary against path traversal -- the stored
+    filesystem filename is always fully server-generated (see upload_cv)
+    regardless of what is accepted here.
+    """
+    if not filename:
+        raise HTTPException(status_code=400, detail="A filename is required.")
+    if "/" in filename or "\\" in filename:
+        raise HTTPException(
+            status_code=400, detail="Filename must not contain path separators."
+        )
+    if filename in (".", ".."):
+        raise HTTPException(status_code=400, detail="Invalid filename.")
+    if not filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported for now")
+    return filename
+
+
 #PDF Upload
 @router.post("/{user_id}/profiles/{profile_id}/upload-cv", response_model=schemas.CandidateProfileResponse)
 def upload_cv(
@@ -184,28 +210,121 @@ def upload_cv(
     profile: models.CandidateProfile = Depends(get_owned_profile),
     db: Session = Depends(get_db)
 ):
-    if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are supported for now")
+    display_filename = _validate_cv_display_filename(file.filename)
 
     upload_dir = "uploads"
     os.makedirs(upload_dir, exist_ok=True)
 
-    safe_filename = f"user_{user_id}_profile_{profile_id}_{file.filename}"
-    file_path = os.path.join(upload_dir, safe_filename)
+    # The on-disk filename is entirely server-generated from trusted path
+    # parameters -- file.filename never reaches the filesystem path.
+    final_filename = f"user_{user_id}_profile_{profile_id}_cv.pdf"
+    final_path = os.path.join(upload_dir, final_filename)
 
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    temp_file = tempfile.NamedTemporaryFile(
+        dir=upload_dir, prefix=".cv_upload_", suffix=".tmp", delete=False
+    )
+    temp_path = temp_file.name
+    new_file_installed = False
+    db_committed = False
+    backup_path = None
 
-    cv_text = extract_text_from_pdf(file_path)
+    try:
+        # Nested try/finally: guarantees the temp file handle is closed on
+        # every path (size-limit rejection, an unexpected write error, or
+        # falling through normally) before any cleanup below ever attempts
+        # to remove it -- an open handle can block deletion on Windows.
+        try:
+            total_bytes = 0
+            while True:
+                chunk = file.file.read(_CV_UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                total_bytes += len(chunk)
+                if total_bytes > MAX_CV_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="CV file exceeds the maximum allowed size of 10 MiB.",
+                    )
+                temp_file.write(chunk)
+        finally:
+            temp_file.close()
 
-    profile.cv_filename = file.filename
-    profile.cv_file_path = file_path
-    profile.cv_text = cv_text
+        try:
+            cv_text = extract_text_from_pdf(temp_path)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid or unreadable PDF file.")
 
-    db.commit()
-    db.refresh(profile)
+        # Preserve any existing valid CV under a server-generated backup
+        # name before installing the new one, so a later DB failure can
+        # restore it atomically instead of leaving a stale-metadata /
+        # overwritten-file mismatch.
+        if os.path.exists(final_path):
+            backup_file = tempfile.NamedTemporaryFile(
+                dir=upload_dir, prefix=".cv_backup_", suffix=".bak", delete=False
+            )
+            backup_path = backup_file.name
+            backup_file.close()
+            os.replace(final_path, backup_path)
 
-    return profile
+        try:
+            os.replace(temp_path, final_path)
+            new_file_installed = True
+        except Exception:
+            # The old CV (if any) was already moved to backup_path above --
+            # restore it so a failed install never leaves the profile with
+            # no CV at all.
+            if backup_path is not None:
+                os.replace(backup_path, final_path)
+                backup_path = None
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to save the uploaded CV. Please try again.",
+            )
+
+        try:
+            profile.cv_filename = display_filename
+            profile.cv_file_path = final_path
+            profile.cv_text = cv_text
+            db.commit()
+            db_committed = True
+        except Exception:
+            db.rollback()
+            if backup_path is not None:
+                # Atomically overwrites the failed new file with the
+                # preserved original in one step.
+                os.replace(backup_path, final_path)
+                backup_path = None
+            elif os.path.exists(final_path):
+                os.remove(final_path)
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to save the uploaded CV. Please try again.",
+            )
+
+        db.refresh(profile)
+
+        if backup_path is not None and os.path.exists(backup_path):
+            os.remove(backup_path)
+            backup_path = None
+
+        return profile
+    finally:
+        if not new_file_installed and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+        # The backup may only be deleted once the new file is both
+        # installed and committed -- never on a failed install or a failed
+        # commit, and never twice (the explicit removal above already
+        # clears backup_path to None on every success/restore path, so this
+        # is purely a safety net for anything unexpected in between).
+        if backup_path is not None and new_file_installed and db_committed:
+            if os.path.exists(backup_path):
+                try:
+                    os.remove(backup_path)
+                except OSError:
+                    pass
 
 
 @router.get("/{user_id}/profiles/analyzed")
