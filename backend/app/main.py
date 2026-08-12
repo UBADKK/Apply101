@@ -8,6 +8,7 @@ from ..routers import users
 from ..routers import profiles
 from ..routers import jobs
 from ..routers import matches
+from ..routers import auth
 
 
 
@@ -16,6 +17,7 @@ app.include_router(users.router)
 app.include_router(profiles.router)
 app.include_router(jobs.router)
 app.include_router(matches.router)
+app.include_router(auth.router)
 
 Base.metadata.create_all(bind=engine)
 

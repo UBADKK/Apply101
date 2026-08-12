@@ -2,6 +2,7 @@ from pydantic import BaseModel, EmailStr, ConfigDict, field_validator
 from typing import Literal
 
 from .taxonomy import ROLE_FAMILIES, ROLE_SUBFAMILIES, ROLE_TAGS, SKILL_TAGS
+from .security import MIN_PASSWORD_LENGTH
 
 
 ROLE_FAMILY_ALIASES = {
@@ -169,6 +170,41 @@ class UserResponse(BaseModel):
     master: bool
     phd: bool
     abitur: bool
+
+    class Config:
+        from_attributes = True
+
+
+class UserRegister(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    mail: EmailStr
+    password: str
+
+    @field_validator("password")
+    @classmethod
+    def validate_password_length(cls, value: str) -> str:
+        # security.hash_password() enforces this too (second line of
+        # defense); this validator just gives a fast, clear 422 instead of
+        # a 500 if that were ever bypassed.
+        if len(value) < MIN_PASSWORD_LENGTH:
+            raise ValueError(
+                f"Password must be at least {MIN_PASSWORD_LENGTH} characters long."
+            )
+        return value
+
+
+class AuthTokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+class CurrentUserResponse(BaseModel):
+    user_id: int
+    name: str
+    mail: EmailStr
+    is_admin: bool
 
     class Config:
         from_attributes = True
