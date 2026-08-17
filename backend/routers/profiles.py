@@ -1,3 +1,4 @@
+import logging
 import os
 import json
 import tempfile
@@ -12,6 +13,13 @@ from datetime import datetime, timezone
 
 from ..app.database import get_db
 from ..app import models, schemas
+from ..app.analysis_guard import (
+    AcquireOutcome,
+    AnalysisGuardConfigError,
+    load_config as load_analysis_guard_config,
+    release_profile_analysis_guard,
+    try_acquire_profile_analysis_guard,
+)
 from ..app.auth_dependencies import get_owned_profile, require_user_access
 from ..app.taxonomy import ROLE_FAMILIES, ROLE_TAGS, SKILL_TAGS
 from ..app.analysis_contract import (
@@ -20,6 +28,7 @@ from ..app.analysis_contract import (
 )
 
 client = OpenAI()
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/users",
@@ -417,6 +426,31 @@ def get_analyzed_profiles(
     return result
 
 
+def _create_profile_analysis_response(prompt: str, *, timeout_seconds: int, max_retries: int):
+    """Single seam for the profile-analysis OpenAI call. Tests must patch
+    this function directly -- patching client.responses.create does NOT
+    work here, since client.with_options(...) returns a distinct client/
+    resource instance (verified directly: a mock on the original client's
+    .responses.create is never reached through a with_options()-derived
+    client).
+    """
+    scoped_client = client.with_options(max_retries=max_retries)
+    return scoped_client.responses.create(
+        model=PROFILE_ANALYSIS_MODEL,
+        input=prompt,
+        temperature=0,
+        text={
+            "format": {
+                "type": "json_schema",
+                "name": "profile_analysis",
+                "schema": schemas.ProfileAnalysisStructured.model_json_schema(),
+                "strict": True
+            }
+        },
+        timeout=timeout_seconds,
+    )
+
+
 @router.post("/{user_id}/profiles/{profile_id}/analyze")
 def analyze_profile(
     user_id: int,
@@ -468,6 +502,9 @@ def analyze_profile(
     ).first()
 
     if existing_analysis and not force_reanalyze:
+        # Cache hit: returns before any E3.2 configuration is read and
+        # before the guard is touched at all -- no OpenAI cost is at risk
+        # here, so there is nothing to protect.
         return {
             "status": "cached",
             "message": "Profile already has a current completed analysis for this model and prompt version.",
@@ -477,6 +514,22 @@ def analyze_profile(
             if existing_analysis.analysis_json else None
         }
 
+    # Configuration is validated first -- before any guard row or OpenAI
+    # work -- and its HTTPException lives outside the analysis exception
+    # handler below, so invalid configuration always maps to a plain 500
+    # and never creates a failed-analysis row.
+    try:
+        analysis_guard_config = load_analysis_guard_config()
+    except AnalysisGuardConfigError:
+        raise HTTPException(
+            status_code=500,
+            detail="Analysis protection is not correctly configured.",
+        )
+
+    # Language lookup and prompt construction perform no billed call and
+    # need no guard. If either fails, no guard row has been touched yet,
+    # so there is nothing to release -- this propagates exactly as it did
+    # before E3.2 (an unhandled exception from this route).
     languages = db.query(models.UserLanguage).filter(
         models.UserLanguage.user_id == user_id
     ).all()
@@ -572,21 +625,49 @@ CV text:
 {(profile.cv_text or "")[:12000]}
 """
 
+    guard_acquire_result = try_acquire_profile_analysis_guard(
+        db,
+        profile_id=profile.profile_id,
+        owner_user_id=profile.user_id,
+        config=analysis_guard_config,
+    )
+
+    if guard_acquire_result.outcome is AcquireOutcome.ALREADY_IN_PROGRESS:
+        raise HTTPException(
+            status_code=409,
+            detail="An analysis for this profile is already in progress.",
+        )
+
+    if guard_acquire_result.outcome is AcquireOutcome.COOLDOWN_ACTIVE:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Please try again later.",
+            headers={"Retry-After": str(guard_acquire_result.retry_after_seconds)},
+        )
+
+    if guard_acquire_result.outcome is AcquireOutcome.BACKEND_UNAVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Service temporarily unavailable. Please try again shortly.",
+        )
+
+    guard_owner_token = guard_acquire_result.owner_token
+    # Set True only immediately after the paid analysis result is actually
+    # committed. The single release point in `finally` below uses this
+    # flag -- not whether the function ultimately returns or raises -- so
+    # a later refresh/response failure after a real commit still applies
+    # the success cooldown for the already-persisted, already-paid-for
+    # result, and any pre-acquisition rejection above never reaches here
+    # at all (so it can never trigger a release).
+    analysis_committed = False
+
     now = datetime.now(timezone.utc)
 
     try:
-        response = client.responses.create(
-            model=PROFILE_ANALYSIS_MODEL,
-            input=prompt,
-            temperature=0,
-            text={
-                "format": {
-                    "type": "json_schema",
-                    "name": "profile_analysis",
-                    "schema": schemas.ProfileAnalysisStructured.model_json_schema(),
-                    "strict": True
-                }
-            }
+        response = _create_profile_analysis_response(
+            prompt,
+            timeout_seconds=analysis_guard_config.openai_timeout_seconds,
+            max_retries=analysis_guard_config.openai_max_retries,
         )
 
         raw_text = response.output_text.strip()
@@ -668,6 +749,7 @@ CV text:
 
         db.add(new_analysis)
         db.commit()
+        analysis_committed = True
         db.refresh(new_analysis)
 
         return {
@@ -706,5 +788,31 @@ CV text:
                 "error": str(e)
             }
         )
-    
 
+    finally:
+        # Single guaranteed release point, covering every post-acquisition
+        # path: the success return above, the handled-failure raise above,
+        # and any exception raised by the failed-analysis bookkeeping
+        # itself (db.rollback/add/commit) -- finally always runs even when
+        # the except block above raises. succeeded reflects
+        # analysis_committed, which is only ever set True immediately
+        # after the paid analysis result is actually committed.
+        try:
+            release_profile_analysis_guard(
+                db,
+                profile_id=profile.profile_id,
+                owner_user_id=profile.user_id,
+                owner_token=guard_owner_token,
+                succeeded=analysis_committed,
+                config=analysis_guard_config,
+            )
+        except Exception as release_exc:
+            # Defensive only -- release_profile_analysis_guard is designed
+            # to never raise. Never let a release-time failure replace an
+            # already-established return value or exception, and never log
+            # the owner token, prompt, profile/CV content, or the raw
+            # exception (its message could echo bound SQL parameters).
+            logger.warning(
+                "analyze_profile: guard release attempt raised unexpectedly (%s)",
+                type(release_exc).__name__,
+            )

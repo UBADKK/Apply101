@@ -262,3 +262,24 @@ class JobMatch(Base):
 
     is_current = Column(Boolean, default=True)
     created_at = Column(DateTime, nullable=True)
+
+
+class AnalysisGuard(Base):
+    """Generic cooperative lock + cooldown row, one per (operation_type,
+    resource_id). Used by backend/app/analysis_guard.py to serialize/rate-
+    limit expensive per-resource operations (currently profile analysis).
+
+    lock_expires_at/cooldown_until are Unix epoch seconds (Float), never
+    SQLAlchemy DateTime -- SQLite does not round-trip timezone-aware
+    datetimes (verified: they come back naive, which breaks comparisons
+    against a fresh timezone-aware `now`), and persisted lease/cooldown
+    state must survive a process restart, which time.monotonic() cannot.
+    """
+
+    __tablename__ = "analysis_guards"
+
+    operation_type = Column(String, primary_key=True)
+    resource_id = Column(Integer, primary_key=True)
+    owner_token = Column(String, nullable=True)
+    lock_expires_at = Column(Float, nullable=True)
+    cooldown_until = Column(Float, nullable=True)

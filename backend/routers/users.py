@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 
 from ..app.database import get_db
 from ..app import models, schemas
+from ..app.analysis_guard import PROFILE_OPERATION_TYPE, USER_OPERATION_TYPE
 from ..app.auth_dependencies import get_current_admin, require_user_access
 
 
@@ -106,6 +107,21 @@ def delete_user(
 
     deleted_languages_count = db.query(models.UserLanguage).filter(
         models.UserLanguage.user_id == user_id
+    ).delete(synchronize_session=False)
+
+    # Guard rows for this user's own profiles (already-collected
+    # profile_ids, same list used for the cascades above) and for the
+    # user-level guard dimension. Left in place: any OTHER user's guard
+    # rows, and any other operation_type this table might ever hold.
+    if profile_ids:
+        db.query(models.AnalysisGuard).filter(
+            models.AnalysisGuard.operation_type == PROFILE_OPERATION_TYPE,
+            models.AnalysisGuard.resource_id.in_(profile_ids)
+        ).delete(synchronize_session=False)
+
+    db.query(models.AnalysisGuard).filter(
+        models.AnalysisGuard.operation_type == USER_OPERATION_TYPE,
+        models.AnalysisGuard.resource_id == user_id
     ).delete(synchronize_session=False)
 
     db.delete(user)
