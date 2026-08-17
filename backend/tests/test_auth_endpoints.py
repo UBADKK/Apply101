@@ -14,6 +14,7 @@ from sqlalchemy.orm import sessionmaker
 
 from backend.app import models, schemas
 from backend.app.database import Base, get_db
+from backend.app.rate_limiting import RateLimiter, get_rate_limiter
 from backend.app.security import hash_password
 from backend.routers import auth
 
@@ -21,6 +22,23 @@ from backend.routers import auth
 # Synthetic, test-only secret -- never read from or written to real .env.
 SYNTHETIC_SECRET = "synthetic-test-secret-for-auth-endpoints-0123456789"
 VALID_PASSWORD = "a-valid-synthetic-password"  # >= MIN_PASSWORD_LENGTH
+
+# This file is not exercising rate-limiting behavior (that's
+# test_rate_limiting_auth.py) -- it's exercising everything else about
+# /auth/register and /auth/login, often several times per test. Without an
+# explicit override, every test in this file would share the single
+# production rate-limiter singleton (and its real, comparatively low
+# defaults), risking spurious 429/503s unrelated to whatever a given test
+# is actually checking. Generous env values plus a fresh limiter per test
+# remove that risk entirely rather than requiring every test to reason
+# about exact call counts against the real defaults.
+_GENEROUS_RATE_LIMIT_ENV = {
+    "LOGIN_RATE_LIMIT_PAIR_MAX_FAILURES": "100000",
+    "LOGIN_RATE_LIMIT_IP_MAX_FAILURES": "100000",
+    "LOGIN_RATE_LIMIT_WINDOW_SECONDS": "900",
+    "REGISTER_RATE_LIMIT_IP_MAX_ATTEMPTS": "100000",
+    "REGISTER_RATE_LIMIT_WINDOW_SECONDS": "3600",
+}
 
 
 def build_test_app(engine):
@@ -39,6 +57,9 @@ def build_test_app(engine):
     app = FastAPI()
     app.include_router(auth.router)
     app.dependency_overrides[get_db] = override_get_db
+    # Fresh, isolated limiter per app -- never the production singleton, and
+    # never shared with any other test file.
+    app.dependency_overrides[get_rate_limiter] = lambda: RateLimiter()
     return app, session_factory
 
 
@@ -56,7 +77,9 @@ class AuthEndpointTests(unittest.TestCase):
         self.client = TestClient(self.app)
 
         env_patcher = patch.dict(
-            os.environ, {"JWT_SECRET_KEY": SYNTHETIC_SECRET}, clear=False
+            os.environ,
+            {"JWT_SECRET_KEY": SYNTHETIC_SECRET, **_GENEROUS_RATE_LIMIT_ENV},
+            clear=False,
         )
         env_patcher.start()
         self.addCleanup(env_patcher.stop)
@@ -445,6 +468,23 @@ class _UnrelatedIntegrityErrorDbStub:
         pass
 
 
+class _FakeClientAddress:
+    def __init__(self, host):
+        self.host = host
+
+
+class _FakeRequest:
+    """Minimal stand-in for fastapi.Request -- register() only ever reads
+    request.client.host from it. Direct Python calls to register() (below)
+    bypass FastAPI's dependency injection entirely, exactly like the
+    hand-built db stubs in this test class, so this must be supplied
+    explicitly rather than relying on Depends() resolution.
+    """
+
+    def __init__(self, host="203.0.113.99"):
+        self.client = _FakeClientAddress(host)
+
+
 class AuthRegisterRaceConditionTests(unittest.TestCase):
     def test_registration_handles_commit_time_duplicate_email_race(self):
         conflicting_user = models.User(
@@ -462,7 +502,12 @@ class AuthRegisterRaceConditionTests(unittest.TestCase):
         )
 
         with self.assertRaises(HTTPException) as ctx:
-            auth.register(payload=payload, db=fake_db)
+            auth.register(
+                request=_FakeRequest(),
+                payload=payload,
+                db=fake_db,
+                rate_limiter=RateLimiter(),
+            )
 
         self.assertEqual(ctx.exception.status_code, 409)
         self.assertTrue(fake_db.rolled_back)
@@ -476,7 +521,12 @@ class AuthRegisterRaceConditionTests(unittest.TestCase):
         )
 
         with self.assertRaises(IntegrityError):
-            auth.register(payload=payload, db=fake_db)
+            auth.register(
+                request=_FakeRequest(),
+                payload=payload,
+                db=fake_db,
+                rate_limiter=RateLimiter(),
+            )
 
         self.assertTrue(fake_db.rolled_back)
 
