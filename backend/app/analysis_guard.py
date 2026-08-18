@@ -1,10 +1,11 @@
 """Cost/concurrency protection for expensive per-resource operations.
 
-Currently used only for normal-user profile analysis (E3.2). Independent
-of backend/app/rate_limiting.py (E3.1's in-process auth-abuse limiter) --
-this module is entirely DB-backed, since its state (an active analysis
-lease, a cooldown) must be correct across concurrent requests on possibly
-different threads/connections and must survive a process restart.
+Used by normal-user profile analysis (E3.2) and admin job analysis /
+batch job analysis (E3.3). Independent of backend/app/rate_limiting.py
+(E3.1's in-process auth-abuse limiter) -- this module is entirely
+DB-backed, since its state (an active analysis lease, a cooldown) must be
+correct across concurrent requests on possibly different threads/
+connections and must survive a process restart.
 
 Numeric configuration is read from the environment at call time, never
 cached at import time (same discipline as security.py/rate_limiting.py).
@@ -14,6 +15,15 @@ datetime -- SQLite does not round-trip timezone-aware datetimes (verified
 directly: a stored timezone-aware value comes back naive, which then
 raises TypeError against a fresh timezone-aware `now`), and this state
 must survive a process restart, which time.monotonic() cannot.
+
+Internally, all acquire/release logic is implemented once as a generic,
+resource-list-based core (_try_acquire_guard_resources /
+_release_guard_resources) operating on (operation_type, resource_id)
+pairs. The public profile-analysis functions (try_acquire_profile_
+analysis_guard / release_profile_analysis_guard) and the job-analysis /
+batch functions added for E3.3 are thin, behavior-preserving wrappers
+around that same core -- there is exactly one acquire implementation and
+one release implementation in this module, not one per feature.
 """
 
 from __future__ import annotations
@@ -27,7 +37,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
@@ -48,6 +58,16 @@ class AnalysisGuardConfigError(RuntimeError):
 
 PROFILE_OPERATION_TYPE = "profile_analysis_profile"
 USER_OPERATION_TYPE = "profile_analysis_user"
+
+JOB_OPERATION_TYPE = "job_analysis"
+JOB_BATCH_OPERATION_TYPE = "job_analysis_batch"
+# The batch guard is a single global singleton shared by both batch
+# endpoints (analyze-missing, analyze-sample) -- not keyed by admin, since
+# the job corpus and OpenAI budget it protects are global, not per-admin.
+# operation_type already disambiguates this row from any real job_id, so
+# resource_id=0 can never collide with a per-job "job_analysis" row even
+# if a real job_id were ever 0.
+JOB_BATCH_RESOURCE_ID = 0
 
 # Not an environment variable -- a fixed operational constant covering the
 # JSON parsing / pydantic validation / DB write time between "the OpenAI
@@ -155,6 +175,93 @@ def load_config() -> AnalysisGuardConfig:
     )
 
 
+@dataclass(frozen=True)
+class JobAnalysisConfig:
+    openai_timeout_seconds: int
+    openai_max_retries: int
+    lease_ttl_seconds: int
+    success_cooldown_seconds: int
+    failure_cooldown_seconds: int
+
+
+def load_job_analysis_config() -> JobAnalysisConfig:
+    """Reads and validates the complete per-job E3.3 configuration in one
+    call. Must be called -- and must succeed -- before any per-job guard
+    row is touched or OpenAI is reached, mirroring load_config's
+    discipline exactly. Reuses the same lease-inequality reasoning and the
+    same GUARD_SAFETY_MARGIN_SECONDS / _SDK_MAX_RETRY_AFTER_SECONDS
+    constants as the profile-analysis formula.
+    """
+    timeout_seconds = _get_positive_int_env("JOB_ANALYSIS_OPENAI_TIMEOUT_SECONDS", 60)
+    max_retries = _get_non_negative_int_env("JOB_ANALYSIS_OPENAI_MAX_RETRIES", 0)
+    lease_ttl_seconds = _get_positive_int_env("JOB_ANALYSIS_GUARD_LEASE_TTL_SECONDS", 300)
+    success_cooldown = _get_positive_int_env("JOB_ANALYSIS_SUCCESS_COOLDOWN_SECONDS", 300)
+    failure_cooldown = _get_positive_int_env("JOB_ANALYSIS_FAILURE_COOLDOWN_SECONDS", 30)
+
+    required_minimum_lease = (
+        (max_retries + 1) * timeout_seconds
+        + max_retries * _SDK_MAX_RETRY_AFTER_SECONDS
+        + GUARD_SAFETY_MARGIN_SECONDS
+    )
+    if lease_ttl_seconds < required_minimum_lease:
+        raise AnalysisGuardConfigError(
+            "JOB_ANALYSIS_GUARD_LEASE_TTL_SECONDS "
+            f"({lease_ttl_seconds}) is too short for the configured OpenAI "
+            f"timeout/retry settings; it must be at least {required_minimum_lease} "
+            "seconds: (max_retries + 1) * timeout + max_retries * 60 + "
+            f"{GUARD_SAFETY_MARGIN_SECONDS}."
+        )
+
+    return JobAnalysisConfig(
+        openai_timeout_seconds=timeout_seconds,
+        openai_max_retries=max_retries,
+        lease_ttl_seconds=lease_ttl_seconds,
+        success_cooldown_seconds=success_cooldown,
+        failure_cooldown_seconds=failure_cooldown,
+    )
+
+
+@dataclass(frozen=True)
+class JobAnalysisBatchConfig:
+    lease_ttl_seconds: int
+    success_cooldown_seconds: int
+    failure_cooldown_seconds: int
+
+
+def load_job_analysis_batch_config(*, job_guard_lease_seconds: int) -> JobAnalysisBatchConfig:
+    """Reads and validates the batch-level E3.3 configuration. Requires
+    the ALREADY-loaded per-job lease value (job_guard_lease_seconds) as an
+    explicit input -- never a hardcoded constant -- so the batch lease is
+    always validated against whatever is actually configured for the
+    per-job dimension it must outlast.
+
+    Under the approved renewal design, the batch lease only ever needs to
+    survive the gap between one renewal (issued immediately before each
+    job) and the next: exactly one job's own worst-case duration (already
+    bounded by job_guard_lease_seconds) plus the batch loop's own fast,
+    DB-only overhead around it. No separate "how many jobs" multiplier is
+    needed or used.
+    """
+    lease_ttl_seconds = _get_positive_int_env("JOB_ANALYSIS_BATCH_LEASE_TTL_SECONDS", 330)
+    success_cooldown = _get_positive_int_env("JOB_ANALYSIS_BATCH_SUCCESS_COOLDOWN_SECONDS", 60)
+    failure_cooldown = _get_positive_int_env("JOB_ANALYSIS_BATCH_FAILURE_COOLDOWN_SECONDS", 30)
+
+    required_minimum_lease = job_guard_lease_seconds + GUARD_SAFETY_MARGIN_SECONDS
+    if lease_ttl_seconds < required_minimum_lease:
+        raise AnalysisGuardConfigError(
+            "JOB_ANALYSIS_BATCH_LEASE_TTL_SECONDS "
+            f"({lease_ttl_seconds}) is too short; it must be at least "
+            f"{required_minimum_lease} seconds: job_guard_lease_seconds "
+            f"({job_guard_lease_seconds}) + {GUARD_SAFETY_MARGIN_SECONDS}."
+        )
+
+    return JobAnalysisBatchConfig(
+        lease_ttl_seconds=lease_ttl_seconds,
+        success_cooldown_seconds=success_cooldown,
+        failure_cooldown_seconds=failure_cooldown,
+    )
+
+
 class AcquireOutcome(Enum):
     GRANTED = "granted"
     ALREADY_IN_PROGRESS = "already_in_progress"
@@ -208,32 +315,38 @@ def _guard_session(db: Session) -> Session:
     return Session(bind=bind)
 
 
-def try_acquire_profile_analysis_guard(
+def _try_acquire_guard_resources(
     db: Session,
     *,
-    profile_id: int,
-    owner_user_id: int,
-    config: AnalysisGuardConfig,
+    resources: list[tuple[str, int]],
+    lease_ttl_seconds: int,
     clock: Callable[[], float] = time.time,
 ) -> AcquireResult:
-    """Atomically acquires BOTH the per-profile and per-owner-user guard
-    rows under one owner token, or neither. Never calls OpenAI -- purely a
-    DB operation, committed and closed before the caller may proceed to
-    the actual expensive work.
+    """Generic core: atomically acquires ALL listed (operation_type,
+    resource_id) resources under one owner token, or none. Never calls
+    OpenAI -- purely a DB operation, committed and closed before the
+    caller may proceed to the actual expensive work.
 
-    Acquired in a deterministic order (profile, then user) purely for
-    consistency/auditability; both rows are attempted within the same
+    Resources are acquired in the given list order purely for
+    consistency/auditability; all are attempted within the same
     uncommitted transaction and either committed together or rolled back
-    together, so ordering does not affect correctness here.
+    together, so ordering does not affect correctness here. Works
+    identically for a single resource (job analysis) or two (profile
+    analysis).
     """
+    if not resources or len(set(resources)) != len(resources):
+        # Internal programmer error, not a runtime/backend condition --
+        # fail loudly rather than silently returning a false GRANTED (an
+        # empty list would otherwise vacuously satisfy `won == set(resources)`)
+        # or silently under-locking (a duplicate pair would collapse through
+        # set() equality). Never embed the actual resource values here.
+        raise ValueError(
+            "resources must be a non-empty list of unique (operation_type, resource_id) pairs."
+        )
+
     now = clock()
     owner_token = secrets.token_urlsafe(32)
-    lease_expires_at = now + config.lease_ttl_seconds
-
-    resources = [
-        (PROFILE_OPERATION_TYPE, profile_id),
-        (USER_OPERATION_TYPE, owner_user_id),
-    ]
+    lease_expires_at = now + lease_ttl_seconds
 
     try:
         guard_session = _guard_session(db)
@@ -341,17 +454,39 @@ def try_acquire_profile_analysis_guard(
         _safe_close(guard_session)
 
 
-def release_profile_analysis_guard(
+def try_acquire_profile_analysis_guard(
     db: Session,
     *,
     profile_id: int,
     owner_user_id: int,
-    owner_token: str,
-    succeeded: bool,
     config: AnalysisGuardConfig,
     clock: Callable[[], float] = time.time,
+) -> AcquireResult:
+    """Atomically acquires BOTH the per-profile and per-owner-user guard
+    rows under one owner token, or neither. Thin wrapper over the generic
+    two-resource acquisition core; signature and behavior unchanged from
+    E3.2 (deterministic profile-then-user order, all-or-nothing atomicity).
+    """
+    return _try_acquire_guard_resources(
+        db,
+        resources=[
+            (PROFILE_OPERATION_TYPE, profile_id),
+            (USER_OPERATION_TYPE, owner_user_id),
+        ],
+        lease_ttl_seconds=config.lease_ttl_seconds,
+        clock=clock,
+    )
+
+
+def _release_guard_resources(
+    db: Session,
+    *,
+    resource_cooldowns: list[tuple[str, int, int]],
+    owner_token: str,
+    clock: Callable[[], float] = time.time,
 ) -> bool:
-    """Releases both guard rows, each independently gated by owner_token
+    """Generic core: releases ALL listed (operation_type, resource_id,
+    cooldown_seconds) resources, each independently gated by owner_token
     so a stale/taken-over owner can never clear a newer owner's row (and a
     repeated release of the same token is a safe no-op). Returns True on
     success, False if the release itself failed -- the caller must NOT let
@@ -359,13 +494,22 @@ def release_profile_analysis_guard(
     failed release only means the row(s) self-heal via natural lease
     expiry rather than being freed immediately.
     """
+    resource_keys = [
+        (operation_type, resource_id)
+        for operation_type, resource_id, _cooldown_seconds in resource_cooldowns
+    ]
+    if not resource_cooldowns or len(set(resource_keys)) != len(resource_keys):
+        # Internal programmer error, not a runtime/backend condition --
+        # reject duplicate (operation_type, resource_id) keys even when
+        # their cooldown values differ, since that would otherwise update
+        # the same row twice with ambiguous last-update-wins behavior.
+        # Never embed the actual resource values here.
+        raise ValueError(
+            "resource_cooldowns must be a non-empty list with unique "
+            "(operation_type, resource_id) keys."
+        )
+
     now = clock()
-    profile_cooldown = (
-        config.profile_success_cooldown_seconds if succeeded else config.profile_failure_cooldown_seconds
-    )
-    user_cooldown = (
-        config.user_success_cooldown_seconds if succeeded else config.user_failure_cooldown_seconds
-    )
 
     try:
         guard_session = _guard_session(db)
@@ -378,30 +522,19 @@ def release_profile_analysis_guard(
 
     try:
         try:
-            guard_session.query(AnalysisGuard).filter(
-                AnalysisGuard.operation_type == PROFILE_OPERATION_TYPE,
-                AnalysisGuard.resource_id == profile_id,
-                AnalysisGuard.owner_token == owner_token,
-            ).update(
-                {
-                    "owner_token": None,
-                    "lock_expires_at": None,
-                    "cooldown_until": now + profile_cooldown,
-                },
-                synchronize_session=False,
-            )
-            guard_session.query(AnalysisGuard).filter(
-                AnalysisGuard.operation_type == USER_OPERATION_TYPE,
-                AnalysisGuard.resource_id == owner_user_id,
-                AnalysisGuard.owner_token == owner_token,
-            ).update(
-                {
-                    "owner_token": None,
-                    "lock_expires_at": None,
-                    "cooldown_until": now + user_cooldown,
-                },
-                synchronize_session=False,
-            )
+            for operation_type, resource_id, cooldown_seconds in resource_cooldowns:
+                guard_session.query(AnalysisGuard).filter(
+                    AnalysisGuard.operation_type == operation_type,
+                    AnalysisGuard.resource_id == resource_id,
+                    AnalysisGuard.owner_token == owner_token,
+                ).update(
+                    {
+                        "owner_token": None,
+                        "lock_expires_at": None,
+                        "cooldown_until": now + cooldown_seconds,
+                    },
+                    synchronize_session=False,
+                )
             guard_session.commit()
             return True
         except Exception as exc:
@@ -411,5 +544,215 @@ def release_profile_analysis_guard(
                 type(exc).__name__,
             )
             return False
+    finally:
+        _safe_close(guard_session)
+
+
+def release_profile_analysis_guard(
+    db: Session,
+    *,
+    profile_id: int,
+    owner_user_id: int,
+    owner_token: str,
+    succeeded: bool,
+    config: AnalysisGuardConfig,
+    clock: Callable[[], float] = time.time,
+) -> bool:
+    """Releases both guard rows. Thin wrapper over the generic release
+    core; signature and behavior unchanged from E3.2.
+    """
+    profile_cooldown = (
+        config.profile_success_cooldown_seconds if succeeded else config.profile_failure_cooldown_seconds
+    )
+    user_cooldown = (
+        config.user_success_cooldown_seconds if succeeded else config.user_failure_cooldown_seconds
+    )
+    return _release_guard_resources(
+        db,
+        resource_cooldowns=[
+            (PROFILE_OPERATION_TYPE, profile_id, profile_cooldown),
+            (USER_OPERATION_TYPE, owner_user_id, user_cooldown),
+        ],
+        owner_token=owner_token,
+        clock=clock,
+    )
+
+
+def try_acquire_job_analysis_guard(
+    db: Session,
+    *,
+    job_id: int,
+    config: JobAnalysisConfig,
+    clock: Callable[[], float] = time.time,
+) -> AcquireResult:
+    """Acquires the single per-job guard resource. Jobs have no per-user
+    ownership concept (every job-analysis route requires admin access, and
+    the job corpus is global) -- unlike profile analysis, there is no
+    second "owner" resource dimension here.
+    """
+    return _try_acquire_guard_resources(
+        db,
+        resources=[(JOB_OPERATION_TYPE, job_id)],
+        lease_ttl_seconds=config.lease_ttl_seconds,
+        clock=clock,
+    )
+
+
+def release_job_analysis_guard(
+    db: Session,
+    *,
+    job_id: int,
+    owner_token: str,
+    succeeded: bool,
+    config: JobAnalysisConfig,
+    clock: Callable[[], float] = time.time,
+) -> bool:
+    """Releases the single per-job guard resource."""
+    cooldown_seconds = (
+        config.success_cooldown_seconds if succeeded else config.failure_cooldown_seconds
+    )
+    return _release_guard_resources(
+        db,
+        resource_cooldowns=[(JOB_OPERATION_TYPE, job_id, cooldown_seconds)],
+        owner_token=owner_token,
+        clock=clock,
+    )
+
+
+def try_acquire_job_batch_guard(
+    db: Session,
+    *,
+    config: JobAnalysisBatchConfig,
+    clock: Callable[[], float] = time.time,
+) -> AcquireResult:
+    """Acquires the single global batch-start guard, shared by both
+    analyze-missing and analyze-sample (JOB_BATCH_RESOURCE_ID is a fixed
+    singleton, not keyed by admin or job). Manual single-job analysis
+    never consults this guard.
+    """
+    return _try_acquire_guard_resources(
+        db,
+        resources=[(JOB_BATCH_OPERATION_TYPE, JOB_BATCH_RESOURCE_ID)],
+        lease_ttl_seconds=config.lease_ttl_seconds,
+        clock=clock,
+    )
+
+
+def release_job_batch_guard(
+    db: Session,
+    *,
+    owner_token: str,
+    succeeded: bool,
+    config: JobAnalysisBatchConfig,
+    clock: Callable[[], float] = time.time,
+) -> bool:
+    """Releases the single global batch-start guard."""
+    cooldown_seconds = (
+        config.success_cooldown_seconds if succeeded else config.failure_cooldown_seconds
+    )
+    return _release_guard_resources(
+        db,
+        resource_cooldowns=[(JOB_BATCH_OPERATION_TYPE, JOB_BATCH_RESOURCE_ID, cooldown_seconds)],
+        owner_token=owner_token,
+        clock=clock,
+    )
+
+
+class RenewOutcome(Enum):
+    RENEWED = "renewed"
+    OWNERSHIP_LOST = "ownership_lost"
+    BACKEND_UNAVAILABLE = "backend_unavailable"
+
+
+@dataclass(frozen=True)
+class RenewResult:
+    outcome: RenewOutcome
+
+
+def renew_job_batch_guard(
+    db: Session,
+    *,
+    owner_token: str,
+    config: JobAnalysisBatchConfig,
+    clock: Callable[[], float] = time.time,
+) -> RenewResult:
+    """Owner-token- and live-expiry-gated renewal of the shared batch
+    lease, called immediately before each per-job unit of work inside a
+    batch -- not a fixed lease sized for the whole batch. Uses a
+    dedicated short-lived guard session, entirely independent of the
+    route's own `db` session; never commits or rolls back `db` itself.
+
+    The live-expiry predicate (lock_expires_at IS NOT NULL AND
+    lock_expires_at > now) is required, not optional: without it, an
+    owner whose lease already expired (and who may therefore no longer be
+    the true holder once a new owner takes over) could otherwise
+    resurrect its own stale lease. Empirically verified against a
+    synthetic temp-file SQLite database: correct-owner+live-lease matches
+    exactly one row and commits; wrong owner, missing row, expired lease,
+    null expiry, and a stale owner attempting to renew after a takeover
+    all match zero rows and change nothing.
+    """
+    now = clock()
+    new_expiry = now + config.lease_ttl_seconds
+
+    try:
+        guard_session = _guard_session(db)
+    except Exception as exc:
+        logger.warning(
+            "analysis guard: batch renewal failed to open guard session (%s)",
+            type(exc).__name__,
+        )
+        return RenewResult(outcome=RenewOutcome.BACKEND_UNAVAILABLE)
+
+    try:
+        try:
+            stmt = (
+                update(AnalysisGuard)
+                .where(
+                    AnalysisGuard.operation_type == JOB_BATCH_OPERATION_TYPE,
+                    AnalysisGuard.resource_id == JOB_BATCH_RESOURCE_ID,
+                    AnalysisGuard.owner_token == owner_token,
+                    AnalysisGuard.lock_expires_at.is_not(None),
+                    AnalysisGuard.lock_expires_at > now,
+                )
+                .values(lock_expires_at=new_expiry)
+            )
+            matched = guard_session.execute(stmt).rowcount
+        except Exception as exc:
+            _safe_rollback(guard_session)
+            logger.warning(
+                "analysis guard: batch renewal transaction failed (%s)",
+                type(exc).__name__,
+            )
+            return RenewResult(outcome=RenewOutcome.BACKEND_UNAVAILABLE)
+
+        if matched == 1:
+            try:
+                guard_session.commit()
+            except Exception as exc:
+                _safe_rollback(guard_session)
+                logger.warning(
+                    "analysis guard: batch renewal commit failed (%s)",
+                    type(exc).__name__,
+                )
+                return RenewResult(outcome=RenewOutcome.BACKEND_UNAVAILABLE)
+            return RenewResult(outcome=RenewOutcome.RENEWED)
+
+        if matched == 0:
+            _safe_rollback(guard_session)
+            return RenewResult(outcome=RenewOutcome.OWNERSHIP_LOST)
+
+        # Unsupported/unexpected rowcount (None, negative, or >1) -- fail
+        # closed rather than guess. This statement's WHERE clause is
+        # scoped to the exact composite primary key, so rowcount can never
+        # legitimately exceed 1; a value outside {0, 1} indicates the
+        # backend is not behaving as expected, not that ownership was
+        # ordinarily lost. Never commit here, and never log the actual
+        # rowcount value.
+        _safe_rollback(guard_session)
+        logger.warning(
+            "analysis guard: batch renewal saw an unsupported rowcount; backend unavailable"
+        )
+        return RenewResult(outcome=RenewOutcome.BACKEND_UNAVAILABLE)
     finally:
         _safe_close(guard_session)

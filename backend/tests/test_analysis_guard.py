@@ -1,10 +1,11 @@
+import inspect
 import math
 import os
 import shutil
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from sqlalchemy import Select, create_engine
 from sqlalchemy.exc import SQLAlchemyError
@@ -17,11 +18,26 @@ from backend.app.analysis_guard import (
     AnalysisGuardConfig,
     AnalysisGuardConfigError,
     GUARD_SAFETY_MARGIN_SECONDS,
+    JOB_BATCH_OPERATION_TYPE,
+    JOB_BATCH_RESOURCE_ID,
+    JOB_OPERATION_TYPE,
     PROFILE_OPERATION_TYPE,
+    RenewOutcome,
     USER_OPERATION_TYPE,
     load_config,
+    load_job_analysis_batch_config,
+    load_job_analysis_config,
+    release_job_analysis_guard,
+    release_job_batch_guard,
     release_profile_analysis_guard,
+    renew_job_batch_guard,
+    try_acquire_job_analysis_guard,
+    try_acquire_job_batch_guard,
     try_acquire_profile_analysis_guard,
+)
+from backend.app.analysis_guard import (
+    _release_guard_resources,
+    _try_acquire_guard_resources,
 )
 
 
@@ -48,6 +64,51 @@ def _config(**overrides) -> AnalysisGuardConfig:
     )
     defaults.update(overrides)
     return AnalysisGuardConfig(**defaults)
+
+
+def _job_config(**overrides):
+    from backend.app.analysis_guard import JobAnalysisConfig
+
+    defaults = dict(
+        openai_timeout_seconds=60,
+        openai_max_retries=0,
+        lease_ttl_seconds=300,
+        success_cooldown_seconds=300,
+        failure_cooldown_seconds=30,
+    )
+    defaults.update(overrides)
+    return JobAnalysisConfig(**defaults)
+
+
+def _batch_config(**overrides):
+    from backend.app.analysis_guard import JobAnalysisBatchConfig
+
+    defaults = dict(
+        lease_ttl_seconds=330,
+        success_cooldown_seconds=60,
+        failure_cooldown_seconds=30,
+    )
+    defaults.update(overrides)
+    return JobAnalysisBatchConfig(**defaults)
+
+
+class GenericCoreCompatibilityTests(unittest.TestCase):
+    """Proves the generic-core extraction (E3.3) preserved E3.2's public
+    surface exactly -- not just "tests still pass," but that the callable
+    signatures themselves are unchanged.
+    """
+
+    def test_profile_public_function_signatures_are_unchanged(self):
+        acquire_params = list(inspect.signature(try_acquire_profile_analysis_guard).parameters)
+        release_params = list(inspect.signature(release_profile_analysis_guard).parameters)
+        self.assertEqual(acquire_params, ["db", "profile_id", "owner_user_id", "config", "clock"])
+        self.assertEqual(
+            release_params,
+            ["db", "profile_id", "owner_user_id", "owner_token", "succeeded", "config", "clock"],
+        )
+
+    def test_load_config_signature_is_unchanged(self):
+        self.assertEqual(list(inspect.signature(load_config).parameters), [])
 
 
 class ConfigTests(unittest.TestCase):
@@ -127,6 +188,107 @@ class ConfigTests(unittest.TestCase):
         ):
             config = load_config()
             self.assertEqual(config.lease_ttl_seconds, 210)
+
+
+class JobConfigTests(unittest.TestCase):
+    def test_job_defaults_match_recommended_starting_values(self):
+        config = load_job_analysis_config()
+        self.assertEqual(config.openai_timeout_seconds, 60)
+        self.assertEqual(config.openai_max_retries, 0)
+        self.assertEqual(config.lease_ttl_seconds, 300)
+        self.assertEqual(config.success_cooldown_seconds, 300)
+        self.assertEqual(config.failure_cooldown_seconds, 30)
+
+    def test_batch_defaults_match_recommended_starting_values(self):
+        config = load_job_analysis_batch_config(job_guard_lease_seconds=300)
+        self.assertEqual(config.lease_ttl_seconds, 330)
+        self.assertEqual(config.success_cooldown_seconds, 60)
+        self.assertEqual(config.failure_cooldown_seconds, 30)
+
+    def test_job_nonpositive_and_invalid_values_rejected_for_positive_settings(self):
+        positive_settings = [
+            "JOB_ANALYSIS_OPENAI_TIMEOUT_SECONDS",
+            "JOB_ANALYSIS_GUARD_LEASE_TTL_SECONDS",
+            "JOB_ANALYSIS_SUCCESS_COOLDOWN_SECONDS",
+            "JOB_ANALYSIS_FAILURE_COOLDOWN_SECONDS",
+        ]
+        for env_name in positive_settings:
+            for bad_value in ("0", "-1", "not-a-number"):
+                with self.subTest(env_var=env_name, value=bad_value):
+                    with patch.dict(os.environ, {env_name: bad_value}, clear=False):
+                        with self.assertRaises(AnalysisGuardConfigError):
+                            load_job_analysis_config()
+
+    def test_job_max_retries_zero_is_accepted(self):
+        with patch.dict(os.environ, {"JOB_ANALYSIS_OPENAI_MAX_RETRIES": "0"}, clear=False):
+            config = load_job_analysis_config()
+            self.assertEqual(config.openai_max_retries, 0)
+
+    def test_job_max_retries_negative_is_rejected(self):
+        with patch.dict(os.environ, {"JOB_ANALYSIS_OPENAI_MAX_RETRIES": "-1"}, clear=False):
+            with self.assertRaises(AnalysisGuardConfigError):
+                load_job_analysis_config()
+
+    def test_job_max_retries_non_integer_is_rejected(self):
+        with patch.dict(os.environ, {"JOB_ANALYSIS_OPENAI_MAX_RETRIES": "not-a-number"}, clear=False):
+            with self.assertRaises(AnalysisGuardConfigError):
+                load_job_analysis_config()
+
+    def test_job_lease_boundary_exact_and_one_second_below(self):
+        # (1+1)*60 + 1*60 + 30 = 210 with max_retries=1, timeout=60.
+        with patch.dict(
+            os.environ,
+            {
+                "JOB_ANALYSIS_OPENAI_TIMEOUT_SECONDS": "60",
+                "JOB_ANALYSIS_OPENAI_MAX_RETRIES": "1",
+                "JOB_ANALYSIS_GUARD_LEASE_TTL_SECONDS": "210",
+            },
+            clear=False,
+        ):
+            config = load_job_analysis_config()
+            self.assertEqual(config.lease_ttl_seconds, 210)
+
+        with patch.dict(
+            os.environ,
+            {
+                "JOB_ANALYSIS_OPENAI_TIMEOUT_SECONDS": "60",
+                "JOB_ANALYSIS_OPENAI_MAX_RETRIES": "1",
+                "JOB_ANALYSIS_GUARD_LEASE_TTL_SECONDS": "209",
+            },
+            clear=False,
+        ):
+            with self.assertRaises(AnalysisGuardConfigError):
+                load_job_analysis_config()
+
+    def test_batch_nonpositive_and_invalid_values_rejected(self):
+        positive_settings = [
+            "JOB_ANALYSIS_BATCH_LEASE_TTL_SECONDS",
+            "JOB_ANALYSIS_BATCH_SUCCESS_COOLDOWN_SECONDS",
+            "JOB_ANALYSIS_BATCH_FAILURE_COOLDOWN_SECONDS",
+        ]
+        for env_name in positive_settings:
+            for bad_value in ("0", "-1", "not-a-number"):
+                with self.subTest(env_var=env_name, value=bad_value):
+                    with patch.dict(os.environ, {env_name: bad_value}, clear=False):
+                        with self.assertRaises(AnalysisGuardConfigError):
+                            load_job_analysis_batch_config(job_guard_lease_seconds=300)
+
+    def test_batch_lease_boundary_exact_and_one_second_below(self):
+        # job_guard_lease_seconds=300 -> minimum batch lease = 330.
+        with patch.dict(os.environ, {"JOB_ANALYSIS_BATCH_LEASE_TTL_SECONDS": "330"}, clear=False):
+            config = load_job_analysis_batch_config(job_guard_lease_seconds=300)
+            self.assertEqual(config.lease_ttl_seconds, 330)
+
+        with patch.dict(os.environ, {"JOB_ANALYSIS_BATCH_LEASE_TTL_SECONDS": "329"}, clear=False):
+            with self.assertRaises(AnalysisGuardConfigError):
+                load_job_analysis_batch_config(job_guard_lease_seconds=300)
+
+    def test_batch_lease_validated_against_actual_job_lease_not_hardcoded(self):
+        # A larger configured per-job lease raises the batch minimum too --
+        # the validation is not pinned to a hardcoded 300.
+        with patch.dict(os.environ, {"JOB_ANALYSIS_BATCH_LEASE_TTL_SECONDS": "330"}, clear=False):
+            with self.assertRaises(AnalysisGuardConfigError):
+                load_job_analysis_batch_config(job_guard_lease_seconds=400)  # needs >= 430
 
 
 class _BaseGuardTestCase(unittest.TestCase):
@@ -469,6 +631,147 @@ class BackendUnavailableTests(_BaseGuardTestCase):
         self.assertEqual(still_active.outcome, AcquireOutcome.ALREADY_IN_PROGRESS)
 
 
+class GenericCoreValidationTests(_BaseGuardTestCase):
+    """Adversarial-review correction: _try_acquire_guard_resources and
+    _release_guard_resources must reject invalid resource lists loudly
+    (ValueError) rather than silently returning a false GRANTED (empty
+    list, via `set() == set()`) or under-locking/ambiguously updating
+    (duplicate (operation_type, resource_id) pairs collapsing through
+    set() equality).
+    """
+
+    def test_acquire_empty_resources_raises_value_error(self):
+        db = self._db()
+        try:
+            with self.assertRaises(ValueError):
+                _try_acquire_guard_resources(db, resources=[], lease_ttl_seconds=300)
+        finally:
+            db.close()
+
+    def test_acquire_duplicate_resource_pairs_raises_value_error(self):
+        db = self._db()
+        try:
+            with self.assertRaises(ValueError):
+                _try_acquire_guard_resources(
+                    db,
+                    resources=[("job_analysis", 1), ("job_analysis", 1)],
+                    lease_ttl_seconds=300,
+                )
+        finally:
+            db.close()
+
+    def test_acquire_validation_occurs_before_guard_session(self):
+        db = self._db()
+        try:
+            with patch(
+                "backend.app.analysis_guard._guard_session",
+                side_effect=AssertionError("_guard_session must not be called for invalid input"),
+            ):
+                with self.assertRaises(ValueError):
+                    _try_acquire_guard_resources(db, resources=[], lease_ttl_seconds=300)
+        finally:
+            db.close()
+
+    def test_acquire_validation_occurs_before_clock(self):
+        clock_calls = []
+
+        def tracking_clock():
+            clock_calls.append(True)
+            return 1_000_000.0
+
+        db = self._db()
+        try:
+            with self.assertRaises(ValueError):
+                _try_acquire_guard_resources(
+                    db, resources=[], lease_ttl_seconds=300, clock=tracking_clock,
+                )
+        finally:
+            db.close()
+        self.assertEqual(clock_calls, [])
+
+    def test_acquire_invalid_input_mutates_no_rows(self):
+        db = self._db()
+        try:
+            with self.assertRaises(ValueError):
+                _try_acquire_guard_resources(db, resources=[], lease_ttl_seconds=300)
+        finally:
+            db.close()
+
+        check_db = self._db()
+        try:
+            count = check_db.query(AnalysisGuard).count()
+        finally:
+            check_db.close()
+        self.assertEqual(count, 0)
+
+    def test_release_empty_resource_cooldowns_raises_value_error(self):
+        db = self._db()
+        try:
+            with self.assertRaises(ValueError):
+                _release_guard_resources(db, resource_cooldowns=[], owner_token="token")
+        finally:
+            db.close()
+
+    def test_release_duplicate_keys_raises_value_error(self):
+        db = self._db()
+        try:
+            with self.assertRaises(ValueError):
+                _release_guard_resources(
+                    db,
+                    resource_cooldowns=[("job_analysis", 1, 30), ("job_analysis", 1, 30)],
+                    owner_token="token",
+                )
+        finally:
+            db.close()
+
+    def test_release_duplicate_keys_rejected_even_with_different_cooldowns(self):
+        db = self._db()
+        try:
+            with self.assertRaises(ValueError):
+                _release_guard_resources(
+                    db,
+                    resource_cooldowns=[("job_analysis", 1, 30), ("job_analysis", 1, 999)],
+                    owner_token="token",
+                )
+        finally:
+            db.close()
+
+    def test_release_validation_occurs_before_guard_session(self):
+        db = self._db()
+        try:
+            with patch(
+                "backend.app.analysis_guard._guard_session",
+                side_effect=AssertionError("_guard_session must not be called for invalid input"),
+            ):
+                with self.assertRaises(ValueError):
+                    _release_guard_resources(db, resource_cooldowns=[], owner_token="token")
+        finally:
+            db.close()
+
+    def test_release_invalid_input_mutates_no_rows(self):
+        first = self._acquire(profile_id=1, user_id=10)
+        self.assertEqual(first.outcome, AcquireOutcome.GRANTED)
+
+        db = self._db()
+        try:
+            with self.assertRaises(ValueError):
+                _release_guard_resources(
+                    db,
+                    resource_cooldowns=[
+                        (PROFILE_OPERATION_TYPE, 1, 300),
+                        (PROFILE_OPERATION_TYPE, 1, 30),
+                    ],
+                    owner_token=first.owner_token,
+                )
+        finally:
+            db.close()
+
+        # The pre-existing acquired row is untouched -- still active, not
+        # released/cooled-down by the rejected call.
+        still_active = self._acquire(profile_id=1, user_id=999)
+        self.assertEqual(still_active.outcome, AcquireOutcome.ALREADY_IN_PROGRESS)
+
+
 class MalformedStateAndClassificationTests(_BaseGuardTestCase):
     def _insert_row_directly(self, operation_type, resource_id, owner_token, lock_expires_at, cooldown_until):
         # Bypasses try_acquire_profile_analysis_guard entirely -- writes a
@@ -588,6 +891,430 @@ class MalformedStateAndClassificationTests(_BaseGuardTestCase):
             result = self._acquire(profile_id=1, user_id=10)
 
         self.assertEqual(result.outcome, AcquireOutcome.BACKEND_UNAVAILABLE)
+
+
+class _BaseJobGuardTestCase(_BaseGuardTestCase):
+    def setUp(self):
+        super().setUp()
+        self.job_config = _job_config()
+        self.batch_config = _batch_config()
+
+    def _job_acquire(self, job_id, config=None, clock=None):
+        db = self._db()
+        try:
+            return try_acquire_job_analysis_guard(
+                db, job_id=job_id, config=config or self.job_config, clock=clock or self.clock,
+            )
+        finally:
+            db.close()
+
+    def _job_release(self, job_id, owner_token, succeeded, config=None, clock=None):
+        db = self._db()
+        try:
+            return release_job_analysis_guard(
+                db, job_id=job_id, owner_token=owner_token, succeeded=succeeded,
+                config=config or self.job_config, clock=clock or self.clock,
+            )
+        finally:
+            db.close()
+
+    def _batch_acquire(self, config=None, clock=None):
+        db = self._db()
+        try:
+            return try_acquire_job_batch_guard(
+                db, config=config or self.batch_config, clock=clock or self.clock,
+            )
+        finally:
+            db.close()
+
+    def _batch_release(self, owner_token, succeeded, config=None, clock=None):
+        db = self._db()
+        try:
+            return release_job_batch_guard(
+                db, owner_token=owner_token, succeeded=succeeded,
+                config=config or self.batch_config, clock=clock or self.clock,
+            )
+        finally:
+            db.close()
+
+    def _renew(self, owner_token, config=None, clock=None):
+        db = self._db()
+        try:
+            return renew_job_batch_guard(
+                db, owner_token=owner_token, config=config or self.batch_config, clock=clock or self.clock,
+            )
+        finally:
+            db.close()
+
+
+class JobAcquireReleaseTests(_BaseJobGuardTestCase):
+    def test_first_analysis_acquires_the_job_resource(self):
+        result = self._job_acquire(job_id=1)
+        self.assertEqual(result.outcome, AcquireOutcome.GRANTED)
+        self.assertIsNotNone(result.owner_token)
+
+    def test_second_request_same_job_is_already_in_progress(self):
+        first = self._job_acquire(job_id=1)
+        self.assertEqual(first.outcome, AcquireOutcome.GRANTED)
+
+        second = self._job_acquire(job_id=1)
+        self.assertEqual(second.outcome, AcquireOutcome.ALREADY_IN_PROGRESS)
+
+    def test_different_jobs_are_independent(self):
+        first = self._job_acquire(job_id=1)
+        second = self._job_acquire(job_id=2)
+        self.assertEqual(first.outcome, AcquireOutcome.GRANTED)
+        self.assertEqual(second.outcome, AcquireOutcome.GRANTED)
+
+    def test_job_success_cooldown_returns_cooldown_active(self):
+        first = self._job_acquire(job_id=1)
+        self._job_release(1, first.owner_token, succeeded=True)  # success cooldown=300
+
+        result = self._job_acquire(job_id=1)
+        self.assertEqual(result.outcome, AcquireOutcome.COOLDOWN_ACTIVE)
+        self.assertEqual(result.retry_after_seconds, 300)
+
+    def test_job_failure_cooldown_differs_from_success(self):
+        first = self._job_acquire(job_id=1)
+        self._job_release(1, first.owner_token, succeeded=False)  # failure cooldown=30
+
+        result = self._job_acquire(job_id=1)
+        self.assertEqual(result.outcome, AcquireOutcome.COOLDOWN_ACTIVE)
+        self.assertEqual(result.retry_after_seconds, 30)
+
+    def test_job_cooldown_expiry_permits_a_new_acquisition(self):
+        config = _job_config(success_cooldown_seconds=10)
+        first = self._job_acquire(job_id=1, config=config)
+        self._job_release(1, first.owner_token, succeeded=True, config=config)
+
+        blocked = self._job_acquire(job_id=1, config=config)
+        self.assertEqual(blocked.outcome, AcquireOutcome.COOLDOWN_ACTIVE)
+
+        self.clock.advance(10)
+        allowed = self._job_acquire(job_id=1, config=config)
+        self.assertEqual(allowed.outcome, AcquireOutcome.GRANTED)
+
+    def test_job_stale_lease_takeover(self):
+        config = _job_config(lease_ttl_seconds=60)
+        first = self._job_acquire(job_id=1, config=config)
+        self.assertEqual(first.outcome, AcquireOutcome.GRANTED)
+
+        self.clock.advance(61)
+        takeover = self._job_acquire(job_id=1, config=config)
+        self.assertEqual(takeover.outcome, AcquireOutcome.GRANTED)
+        self.assertNotEqual(takeover.owner_token, first.owner_token)
+
+    def test_job_release_is_idempotent(self):
+        first = self._job_acquire(job_id=1)
+        self._job_release(1, first.owner_token, succeeded=True)
+        self._job_release(1, first.owner_token, succeeded=True)  # second call, same token
+
+        result = self._job_acquire(job_id=1)
+        self.assertEqual(result.outcome, AcquireOutcome.COOLDOWN_ACTIVE)
+        self.assertEqual(result.retry_after_seconds, 300)
+
+    def test_stale_owner_cannot_release_a_newer_owners_job_lease(self):
+        config = _job_config(lease_ttl_seconds=60)
+        first = self._job_acquire(job_id=1, config=config)
+        self.clock.advance(61)
+        second = self._job_acquire(job_id=1, config=config)
+        self.assertEqual(second.outcome, AcquireOutcome.GRANTED)
+
+        self._job_release(1, first.owner_token, succeeded=True, config=config)  # stale, no-op
+
+        still_blocked = self._job_acquire(job_id=1, config=config)
+        self.assertEqual(still_blocked.outcome, AcquireOutcome.ALREADY_IN_PROGRESS)
+
+
+class BatchGuardTests(_BaseJobGuardTestCase):
+    def test_batch_singleton_acquire_and_release(self):
+        result = self._batch_acquire()
+        self.assertEqual(result.outcome, AcquireOutcome.GRANTED)
+        released = self._batch_release(result.owner_token, succeeded=True)
+        self.assertTrue(released)
+
+    def test_second_batch_start_is_already_in_progress(self):
+        first = self._batch_acquire()
+        self.assertEqual(first.outcome, AcquireOutcome.GRANTED)
+
+        second = self._batch_acquire()
+        self.assertEqual(second.outcome, AcquireOutcome.ALREADY_IN_PROGRESS)
+
+    def test_batch_success_cooldown(self):
+        first = self._batch_acquire()
+        self._batch_release(first.owner_token, succeeded=True)
+
+        result = self._batch_acquire()
+        self.assertEqual(result.outcome, AcquireOutcome.COOLDOWN_ACTIVE)
+        self.assertEqual(result.retry_after_seconds, 60)
+
+    def test_batch_failure_cooldown(self):
+        first = self._batch_acquire()
+        self._batch_release(first.owner_token, succeeded=False)
+
+        result = self._batch_acquire()
+        self.assertEqual(result.outcome, AcquireOutcome.COOLDOWN_ACTIVE)
+        self.assertEqual(result.retry_after_seconds, 30)
+
+    def test_batch_resource_uses_the_expected_singleton_key(self):
+        result = self._batch_acquire()
+        db = self._db()
+        try:
+            row = db.query(AnalysisGuard).filter(
+                AnalysisGuard.operation_type == JOB_BATCH_OPERATION_TYPE,
+                AnalysisGuard.resource_id == JOB_BATCH_RESOURCE_ID,
+            ).first()
+            self.assertIsNotNone(row)
+            self.assertEqual(row.owner_token, result.owner_token)
+        finally:
+            db.close()
+
+    def test_batch_and_per_job_guards_are_fully_independent(self):
+        # A held batch lock does not block an unrelated per-job
+        # acquisition, and vice versa -- distinct operation_type rows.
+        batch_result = self._batch_acquire()
+        self.assertEqual(batch_result.outcome, AcquireOutcome.GRANTED)
+
+        job_result = self._job_acquire(job_id=1)
+        self.assertEqual(job_result.outcome, AcquireOutcome.GRANTED)
+
+
+class RenewalTests(_BaseJobGuardTestCase):
+    def test_correct_owner_live_lease_renews(self):
+        acquire_result = self._batch_acquire()
+        self.assertEqual(acquire_result.outcome, AcquireOutcome.GRANTED)
+
+        renew_result = self._renew(acquire_result.owner_token)
+        self.assertEqual(renew_result.outcome, RenewOutcome.RENEWED)
+
+    def test_wrong_owner_is_ownership_lost(self):
+        self._batch_acquire()
+        renew_result = self._renew("wrong-owner-token")
+        self.assertEqual(renew_result.outcome, RenewOutcome.OWNERSHIP_LOST)
+
+    def test_missing_row_is_ownership_lost(self):
+        renew_result = self._renew("any-owner-token")
+        self.assertEqual(renew_result.outcome, RenewOutcome.OWNERSHIP_LOST)
+
+    def test_expired_lease_is_ownership_lost_and_not_resurrected(self):
+        config = _batch_config(lease_ttl_seconds=330)
+        acquire_result = self._batch_acquire(config=config)
+        self.clock.advance(400)  # past the lease TTL
+
+        renew_result = self._renew(acquire_result.owner_token, config=config)
+        self.assertEqual(renew_result.outcome, RenewOutcome.OWNERSHIP_LOST)
+
+        # If renewal had incorrectly resurrected the expired lease, this
+        # fresh acquire would now conflict instead of succeeding.
+        fresh = self._batch_acquire(config=config)
+        self.assertEqual(fresh.outcome, AcquireOutcome.GRANTED)
+
+    def test_null_expiry_is_ownership_lost(self):
+        db = self._db()
+        try:
+            db.add(AnalysisGuard(
+                operation_type=JOB_BATCH_OPERATION_TYPE,
+                resource_id=JOB_BATCH_RESOURCE_ID,
+                owner_token="malformed-owner",
+                lock_expires_at=None,
+                cooldown_until=None,
+            ))
+            db.commit()
+        finally:
+            db.close()
+
+        renew_result = self._renew("malformed-owner")
+        self.assertEqual(renew_result.outcome, RenewOutcome.OWNERSHIP_LOST)
+
+    def test_stale_owner_cannot_renew_after_takeover(self):
+        config = _batch_config(lease_ttl_seconds=60)
+        first = self._batch_acquire(config=config)
+        self.clock.advance(61)
+        second = self._batch_acquire(config=config)  # takeover
+        self.assertEqual(second.outcome, AcquireOutcome.GRANTED)
+        self.assertNotEqual(second.owner_token, first.owner_token)
+
+        stale_renew = self._renew(first.owner_token, config=config)
+        self.assertEqual(stale_renew.outcome, RenewOutcome.OWNERSHIP_LOST)
+
+        # The new owner's row is untouched by the stale renewal attempt.
+        new_owner_renew = self._renew(second.owner_token, config=config)
+        self.assertEqual(new_owner_renew.outcome, RenewOutcome.RENEWED)
+
+    def test_ordinary_backend_exception_during_query_is_backend_unavailable(self):
+        acquire_result = self._batch_acquire()
+        db = self._db()
+        try:
+            with patch.object(Session, "execute", side_effect=ValueError("boom")):
+                renew_result = renew_job_batch_guard(
+                    db, owner_token=acquire_result.owner_token, config=self.batch_config, clock=self.clock,
+                )
+            self.assertEqual(renew_result.outcome, RenewOutcome.BACKEND_UNAVAILABLE)
+        finally:
+            db.close()
+
+    def test_commit_failure_rolls_back_and_returns_backend_unavailable(self):
+        acquire_result = self._batch_acquire()
+        db = self._db()
+        try:
+            with patch.object(Session, "commit", side_effect=ValueError("boom")):
+                renew_result = renew_job_batch_guard(
+                    db, owner_token=acquire_result.owner_token, config=self.batch_config, clock=self.clock,
+                )
+            self.assertEqual(renew_result.outcome, RenewOutcome.BACKEND_UNAVAILABLE)
+        finally:
+            db.close()
+
+        # The lease was not silently extended by the failed commit --
+        # a wrong-owner probe still correctly reports ownership loss for
+        # THAT probe, and the true owner can still renew normally after.
+        still_renewable = self._renew(acquire_result.owner_token)
+        self.assertEqual(still_renewable.outcome, RenewOutcome.RENEWED)
+
+    def test_route_session_is_never_committed_or_rolled_back_by_renewal(self):
+        acquire_result = self._batch_acquire()
+        db = self._db()
+        try:
+            original_commit = db.commit
+            original_rollback = db.rollback
+            commit_calls = []
+            rollback_calls = []
+
+            def tracking_commit(*args, **kwargs):
+                commit_calls.append(True)
+                return original_commit(*args, **kwargs)
+
+            def tracking_rollback(*args, **kwargs):
+                rollback_calls.append(True)
+                return original_rollback(*args, **kwargs)
+
+            db.commit = tracking_commit
+            db.rollback = tracking_rollback
+
+            renew_result = renew_job_batch_guard(
+                db, owner_token=acquire_result.owner_token, config=self.batch_config, clock=self.clock,
+            )
+            self.assertEqual(renew_result.outcome, RenewOutcome.RENEWED)
+            self.assertEqual(commit_calls, [])
+            self.assertEqual(rollback_calls, [])
+        finally:
+            db.close()
+
+    def test_unsupported_rowcount_fails_closed(self):
+        for bad_rowcount in (-1, 2, None):
+            with self.subTest(rowcount=bad_rowcount):
+                acquire_result = self._batch_acquire()
+                self.assertEqual(acquire_result.outcome, AcquireOutcome.GRANTED)
+
+                fake_result = MagicMock()
+                fake_result.rowcount = bad_rowcount
+
+                db = self._db()
+                try:
+                    with patch.object(Session, "execute", return_value=fake_result), \
+                         patch.object(Session, "commit") as mock_commit, \
+                         patch.object(Session, "rollback") as mock_rollback, \
+                         patch.object(Session, "close") as mock_close, \
+                         self.assertLogs("backend.app.analysis_guard", level="WARNING") as log_ctx:
+                        renew_result = renew_job_batch_guard(
+                            db, owner_token=acquire_result.owner_token,
+                            config=self.batch_config, clock=self.clock,
+                        )
+                finally:
+                    db.close()
+
+                self.assertEqual(renew_result.outcome, RenewOutcome.BACKEND_UNAVAILABLE)
+                mock_commit.assert_not_called()
+                mock_rollback.assert_called()
+                mock_close.assert_called()
+
+                # Fixed, generic warning only -- never the rowcount value,
+                # the owner token, or any other sensitive/identifying data.
+                self.assertEqual(len(log_ctx.output), 1)
+                self.assertNotIn(str(bad_rowcount), log_ctx.output[0])
+                self.assertNotIn(acquire_result.owner_token, log_ctx.output[0])
+
+                # Free the still-held lease (never actually renewed, since
+                # the patched commit was never called) before the next
+                # subTest's fresh acquire attempt, and advance the fake
+                # clock past the release's own success cooldown so that
+                # next acquire is genuinely GRANTED rather than COOLDOWN_ACTIVE.
+                released = self._batch_release(acquire_result.owner_token, succeeded=True)
+                self.assertTrue(released)
+                self.clock.advance(1000)
+
+
+class RenewalConcurrencyTests(unittest.TestCase):
+    """Real threads, real temp-file SQLite, distinct connections -- proves
+    a stale takeover and an old owner's renewal attempt cannot both
+    succeed, i.e. at most one valid owner survives after commit.
+    """
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="apply101_job_batch_renewal_concurrency_test_")
+        self.db_path = os.path.join(self.tmp_dir, "synthetic_test.db")
+        self.engine = create_engine(
+            f"sqlite:///{self.db_path}", connect_args={"check_same_thread": False}
+        )
+        Base.metadata.create_all(bind=self.engine)
+        self.session_factory = sessionmaker(autocommit=False, autoflush=False, bind=self.engine)
+        self.batch_config = _batch_config(lease_ttl_seconds=60)
+
+    def tearDown(self):
+        self.engine.dispose()
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_takeover_and_stale_renewal_cannot_produce_two_valid_owners(self):
+        clock = _FakeClock()
+        db = self.session_factory()
+        try:
+            first = try_acquire_job_batch_guard(db, config=self.batch_config, clock=clock)
+        finally:
+            db.close()
+        self.assertEqual(first.outcome, AcquireOutcome.GRANTED)
+        clock.advance(61)  # past the lease TTL for every subsequent attempt
+
+        both_ready = threading.Barrier(2, timeout=10)
+        results = {}
+
+        def attempt_takeover():
+            db = self.session_factory()
+            try:
+                both_ready.wait()
+                results["takeover"] = try_acquire_job_batch_guard(db, config=self.batch_config, clock=clock)
+            finally:
+                db.close()
+
+        def attempt_stale_renewal():
+            db = self.session_factory()
+            try:
+                both_ready.wait()
+                results["stale_renew"] = renew_job_batch_guard(
+                    db, owner_token=first.owner_token, config=self.batch_config, clock=clock,
+                )
+            finally:
+                db.close()
+
+        t1 = threading.Thread(target=attempt_takeover)
+        t2 = threading.Thread(target=attempt_stale_renewal)
+        t1.start()
+        t2.start()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+
+        self.assertEqual(results["takeover"].outcome, AcquireOutcome.GRANTED)
+        self.assertEqual(results["stale_renew"].outcome, RenewOutcome.OWNERSHIP_LOST)
+
+        db = self.session_factory()
+        try:
+            row = db.query(AnalysisGuard).filter(
+                AnalysisGuard.operation_type == JOB_BATCH_OPERATION_TYPE,
+                AnalysisGuard.resource_id == JOB_BATCH_RESOURCE_ID,
+            ).first()
+            self.assertEqual(row.owner_token, results["takeover"].owner_token)
+            self.assertNotEqual(row.owner_token, first.owner_token)
+        finally:
+            db.close()
 
 
 class ConcurrencyTests(unittest.TestCase):

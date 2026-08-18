@@ -1,3 +1,4 @@
+import logging
 import requests
 import time
 import json
@@ -11,6 +12,18 @@ from datetime import datetime, timezone
 
 from ..app.database import get_db
 from ..app import models, schemas
+from ..app.analysis_guard import (
+    AcquireOutcome,
+    AnalysisGuardConfigError,
+    RenewOutcome,
+    load_job_analysis_batch_config,
+    load_job_analysis_config,
+    release_job_analysis_guard,
+    release_job_batch_guard,
+    renew_job_batch_guard,
+    try_acquire_job_analysis_guard,
+    try_acquire_job_batch_guard,
+)
 from ..app.auth_dependencies import get_current_admin, get_current_user
 from ..app.taxonomy import ROLE_FAMILIES, ROLE_SUBFAMILIES, ROLE_TAGS, SKILL_TAGS
 from ..app.analysis_contract import (
@@ -21,6 +34,7 @@ from ..app.job_analysis_sanitizer import sanitize_job_analysis_requirements
 
 
 client = OpenAI()
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/jobs",
@@ -613,16 +627,63 @@ def fetch_jobs_by_pages(
     }
 
 
+def _create_job_analysis_response(prompt: str, *, timeout_seconds: int, max_retries: int):
+    """Single seam for the structured job-analysis OpenAI call used by
+    _analyze_job_impl (and therefore both the single-analyze route and the
+    analyze-missing batch route). Tests must patch this function directly
+    -- patching client.responses.create does NOT work, since
+    client.with_options(...) returns a distinct client/resource instance
+    (same mechanism verified for profiles.py's _create_profile_analysis_response).
+    """
+    scoped_client = client.with_options(max_retries=max_retries)
+    return scoped_client.responses.create(
+        model=JOB_ANALYSIS_MODEL,
+        input=prompt,
+        temperature=0,
+        text={
+            "format": {
+                "type": "json_schema",
+                "name": "job_analysis",
+                "schema": schemas.JobAnalysisStructured.model_json_schema(),
+                "strict": True
+            }
+        },
+        timeout=timeout_seconds,
+    )
+
+
+def _create_job_sample_analysis_response(prompt: str, *, timeout_seconds: int, max_retries: int):
+    """Single seam for analyze-sample's separate, unstructured OpenAI
+    call. analyze-sample does not call _analyze_job_impl, so it needs its
+    own wrapper distinct from _create_job_analysis_response -- the two
+    calls have different arguments (no structured-output schema here) and
+    protect a different call site.
+    """
+    scoped_client = client.with_options(max_retries=max_retries)
+    return scoped_client.responses.create(
+        model="gpt-4.1-mini",
+        input=prompt,
+        temperature=0,
+        timeout=timeout_seconds,
+    )
+
+
 def _analyze_job_impl(
     *,
     job_id: int,
     force_reanalyze: bool,
     db: Session,
+    job_config=None,
 ):
     """Business logic for analyzing a single job. No Depends(), no
     authentication -- callers (the single-analyze route and the
     analyze-missing batch route) must already have authorized the request
     before calling this. Never call this from anywhere that hasn't.
+
+    job_config: an optional, already-loaded JobAnalysisConfig. Batch
+    callers load it once and pass it down (avoiding N redundant env reads
+    across a large batch); the single-job route leaves this as None so
+    _analyze_job_impl loads its own, exactly once per request, as before.
     """
     job = db.query(models.Job).filter(
         models.Job.job_id == job_id
@@ -664,6 +725,20 @@ def _analyze_job_impl(
             "analysis": json.loads(existing_analysis.analysis_json)
             if existing_analysis.analysis_json else None
         }
+
+    # Configuration is validated first -- before the guard or OpenAI --
+    # and its HTTPException lives outside the analysis exception handler
+    # below, so invalid configuration always maps to a plain 500 and never
+    # creates a failed-analysis row. Batch callers pass an already-loaded
+    # job_config (validated once at the batch's own start); the single-job
+    # route leaves job_config=None so one fresh copy is loaded here.
+    try:
+        config = job_config if job_config is not None else load_job_analysis_config()
+    except AnalysisGuardConfigError:
+        raise HTTPException(
+            status_code=500,
+            detail="Job analysis protection is not correctly configured.",
+        )
 
     prompt = f"""
     You are a job posting parser for a job matching system.
@@ -784,21 +859,44 @@ def _analyze_job_impl(
     Job description:
     {(job.description_text or "")[:12000]}
     """
+
+    guard_acquire_result = try_acquire_job_analysis_guard(db, job_id=job.job_id, config=config)
+
+    if guard_acquire_result.outcome is AcquireOutcome.ALREADY_IN_PROGRESS:
+        raise HTTPException(
+            status_code=409,
+            detail="An analysis for this job is already in progress.",
+        )
+
+    if guard_acquire_result.outcome is AcquireOutcome.COOLDOWN_ACTIVE:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Please try again later.",
+            headers={"Retry-After": str(guard_acquire_result.retry_after_seconds)},
+        )
+
+    if guard_acquire_result.outcome is AcquireOutcome.BACKEND_UNAVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Service temporarily unavailable. Please try again shortly.",
+        )
+
+    guard_owner_token = guard_acquire_result.owner_token
+    # Set True only immediately after the paid analysis result is actually
+    # committed. The single release point in `finally` below uses this
+    # flag -- not whether the function ultimately returns or raises -- so
+    # a later refresh/response failure after a real commit still applies
+    # the success cooldown for the already-persisted, already-paid-for
+    # result.
+    job_analysis_committed = False
+
     now = datetime.now(timezone.utc)
 
     try:
-        response = client.responses.create(
-            model=JOB_ANALYSIS_MODEL,
-            input=prompt,
-            temperature=0,
-            text={
-                "format": {
-                    "type": "json_schema",
-                    "name": "job_analysis",
-                    "schema": schemas.JobAnalysisStructured.model_json_schema(),
-                    "strict": True
-                }
-            }
+        response = _create_job_analysis_response(
+            prompt,
+            timeout_seconds=config.openai_timeout_seconds,
+            max_retries=config.openai_max_retries,
         )
 
         raw_text = response.output_text.strip()
@@ -897,6 +995,7 @@ def _analyze_job_impl(
 
         db.add(new_analysis)
         db.commit()
+        job_analysis_committed = True
         db.refresh(new_analysis)
 
         return {
@@ -936,6 +1035,34 @@ def _analyze_job_impl(
                 "error": str(e)
             }
         )
+
+    finally:
+        # Single guaranteed release point, covering every post-acquisition
+        # path: the success return above, the handled-failure raises
+        # above (including the inline ERR_AI_INVALID_JSON HTTPException),
+        # and any exception raised by the failed-analysis bookkeeping
+        # itself -- finally always runs even when the except block above
+        # raises. succeeded reflects job_analysis_committed, which is only
+        # ever set True immediately after the paid analysis result is
+        # actually committed.
+        try:
+            release_job_analysis_guard(
+                db,
+                job_id=job.job_id,
+                owner_token=guard_owner_token,
+                succeeded=job_analysis_committed,
+                config=config,
+            )
+        except Exception as release_exc:
+            # Defensive only -- release_job_analysis_guard is designed to
+            # never raise. Never let a release-time failure replace an
+            # already-established return value or exception, and never
+            # log the owner token, prompt, job description, or the raw
+            # exception (its message could echo bound SQL parameters).
+            logger.warning(
+                "_analyze_job_impl: guard release attempt raised unexpectedly (%s)",
+                type(release_exc).__name__,
+            )
 
 
 @router.post("/{job_id}/analyze")
@@ -990,6 +1117,8 @@ def analyze_missing_jobs(
     )
 
     if not jobs:
+        # No-op: zero OpenAI cost is at risk, so config/batch-guard/per-job-guard
+        # are never touched here.
         return {
             "status": "no_jobs_to_analyze",
             "requested_limit": limit,
@@ -1000,67 +1129,162 @@ def analyze_missing_jobs(
             "results": []
         }
 
+    # Configuration is validated before any guard/OpenAI work, entirely
+    # outside the batch try/finally below, so invalid configuration always
+    # maps to a plain 500 and never touches guard state.
+    try:
+        per_job_config = load_job_analysis_config()
+        batch_config = load_job_analysis_batch_config(
+            job_guard_lease_seconds=per_job_config.lease_ttl_seconds
+        )
+    except AnalysisGuardConfigError:
+        raise HTTPException(
+            status_code=500,
+            detail="Job analysis protection is not correctly configured.",
+        )
+
+    batch_guard_result = try_acquire_job_batch_guard(db, config=batch_config)
+
+    if batch_guard_result.outcome is AcquireOutcome.ALREADY_IN_PROGRESS:
+        raise HTTPException(
+            status_code=409,
+            detail="A job-analysis batch is already in progress.",
+        )
+
+    if batch_guard_result.outcome is AcquireOutcome.COOLDOWN_ACTIVE:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Please try again later.",
+            headers={"Retry-After": str(batch_guard_result.retry_after_seconds)},
+        )
+
+    if batch_guard_result.outcome is AcquireOutcome.BACKEND_UNAVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Service temporarily unavailable. Please try again shortly.",
+        )
+
+    batch_owner_token = batch_guard_result.owner_token
+    # True only if the loop below reaches its natural end (no coordination
+    # loss) -- individual per-job failures do NOT make this False, since
+    # they are independently guarded/cooled down at the per-job level and
+    # the batch itself still completed its run.
+    batch_completed = False
     results = []
+    lock_lost_response = None
 
-    for job in jobs:
+    try:
+        for job in jobs:
+            # Renewed before EVERY job (not every few), so the batch lease
+            # only ever needs to cover one job's worst case at a time --
+            # see load_job_analysis_batch_config's docstring.
+            renew_result = renew_job_batch_guard(db, owner_token=batch_owner_token, config=batch_config)
+
+            if renew_result.outcome is RenewOutcome.OWNERSHIP_LOST:
+                # Stop issuing further OpenAI calls immediately. Jobs
+                # already processed above remain fully committed --
+                # documented, accepted partial-side-effect behavior.
+                lock_lost_response = HTTPException(
+                    status_code=409,
+                    detail="Job-analysis batch coordination was lost. Please retry.",
+                )
+                break
+
+            if renew_result.outcome is RenewOutcome.BACKEND_UNAVAILABLE:
+                lock_lost_response = HTTPException(
+                    status_code=503,
+                    detail="Service temporarily unavailable. Please try again shortly.",
+                )
+                break
+
+            try:
+                result = _analyze_job_impl(
+                    job_id=job.job_id,
+                    force_reanalyze=False,
+                    db=db,
+                    job_config=per_job_config,
+                )
+
+                results.append({
+                    "job_id": job.job_id,
+                    "title": job.title,
+                    "company_name": job.company_name,
+                    "status": result.get("status"),
+                    "analysis_id": result.get("analysis_id"),
+                    "analysis_prompt_version": result.get("analysis_prompt_version")
+                })
+
+            except HTTPException as e:
+                # A per-job 409/429/503/500 (including a per-job guard
+                # conflict) is represented as that job's own failed
+                # result -- the batch continues to the next job.
+                db.rollback()
+
+                results.append({
+                    "job_id": job.job_id,
+                    "title": job.title,
+                    "company_name": job.company_name,
+                    "status": "failed",
+                    "error": e.detail
+                })
+
+            except Exception as e:
+                db.rollback()
+
+                results.append({
+                    "job_id": job.job_id,
+                    "title": job.title,
+                    "company_name": job.company_name,
+                    "status": "failed",
+                    "error": str(e)
+                })
+        else:
+            # Reached only if the loop completed without `break` --
+            # i.e. batch coordination was never lost.
+            batch_completed = True
+
+        if not batch_completed:
+            raise lock_lost_response
+
+        analyzed_count = len([
+            result for result in results
+            if result.get("status") in ["created", "cached"]
+        ])
+
+        failed_count = len([
+            result for result in results
+            if result.get("status") == "failed"
+        ])
+
+        return {
+            "status": "completed",
+            "requested_limit": limit,
+            "max_allowed_limit": MAX_ANALYZE_MISSING_JOBS,
+            "selected_job_count": len(jobs),
+            "analyzed_count": analyzed_count,
+            "failed_count": failed_count,
+            "automatic_retry_blocked_count": len(automatic_retry_blocked_job_ids),
+            "results": results
+        }
+    finally:
+        # Single guaranteed release point for the batch lock, covering the
+        # normal-completion return above and the lock-lost raise above.
+        # succeeded reflects batch_completed, i.e. whether the batch
+        # actually reached the end of its own selected-job loop -- release
+        # is owner-token-gated, so if ownership was already lost this is a
+        # safe no-op and applies no cooldown on this caller's behalf.
         try:
-            result = _analyze_job_impl(
-                job_id=job.job_id,
-                force_reanalyze=False,
-                db=db,
+            release_job_batch_guard(
+                db,
+                owner_token=batch_owner_token,
+                succeeded=batch_completed,
+                config=batch_config,
             )
-
-            results.append({
-                "job_id": job.job_id,
-                "title": job.title,
-                "company_name": job.company_name,
-                "status": result.get("status"),
-                "analysis_id": result.get("analysis_id"),
-                "analysis_prompt_version": result.get("analysis_prompt_version")
-            })
-
-        except HTTPException as e:
-            db.rollback()
-
-            results.append({
-                "job_id": job.job_id,
-                "title": job.title,
-                "company_name": job.company_name,
-                "status": "failed",
-                "error": e.detail
-            })
-
-        except Exception as e:
-            db.rollback()
-
-            results.append({
-                "job_id": job.job_id,
-                "title": job.title,
-                "company_name": job.company_name,
-                "status": "failed",
-                "error": str(e)
-            })
-
-    analyzed_count = len([
-        result for result in results
-        if result.get("status") in ["created", "cached"]
-    ])
-
-    failed_count = len([
-        result for result in results
-        if result.get("status") == "failed"
-    ])
-
-    return {
-        "status": "completed",
-        "requested_limit": limit,
-        "max_allowed_limit": MAX_ANALYZE_MISSING_JOBS,
-        "selected_job_count": len(jobs),
-        "analyzed_count": analyzed_count,
-        "failed_count": failed_count,
-        "automatic_retry_blocked_count": len(automatic_retry_blocked_job_ids),
-        "results": results
-    }
+        except Exception as release_exc:
+            logger.warning(
+                "analyze_missing_jobs: batch guard release attempt raised unexpectedly (%s)",
+                type(release_exc).__name__,
+            )
 
 
 # This endpoint sends selected job details to LLM for sample analysis.
@@ -1117,6 +1341,8 @@ def analyze_sample_jobs(
         missing_job_ids = []
 
     if not jobs:
+        # No-op: zero OpenAI cost is at risk, so config/batch-guard/per-job-guard
+        # are never touched here.
         raise HTTPException(
             status_code=404,
             detail={
@@ -1125,10 +1351,68 @@ def analyze_sample_jobs(
             }
         )
 
+    # Configuration is validated before any guard/OpenAI work, entirely
+    # outside the batch try/finally below.
+    try:
+        per_job_config = load_job_analysis_config()
+        batch_config = load_job_analysis_batch_config(
+            job_guard_lease_seconds=per_job_config.lease_ttl_seconds
+        )
+    except AnalysisGuardConfigError:
+        raise HTTPException(
+            status_code=500,
+            detail="Job analysis protection is not correctly configured.",
+        )
+
+    # Shares the SAME global batch singleton as analyze-missing.
+    batch_guard_result = try_acquire_job_batch_guard(db, config=batch_config)
+
+    if batch_guard_result.outcome is AcquireOutcome.ALREADY_IN_PROGRESS:
+        raise HTTPException(
+            status_code=409,
+            detail="A job-analysis batch is already in progress.",
+        )
+
+    if batch_guard_result.outcome is AcquireOutcome.COOLDOWN_ACTIVE:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Please try again later.",
+            headers={"Retry-After": str(batch_guard_result.retry_after_seconds)},
+        )
+
+    if batch_guard_result.outcome is AcquireOutcome.BACKEND_UNAVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Service temporarily unavailable. Please try again shortly.",
+        )
+
+    batch_owner_token = batch_guard_result.owner_token
+    # True only if the loop below reaches its natural end for every
+    # selected job -- any failure (coordination loss, a per-job guard
+    # conflict, or an OpenAI/parsing failure) aborts the whole request via
+    # a raised HTTPException, which propagates through this flag still
+    # False, matching analyze-sample's existing all-or-nothing semantics.
+    batch_completed = False
     results = []
 
-    for job in jobs:
-        prompt = f"""
+    try:
+        for job in jobs:
+            # Renewed before EVERY job's protected operation.
+            renew_result = renew_job_batch_guard(db, owner_token=batch_owner_token, config=batch_config)
+
+            if renew_result.outcome is RenewOutcome.OWNERSHIP_LOST:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Job-analysis batch coordination was lost. Please retry.",
+                )
+
+            if renew_result.outcome is RenewOutcome.BACKEND_UNAVAILABLE:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Service temporarily unavailable. Please try again shortly.",
+                )
+
+            prompt = f"""
 You are a job posting parser for a job matching system.
 
 Extract the key matching signals from this job posting.
@@ -1175,40 +1459,118 @@ Rules:
 - If EU work authorization is required, include it in dealbreakers.
 """
 
-        response = client.responses.create(
-            model="gpt-4.1-mini",
-            input=prompt,
-            temperature=0
-        )
+            job_guard_result = try_acquire_job_analysis_guard(db, job_id=job.job_id, config=per_job_config)
 
-        raw_text = response.output_text.strip()
+            if job_guard_result.outcome is AcquireOutcome.ALREADY_IN_PROGRESS:
+                # Aborts the complete sample request -- matches analyze-sample's
+                # existing all-or-nothing per-job semantics.
+                raise HTTPException(
+                    status_code=409,
+                    detail="An analysis for this job is already in progress.",
+                )
 
-        try:
-            analysis = json.loads(raw_text)
-        except json.JSONDecodeError:
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "error_code": "ERR_AI_INVALID_JSON",
-                    "message": "AI response was not valid JSON.",
+            if job_guard_result.outcome is AcquireOutcome.COOLDOWN_ACTIVE:
+                raise HTTPException(
+                    status_code=429,
+                    detail="Too many requests. Please try again later.",
+                    headers={"Retry-After": str(job_guard_result.retry_after_seconds)},
+                )
+
+            if job_guard_result.outcome is AcquireOutcome.BACKEND_UNAVAILABLE:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Service temporarily unavailable. Please try again shortly.",
+                )
+
+            job_owner_token = job_guard_result.owner_token
+            # Named for operation success, not "committed" -- analyze-sample
+            # never writes a JobAnalysis row, so nothing is ever committed here.
+            sample_call_succeeded = False
+
+            try:
+                response = _create_job_sample_analysis_response(
+                    prompt,
+                    timeout_seconds=per_job_config.openai_timeout_seconds,
+                    max_retries=per_job_config.openai_max_retries,
+                )
+
+                raw_text = response.output_text.strip()
+
+                try:
+                    analysis = json.loads(raw_text)
+                except json.JSONDecodeError:
+                    # Existing dedicated shape, unchanged, including raw_response.
+                    raise HTTPException(
+                        status_code=500,
+                        detail={
+                            "error_code": "ERR_AI_INVALID_JSON",
+                            "message": "AI response was not valid JSON.",
+                            "job_id": job.job_id,
+                            "raw_response": raw_text
+                        }
+                    )
+
+                sample_call_succeeded = True
+                results.append({
                     "job_id": job.job_id,
-                    "raw_response": raw_text
-                }
+                    "title": job.title,
+                    "company_name": job.company_name,
+                    "location": job.location,
+                    "url": job.url,
+                    "analysis": analysis
+                })
+
+            except HTTPException:
+                raise
+
+            except Exception:
+                # Was previously unhandled/raw-propagated. Now a generic,
+                # structured failure reusing _analyze_job_impl's error_code/
+                # message, but WITHOUT raw exception text and without
+                # persisting anything (analyze-sample stays non-persistent).
+                raise HTTPException(
+                    status_code=500,
+                    detail={
+                        "error_code": "ERR_JOB_ANALYSIS_FAILED",
+                        "message": "Job analysis failed.",
+                        "job_id": job.job_id,
+                    }
+                )
+
+            finally:
+                try:
+                    release_job_analysis_guard(
+                        db,
+                        job_id=job.job_id,
+                        owner_token=job_owner_token,
+                        succeeded=sample_call_succeeded,
+                        config=per_job_config,
+                    )
+                except Exception as release_exc:
+                    logger.warning(
+                        "analyze_sample_jobs: per-job guard release attempt raised unexpectedly (%s)",
+                        type(release_exc).__name__,
+                    )
+
+        batch_completed = True
+
+        return {
+            "analyzed_count": len(results),
+            "requested_job_ids": job_id_list,
+            "missing_job_ids": missing_job_ids,
+            "max_allowed_jobs": MAX_ANALYZE_JOBS,
+            "results": results
+        }
+    finally:
+        try:
+            release_job_batch_guard(
+                db,
+                owner_token=batch_owner_token,
+                succeeded=batch_completed,
+                config=batch_config,
             )
-
-        results.append({
-            "job_id": job.job_id,
-            "title": job.title,
-            "company_name": job.company_name,
-            "location": job.location,
-            "url": job.url,
-            "analysis": analysis
-        })
-
-    return {
-        "analyzed_count": len(results),
-        "requested_job_ids": job_id_list,
-        "missing_job_ids": missing_job_ids,
-        "max_allowed_jobs": MAX_ANALYZE_JOBS,
-        "results": results
-    }
+        except Exception as release_exc:
+            logger.warning(
+                "analyze_sample_jobs: batch guard release attempt raised unexpectedly (%s)",
+                type(release_exc).__name__,
+            )
