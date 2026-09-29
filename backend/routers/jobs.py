@@ -24,6 +24,7 @@ from ..app.analysis_guard import (
     try_acquire_job_batch_guard,
 )
 from ..app.auth_dependencies import get_current_admin, get_current_user
+from ..app.job_visibility import get_visible_job_or_404, visible_jobs_clause
 from ..app.taxonomy import ROLE_FAMILIES, ROLE_SUBFAMILIES, ROLE_TAGS, SKILL_TAGS
 from ..app.analysis_contract import (
     JOB_ANALYSIS_MODEL,
@@ -184,6 +185,7 @@ def get_jobs(
 ):
     jobs = (
         db.query(models.Job)
+        .filter(visible_jobs_clause(current_user))
         .order_by(models.Job.job_id.desc())
         .offset(offset)
         .limit(limit)
@@ -210,7 +212,8 @@ def get_analyzed_jobs(
             models.JobAnalysis.analysis_status == "completed",
             models.JobAnalysis.analysis_model == JOB_ANALYSIS_MODEL,
             models.JobAnalysis.analysis_prompt_version == JOB_ANALYSIS_PROMPT_VERSION,
-            models.JobAnalysis.is_current == True
+            models.JobAnalysis.is_current == True,
+            visible_jobs_clause(current_user),
         )
         .order_by(models.JobAnalysis.analysis_id.desc())
         .offset(offset)
@@ -242,20 +245,16 @@ def get_analyzed_job(
             models.JobAnalysis.analysis_model == JOB_ANALYSIS_MODEL,
             models.JobAnalysis.analysis_prompt_version == JOB_ANALYSIS_PROMPT_VERSION,
             models.JobAnalysis.is_current == True,
+            visible_jobs_clause(current_user),
         )
         .order_by(models.JobAnalysis.analysis_id.desc())
         .first()
     )
 
     if row is None:
-        job_exists = (
-            db.query(models.Job.job_id)
-            .filter(models.Job.job_id == job_id)
-            .first()
-        )
-
-        if job_exists is None:
-            raise HTTPException(status_code=404, detail="Job not found.")
+        # A job owned by another user gets exactly the same 404 as a
+        # nonexistent job_id; only visible jobs reach the message below.
+        get_visible_job_or_404(db, job_id, current_user)
 
         raise HTTPException(
             status_code=404,
@@ -1124,6 +1123,9 @@ def analyze_missing_jobs(
     job_filters = [
         models.Job.description_text.isnot(None),
         ~models.Job.job_id.in_(completed_analysis_job_ids),
+        # Automatic (admin-triggered) batch analysis only covers ownerless
+        # jobs; user-owned jobs are never selected here.
+        models.Job.created_by_user_id.is_(None),
     ]
 
     if automatic_retry_blocked_job_ids:
@@ -1363,7 +1365,14 @@ def analyze_sample_jobs(
                 }
             )
     else:
-        jobs = db.query(models.Job).limit(limit).all()
+        # Automatic selection only covers ownerless jobs. Explicit
+        # job_id_list above may still include owned jobs (admin-only route).
+        jobs = (
+            db.query(models.Job)
+            .filter(models.Job.created_by_user_id.is_(None))
+            .limit(limit)
+            .all()
+        )
         missing_job_ids = []
 
     if not jobs:
