@@ -7,7 +7,6 @@ from bs4 import BeautifulSoup
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
-from openai import OpenAI
 from datetime import datetime, timezone
 
 from ..app.database import get_db
@@ -31,9 +30,15 @@ from ..app.analysis_contract import (
     JOB_ANALYSIS_PROMPT_VERSION,
 )
 from ..app.job_analysis_sanitizer import sanitize_job_analysis_requirements
+from ..app.openai_client import (
+    ANALYSIS_SERVICE_NOT_CONFIGURED_DETAIL,
+    create_openai_client_or_none,
+)
 
 
-client = OpenAI()
+# None when OPENAI_API_KEY is missing, so the app still starts; only the
+# analysis routes need it (see _require_openai_client).
+client = create_openai_client_or_none()
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
@@ -627,6 +632,22 @@ def fetch_jobs_by_pages(
     }
 
 
+def _require_openai_client():
+    """Raises 503 when OpenAI is not configured. The module client is
+    created lazily if OPENAI_API_KEY was missing at import but is set now.
+    Callers must run this before any guard/lease acquisition or DB write,
+    so a missing key never creates guard state, a cooldown, or a
+    failed-analysis row."""
+    global client
+    if client is None:
+        client = create_openai_client_or_none()
+    if client is None:
+        raise HTTPException(
+            status_code=503,
+            detail=ANALYSIS_SERVICE_NOT_CONFIGURED_DETAIL,
+        )
+
+
 def _create_job_analysis_response(prompt: str, *, timeout_seconds: int, max_retries: int):
     """Single seam for the structured job-analysis OpenAI call used by
     _analyze_job_impl (and therefore both the single-analyze route and the
@@ -725,6 +746,8 @@ def _analyze_job_impl(
             "analysis": json.loads(existing_analysis.analysis_json)
             if existing_analysis.analysis_json else None
         }
+
+    _require_openai_client()
 
     # Configuration is validated first -- before the guard or OpenAI --
     # and its HTTPException lives outside the analysis exception handler
@@ -1129,6 +1152,9 @@ def analyze_missing_jobs(
             "results": []
         }
 
+    # Every selected job lacks a current analysis, so each needs OpenAI.
+    _require_openai_client()
+
     # Configuration is validated before any guard/OpenAI work, entirely
     # outside the batch try/finally below, so invalid configuration always
     # maps to a plain 500 and never touches guard state.
@@ -1350,6 +1376,9 @@ def analyze_sample_jobs(
                 "message": "No jobs found in database."
             }
         )
+
+    # analyze-sample has no cache path: every selected job calls OpenAI.
+    _require_openai_client()
 
     # Configuration is validated before any guard/OpenAI work, entirely
     # outside the batch try/finally below.
