@@ -8,7 +8,6 @@ from pypdf import PdfReader
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from sqlalchemy.orm import Session
 
-from openai import OpenAI
 from datetime import datetime, timezone
 
 from ..app.database import get_db
@@ -26,8 +25,14 @@ from ..app.analysis_contract import (
     PROFILE_ANALYSIS_MODEL,
     PROFILE_ANALYSIS_PROMPT_VERSION,
 )
+from ..app.openai_client import (
+    ANALYSIS_SERVICE_NOT_CONFIGURED_DETAIL,
+    create_openai_client_or_none,
+)
 
-client = OpenAI()
+# None when OPENAI_API_KEY is missing, so the app still starts; only the
+# analysis route needs it (see _require_openai_client).
+client = create_openai_client_or_none()
 logger = logging.getLogger(__name__)
 
 router = APIRouter(
@@ -426,6 +431,22 @@ def get_analyzed_profiles(
     return result
 
 
+def _require_openai_client():
+    """Raises 503 when OpenAI is not configured. The module client is
+    created lazily if OPENAI_API_KEY was missing at import but is set now.
+    Callers must run this before any guard acquisition or DB write, so a
+    missing key never creates guard state, a cooldown, or a
+    failed-analysis row."""
+    global client
+    if client is None:
+        client = create_openai_client_or_none()
+    if client is None:
+        raise HTTPException(
+            status_code=503,
+            detail=ANALYSIS_SERVICE_NOT_CONFIGURED_DETAIL,
+        )
+
+
 def _create_profile_analysis_response(prompt: str, *, timeout_seconds: int, max_retries: int):
     """Single seam for the profile-analysis OpenAI call. Tests must patch
     this function directly -- patching client.responses.create does NOT
@@ -513,6 +534,10 @@ def analyze_profile(
             "analysis": json.loads(existing_analysis.analysis_json)
             if existing_analysis.analysis_json else None
         }
+
+    # Checked only on the path that actually calls OpenAI (after the cache
+    # hit above) and before any config/guard/DB work.
+    _require_openai_client()
 
     # Configuration is validated first -- before any guard row or OpenAI
     # work -- and its HTTPException lives outside the analysis exception
