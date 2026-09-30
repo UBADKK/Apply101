@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from ..app.database import get_db
 from ..app import models
 from ..app.auth_dependencies import get_owned_profile
+from ..app.job_visibility import visible_jobs_clause_for_owner
 from ..app.analysis_contract import (
     JOB_ANALYSIS_MODEL,
     JOB_ANALYSIS_PROMPT_VERSION,
@@ -1419,7 +1420,13 @@ def get_profile_matches(
             models.JobMatch.match_status == "completed",
             models.JobMatch.match_model == MATCH_MODEL,
             models.JobMatch.match_prompt_version == MATCH_PROMPT_VERSION,
-            models.JobMatch.is_current == True
+            models.JobMatch.is_current == True,
+            # Visibility follows the profile owner, never the caller (an
+            # admin viewing this profile sees exactly what the owner sees).
+            # Applied in SQL so count() and offset/limit both respect it;
+            # stale matches against jobs the owner can't see are hidden,
+            # not deleted.
+            visible_jobs_clause_for_owner(profile.user_id),
         )
     )
 
@@ -1491,8 +1498,13 @@ def _match_profile_with_job_impl(
     resolved `profile` via get_owned_profile before calling this. Never
     call this from anywhere that hasn't already done that.
     """
+    # Job visibility follows the profile owner (profile.user_id), never the
+    # caller -- an admin acting on this profile gets no bypass. A job the
+    # owner can't see yields the exact same 404 as a nonexistent job_id,
+    # before any analysis lookup, cached-match return, or DB write.
     job = db.query(models.Job).filter(
-        models.Job.job_id == job_id
+        models.Job.job_id == job_id,
+        visible_jobs_clause_for_owner(profile.user_id),
     ).first()
 
     if not job:
@@ -1823,7 +1835,10 @@ def match_profile_with_analyzed_jobs(
             models.JobAnalysis.analysis_prompt_version == REQUIRED_JOB_ANALYSIS_PROMPT_VERSION,
             models.JobAnalysis.is_current == True,
             models.JobAnalysis.role_tags_json.isnot(None),
-            models.JobAnalysis.role_tags_json != "[]"
+            models.JobAnalysis.role_tags_json != "[]",
+            # Only jobs visible to the profile owner (no admin bypass),
+            # filtered in SQL before offset/limit.
+            visible_jobs_clause_for_owner(profile.user_id),
         )
         .order_by(models.Job.job_id.desc())
         .offset(offset)

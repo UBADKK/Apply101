@@ -1,9 +1,14 @@
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..app.database import get_db
 from ..app import models, schemas
-from ..app.analysis_guard import PROFILE_OPERATION_TYPE, USER_OPERATION_TYPE
+from ..app.analysis_guard import (
+    JOB_OPERATION_TYPE,
+    PROFILE_OPERATION_TYPE,
+    USER_OPERATION_TYPE,
+)
 from ..app.auth_dependencies import get_current_admin, require_user_access
 
 
@@ -122,6 +127,35 @@ def delete_user(
     db.query(models.AnalysisGuard).filter(
         models.AnalysisGuard.operation_type == USER_OPERATION_TYPE,
         models.AnalysisGuard.resource_id == user_id
+    ).delete(synchronize_session=False)
+
+    # Jobs this user created, plus everything depending on them, children
+    # before parents: matches against those jobs (from ANY profile), their
+    # job analyses, and their per-job analysis guard rows. Every step uses
+    # the same created_by_user_id predicate, so ownerless jobs and other
+    # users' jobs (and their analyses/matches/guards) are never touched.
+    # The global batch guard (JOB_BATCH_OPERATION_TYPE, resource_id=0) is
+    # not per-job and is left alone. SQLite may reuse this user_id for the
+    # next user, so no job may keep pointing at it after deletion.
+    owned_job_ids = select(models.Job.job_id).where(
+        models.Job.created_by_user_id == user_id
+    )
+
+    db.query(models.JobMatch).filter(
+        models.JobMatch.job_id.in_(owned_job_ids)
+    ).delete(synchronize_session=False)
+
+    db.query(models.JobAnalysis).filter(
+        models.JobAnalysis.job_id.in_(owned_job_ids)
+    ).delete(synchronize_session=False)
+
+    db.query(models.AnalysisGuard).filter(
+        models.AnalysisGuard.operation_type == JOB_OPERATION_TYPE,
+        models.AnalysisGuard.resource_id.in_(owned_job_ids)
+    ).delete(synchronize_session=False)
+
+    db.query(models.Job).filter(
+        models.Job.created_by_user_id == user_id
     ).delete(synchronize_session=False)
 
     db.delete(user)
