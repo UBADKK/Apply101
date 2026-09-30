@@ -7,6 +7,11 @@
 A job that exists but is not visible to the caller must be
 indistinguishable from a job that does not exist (same 404 status and
 body), so callers never learn that another user's job ID exists.
+
+Matching is scoped to the PROFILE OWNER, not the caller: an admin acting on
+another user's profile must only match/see jobs that profile owner can see.
+Use visible_jobs_clause_for_owner(profile.user_id) there -- it has no admin
+bypass.
 """
 
 from fastapi import HTTPException, status
@@ -25,9 +30,18 @@ def visible_jobs_clause(current_user: models.User):
     if current_user.is_admin:
         return true()
 
+    return visible_jobs_clause_for_owner(current_user.user_id)
+
+
+def visible_jobs_clause_for_owner(owner_user_id: int):
+    """SQL filter clause for jobs visible to the user with owner_user_id,
+    as a normal (non-admin) user: ownerless jobs plus jobs they own. No
+    admin bypass -- used where visibility follows a resource owner (e.g. a
+    candidate profile's user_id) rather than the caller. Apply it in the
+    query itself (before offset/limit/count), never by post-filtering."""
     return or_(
         models.Job.created_by_user_id.is_(None),
-        models.Job.created_by_user_id == current_user.user_id,
+        models.Job.created_by_user_id == owner_user_id,
     )
 
 
