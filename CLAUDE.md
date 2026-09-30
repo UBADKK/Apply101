@@ -376,11 +376,13 @@ For matching-related changes, the baseline command is:
 python -m unittest backend.tests.test_matching
 ```
 
-When appropriate, run broader discovery:
+When appropriate, run broader discovery from the repository root:
 
 ```bash
-python -m unittest discover
+python -m unittest discover backend/tests
 ```
+
+Plain `python -m unittest discover` from the root runs 0 tests because `backend/` has no `__init__.py`.
 
 For bug fixes:
 
