@@ -150,6 +150,14 @@ class Job(Base):
     created_at = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, nullable=True)
 
+    # NULL = ownerless (e.g. fetched from a public job board), visible to
+    # every authenticated user. Non-NULL = owned by that user, visible only
+    # to them and to admins (see backend/app/job_visibility.py). Added by
+    # backend/migrations/phase5_job_owner.py; existing rows stay NULL.
+    created_by_user_id = Column(
+        Integer, ForeignKey("users.user_id"), nullable=True, index=True
+    )
+
 class JobAnalysis(Base):
     __tablename__ = "job_analysis"
 
