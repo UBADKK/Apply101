@@ -166,7 +166,16 @@ class _BaseUserDeleteTestCase(unittest.TestCase):
         ))
 
     def _headers(self, user_id):
-        return {"Authorization": f"Bearer {create_access_token(user_id)}"}
+        # Mint with the user's real stored token key, exactly as login does.
+        session = self.session_factory()
+        try:
+            user = session.query(models.User).filter(
+                models.User.user_id == user_id
+            ).one()
+            token_key = user.token_key
+        finally:
+            session.close()
+        return {"Authorization": f"Bearer {create_access_token(user_id, token_key)}"}
 
     def _ids(self, model, column):
         session = self.session_factory()
@@ -308,6 +317,37 @@ class UserDeleteOwnedJobCleanupTests(_BaseUserDeleteTestCase):
         for job_id in (self.a_job_1, self.a_job_2):
             detail = self.client.get(f"/jobs/analyzed/{job_id}", headers=headers)
             self.assertEqual(detail.status_code, 404)
+
+    def test_deleted_users_old_token_is_rejected_after_id_reuse(self):
+        # Captured while A still exists, exactly as a client would hold it.
+        a_old_headers = self._headers(self.user_a_id)
+        self._delete_a()
+
+        reused_id = self._create_user(
+            "cleanup.reused.token@example.com", user_id=self.user_a_id
+        )
+        self.assertEqual(reused_id, self.user_a_id)
+
+        baseline = self.client.get(
+            "/jobs/", headers={"Authorization": "Bearer this-is-not-a-jwt"}
+        )
+        self.assertEqual(baseline.status_code, 401)
+
+        listed = self.client.get("/jobs/", headers=a_old_headers)
+        deleted = self.client.delete(f"/users/{reused_id}", headers=a_old_headers)
+        for response in (listed, deleted):
+            self.assertEqual(response.status_code, 401)
+            self.assertEqual(response.content, baseline.content)
+            self.assertEqual(
+                response.headers.get("www-authenticate"),
+                baseline.headers.get("www-authenticate"),
+            )
+
+        # The new user reusing the id was not deleted by A's stale token and
+        # its own token still works.
+        self.assertIn(reused_id, self._ids(models.User, models.User.user_id))
+        own = self.client.get("/jobs/", headers=self._headers(reused_id))
+        self.assertEqual(own.status_code, 200)
 
     def test_other_user_still_sees_own_and_ownerless_jobs(self):
         self._delete_a()

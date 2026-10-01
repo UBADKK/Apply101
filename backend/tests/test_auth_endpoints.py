@@ -116,6 +116,51 @@ class AuthEndpointTests(unittest.TestCase):
         finally:
             session.close()
 
+    def _get_token_key(self, user_id):
+        session = self.session_factory()
+        try:
+            user = session.query(models.User).filter(models.User.user_id == user_id).first()
+            return user.token_key
+        finally:
+            session.close()
+
+    def _set_token_key(self, user_id, token_key):
+        session = self.session_factory()
+        try:
+            user = session.query(models.User).filter(models.User.user_id == user_id).first()
+            user.token_key = token_key
+            session.commit()
+        finally:
+            session.close()
+
+    def _me(self, token):
+        return self.client.get(
+            "/auth/me", headers={"Authorization": f"Bearer {token}"}
+        )
+
+    def _signed_token(self, claims):
+        """Correctly signed (synthetic secret, HS256), unexpired token with
+        exactly the given extra claims -- for claim-level rejection tests."""
+        payload = {"exp": datetime.now(timezone.utc) + timedelta(minutes=5)}
+        payload.update(claims)
+        return jwt.encode(payload, SYNTHETIC_SECRET, algorithm="HS256")
+
+    def _assert_same_401_as_invalid_token(self, response):
+        """Byte-identical to the response for a plainly malformed token:
+        callers must not be able to tell why a token was rejected."""
+        baseline = self._me("this-is-not-a-jwt")
+        self.assertEqual(baseline.status_code, 401)
+        self.assertEqual(response.status_code, baseline.status_code)
+        self.assertEqual(response.content, baseline.content)
+        self.assertEqual(
+            response.headers.get("www-authenticate"),
+            baseline.headers.get("www-authenticate"),
+        )
+        self.assertEqual(response.headers.get("www-authenticate"), "Bearer")
+        self.assertEqual(
+            response.json(), {"detail": "Could not validate credentials."}
+        )
+
     def _get_password_hash(self, user_id):
         session = self.session_factory()
         try:
@@ -236,6 +281,49 @@ class AuthEndpointTests(unittest.TestCase):
 
         payload = jwt.decode(token, SYNTHETIC_SECRET, algorithms=["HS256"])
         self.assertEqual(int(payload["sub"]), expected_user_id)
+
+    def test_login_token_key_claim_equals_stored_token_key(self):
+        register_response = self._register("login.tkey@example.com")
+        user_id = register_response.json()["user_id"]
+
+        login_response = self._login("login.tkey@example.com", VALID_PASSWORD)
+        token = login_response.json()["access_token"]
+
+        payload = jwt.decode(token, SYNTHETIC_SECRET, algorithms=["HS256"])
+        stored_key = self._get_token_key(user_id)
+        self.assertTrue(stored_key)
+        self.assertEqual(payload["tkey"], stored_key)
+
+        # Logging in again reuses (does not rotate) the stored key, so the
+        # first token keeps working.
+        self._login("login.tkey@example.com", VALID_PASSWORD)
+        self.assertEqual(self._get_token_key(user_id), stored_key)
+        self.assertEqual(self._me(token).status_code, 200)
+
+    def test_registered_user_gets_its_own_non_null_token_key(self):
+        first_id = self._register("tkey.first@example.com").json()["user_id"]
+        second_id = self._register("tkey.second@example.com").json()["user_id"]
+
+        first_key = self._get_token_key(first_id)
+        second_key = self._get_token_key(second_id)
+        self.assertIsInstance(first_key, str)
+        self.assertTrue(first_key)
+        self.assertIsInstance(second_key, str)
+        self.assertTrue(second_key)
+        self.assertNotEqual(first_key, second_key)
+
+    def test_token_key_never_appears_in_register_login_or_me_responses(self):
+        register_response = self._register("tkey.noleak@example.com")
+        user_id = register_response.json()["user_id"]
+        login_response = self._login("tkey.noleak@example.com", VALID_PASSWORD)
+        me_response = self._me(login_response.json()["access_token"])
+        stored_key = self._get_token_key(user_id)
+
+        self.assertNotIn("token_key", register_response.json())
+        self.assertNotIn("token_key", me_response.json())
+        self.assertEqual(set(login_response.json()), {"access_token", "token_type"})
+        self.assertNotIn(stored_key, register_response.text)
+        self.assertNotIn(stored_key, me_response.text)
 
     def test_wrong_password_returns_401(self):
         self._register("login.wrongpw@example.com")
@@ -358,9 +446,17 @@ class AuthEndpointTests(unittest.TestCase):
         self.assertIn("bearer", response.headers.get("www-authenticate", "").lower())
 
     def test_expired_token_returns_401(self):
+        # Real user and its real token key, so expiry is the only reason
+        # this token can fail.
+        user_id = self._register("me.expired@example.com").json()["user_id"]
         now = datetime.now(timezone.utc)
         token = jwt.encode(
-            {"sub": "1", "iat": now - timedelta(hours=2), "exp": now - timedelta(minutes=1)},
+            {
+                "sub": str(user_id),
+                "tkey": self._get_token_key(user_id),
+                "iat": now - timedelta(hours=2),
+                "exp": now - timedelta(minutes=1),
+            },
             SYNTHETIC_SECRET,
             algorithm="HS256",
         )
@@ -372,7 +468,11 @@ class AuthEndpointTests(unittest.TestCase):
 
     def test_token_for_nonexistent_user_returns_401(self):
         token = jwt.encode(
-            {"sub": "999999", "exp": datetime.now(timezone.utc) + timedelta(minutes=5)},
+            {
+                "sub": "999999",
+                "tkey": "synthetic-token-key-for-a-user-that-does-not-exist",
+                "exp": datetime.now(timezone.utc) + timedelta(minutes=5),
+            },
             SYNTHETIC_SECRET,
             algorithm="HS256",
         )
@@ -381,6 +481,128 @@ class AuthEndpointTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 401)
         self.assertIn("bearer", response.headers.get("www-authenticate", "").lower())
+        self._assert_same_401_as_invalid_token(response)
+
+    # -- TOKEN KEY BINDING ---------------------------------------------
+
+    def test_deleted_users_token_does_not_authenticate_new_user_reusing_id(self):
+        self._register("tkey.deleted.a@example.com")
+        a_login = self._login("tkey.deleted.a@example.com", VALID_PASSWORD)
+        a_token = a_login.json()["access_token"]
+        a_id = int(jwt.decode(a_token, SYNTHETIC_SECRET, algorithms=["HS256"])["sub"])
+        self.assertEqual(self._me(a_token).status_code, 200)
+
+        session = self.session_factory()
+        try:
+            user_a = session.query(models.User).filter(
+                models.User.user_id == a_id
+            ).first()
+            session.delete(user_a)
+            session.commit()
+
+            # Simulates SQLite reusing the deleted rowid for a new user.
+            user_b = models.User(
+                user_id=a_id,
+                name="Synthetic User B",
+                mail="tkey.deleted.b@example.com",
+                password_hash=hash_password(VALID_PASSWORD),
+                is_admin=False,
+            )
+            session.add(user_b)
+            session.commit()
+        finally:
+            session.close()
+
+        self._assert_same_401_as_invalid_token(self._me(a_token))
+
+        b_login = self._login("tkey.deleted.b@example.com", VALID_PASSWORD)
+        self.assertEqual(b_login.status_code, 200)
+        b_me = self._me(b_login.json()["access_token"])
+        self.assertEqual(b_me.status_code, 200)
+        self.assertEqual(b_me.json()["user_id"], a_id)
+        self.assertEqual(b_me.json()["mail"], "tkey.deleted.b@example.com")
+
+        # A's token stays rejected even after B has logged in.
+        self._assert_same_401_as_invalid_token(self._me(a_token))
+
+    def test_signed_unexpired_token_without_token_key_returns_same_401(self):
+        user_id = self._register("tkey.missing@example.com").json()["user_id"]
+        token = self._signed_token({"sub": str(user_id)})
+
+        self._assert_same_401_as_invalid_token(self._me(token))
+
+    def test_token_with_empty_or_wrong_type_token_key_returns_same_401(self):
+        user_id = self._register("tkey.badtype@example.com").json()["user_id"]
+        for bad_key in ("", 12345, ["a"], None, {"k": "v"}):
+            with self.subTest(tkey=bad_key):
+                token = self._signed_token({"sub": str(user_id), "tkey": bad_key})
+                self._assert_same_401_as_invalid_token(self._me(token))
+
+    def test_token_with_wrong_token_key_returns_same_401(self):
+        user_id = self._register("tkey.wrong@example.com").json()["user_id"]
+        stored_key = self._get_token_key(user_id)
+        token = self._signed_token(
+            {"sub": str(user_id), "tkey": stored_key + "-tampered"}
+        )
+
+        self._assert_same_401_as_invalid_token(self._me(token))
+
+    def test_non_ascii_token_key_is_rejected_not_a_server_error(self):
+        user_id = self._register("tkey.nonascii@example.com").json()["user_id"]
+        token = self._signed_token(
+            {"sub": str(user_id), "tkey": "anahtar-\u00e7\u015f\u011f"}
+        )
+
+        self._assert_same_401_as_invalid_token(self._me(token))
+
+    def test_rotated_token_key_invalidates_previously_issued_token(self):
+        user_id = self._register("tkey.rotated@example.com").json()["user_id"]
+        token = self._login("tkey.rotated@example.com", VALID_PASSWORD).json()["access_token"]
+        self.assertEqual(self._me(token).status_code, 200)
+
+        self._set_token_key(user_id, "synthetic-rotated-token-key-0123456789")
+
+        self._assert_same_401_as_invalid_token(self._me(token))
+
+    def test_user_with_null_token_key_rejects_tokens_until_login_assigns_one(self):
+        user_id = self._register("tkey.null@example.com").json()["user_id"]
+        old_key = self._get_token_key(user_id)
+        self._set_token_key(user_id, None)
+        self.assertIsNone(self._get_token_key(user_id))
+
+        # Any token key -- including the user's previous one -- is rejected
+        # while the stored key is NULL.
+        for claimed_key in (old_key, "any-synthetic-token-key"):
+            with self.subTest():
+                token = self._signed_token({"sub": str(user_id), "tkey": claimed_key})
+                self._assert_same_401_as_invalid_token(self._me(token))
+
+        login_response = self._login("tkey.null@example.com", VALID_PASSWORD)
+        self.assertEqual(login_response.status_code, 200)
+
+        new_key = self._get_token_key(user_id)
+        self.assertIsInstance(new_key, str)
+        self.assertTrue(new_key)
+        self.assertNotEqual(new_key, old_key)
+
+        new_token = login_response.json()["access_token"]
+        payload = jwt.decode(new_token, SYNTHETIC_SECRET, algorithms=["HS256"])
+        self.assertEqual(payload["tkey"], new_key)
+        me_response = self._me(new_token)
+        self.assertEqual(me_response.status_code, 200)
+        self.assertEqual(me_response.json()["user_id"], user_id)
+
+    def test_user_with_empty_token_key_gets_new_key_on_login(self):
+        user_id = self._register("tkey.empty@example.com").json()["user_id"]
+        self._set_token_key(user_id, "")
+
+        token = self._signed_token({"sub": str(user_id), "tkey": "x"})
+        self._assert_same_401_as_invalid_token(self._me(token))
+
+        login_response = self._login("tkey.empty@example.com", VALID_PASSWORD)
+        self.assertEqual(login_response.status_code, 200)
+        self.assertTrue(self._get_token_key(user_id))
+        self.assertEqual(self._me(login_response.json()["access_token"]).status_code, 200)
 
 
 class _RaceWindowThenDuplicateDbStub:

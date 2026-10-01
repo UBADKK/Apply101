@@ -20,6 +20,7 @@ from ..app.security import (
     AuthConfigError,
     create_access_token,
     hash_password,
+    new_token_key,
     verify_password,
 )
 
@@ -236,8 +237,18 @@ def login(
     # requests' failures (earlier or concurrent) are never touched.
     rate_limiter.release(tokens)
 
+    # A user row without a token key (created before
+    # phase6_user_token_key or otherwise left NULL) accepts no token at all;
+    # give it its own key on first successful login so the issued token can
+    # authenticate. An existing key is reused, not rotated, so logging in
+    # does not invalidate this user's other still-valid tokens.
+    if not user.token_key:
+        user.token_key = new_token_key()
+        db.commit()
+        db.refresh(user)
+
     try:
-        access_token = create_access_token(user.user_id)
+        access_token = create_access_token(user.user_id, user.token_key)
     except AuthConfigError:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
