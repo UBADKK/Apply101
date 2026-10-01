@@ -6,6 +6,8 @@ get_current_admin / require_user_access / get_owned_profile are the
 authorization building blocks defined here for that later wiring.
 """
 
+import hmac
+
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
@@ -23,8 +25,9 @@ def get_current_user(
     db: Session = Depends(get_db),
 ) -> models.User:
     # Deliberately identical for every failure reason (malformed, expired,
-    # invalid signature/algorithm, missing claims, or a token whose user no
-    # longer exists) -- callers must not be able to distinguish these cases.
+    # invalid signature/algorithm, missing claims, a token whose user no
+    # longer exists, or a token key that doesn't match the user's current
+    # one) -- callers must not be able to distinguish these cases.
     unauthorized = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials.",
@@ -32,7 +35,7 @@ def get_current_user(
     )
 
     try:
-        user_id = decode_access_token(token)
+        claims = decode_access_token(token)
     except TokenError:
         raise unauthorized
     except AuthConfigError:
@@ -45,8 +48,22 @@ def get_current_user(
             detail="Authentication is not correctly configured.",
         )
 
-    user = db.query(models.User).filter(models.User.user_id == user_id).first()
+    user = db.query(models.User).filter(
+        models.User.user_id == claims.user_id
+    ).first()
     if user is None:
+        raise unauthorized
+
+    # The token key is only trusted because it came from a signature-verified
+    # JWT; it must also match the key currently stored for this user row. A
+    # row without a key (legacy, not yet logged in since the migration)
+    # accepts no token at all.
+    stored_key = user.token_key
+    if not isinstance(stored_key, str) or not stored_key:
+        raise unauthorized
+    if not hmac.compare_digest(
+        claims.token_key.encode("utf-8"), stored_key.encode("utf-8")
+    ):
         raise unauthorized
 
     return user

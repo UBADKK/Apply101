@@ -73,7 +73,7 @@ class _BaseAdminBootstrapTestCase(unittest.TestCase):
                 (
                     row.user_id, row.name, row.mail, row.skills,
                     row.experience_years, row.major, row.master, row.phd,
-                    row.abitur, row.password_hash, row.is_admin,
+                    row.abitur, row.password_hash, row.is_admin, row.token_key,
                 )
                 for row in rows
             ]
@@ -99,8 +99,9 @@ class PromotionTests(_BaseAdminBootstrapTestCase):
         before_snapshot = (
             before.name, before.mail, before.skills, before.experience_years,
             before.major, before.master, before.phd, before.abitur,
-            before.password_hash,
+            before.password_hash, before.token_key,
         )
+        self.assertTrue(before.token_key)
         self.assertFalse(before.is_admin)
 
         exit_code = set_admin.run("fields.unchanged@example.com", engine=self.engine)
@@ -110,7 +111,7 @@ class PromotionTests(_BaseAdminBootstrapTestCase):
         after_snapshot = (
             after.name, after.mail, after.skills, after.experience_years,
             after.major, after.master, after.phd, after.abitur,
-            after.password_hash,
+            after.password_hash, after.token_key,
         )
         self.assertEqual(before_snapshot, after_snapshot)
         self.assertTrue(after.is_admin)
@@ -219,6 +220,7 @@ class TargetOutputTests(_BaseAdminBootstrapTestCase):
 
         row = self._get_user_row(user_id)
         self.assertNotIn(row.password_hash, output)
+        self.assertNotIn(row.token_key, output)
 
 
 class MainArgumentParsingTests(unittest.TestCase):

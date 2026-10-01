@@ -1,6 +1,7 @@
 from sqlalchemy import Column, Integer, String, Float, Boolean, ForeignKey, Text, DateTime, false
 from sqlalchemy.orm import relationship
 from .database import Base
+from .security import new_token_key
 
 
 class User(Base):
@@ -29,6 +30,16 @@ class User(Base):
     # column in an API response schema.
     password_hash = Column(String, nullable=True)
     is_admin = Column(Boolean, nullable=False, default=False, server_default=false())
+
+    # Per-user random key embedded in every access token (claim "tkey") and
+    # checked against this value on each request, so a token can never
+    # authenticate a different row that later reuses the same user_id.
+    # Nullable in the DB only because SQLite's ADD COLUMN can't give each
+    # existing row its own value (see
+    # backend/migrations/phase6_user_token_key.py); a NULL key rejects every
+    # token until login assigns one. Never expose this column in an API
+    # response schema.
+    token_key = Column(String, nullable=True, default=new_token_key)
 
 
     # Link to CandidateProfile

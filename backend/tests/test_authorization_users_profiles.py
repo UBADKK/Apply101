@@ -161,7 +161,16 @@ class _BaseAuthorizationTestCase(unittest.TestCase):
         return self._create_profile(user_id, self_description=None)
 
     def _auth_headers(self, user_id):
-        token = create_access_token(user_id)
+        # Mint with the user's real stored token key, exactly as login does.
+        session = self.session_factory()
+        try:
+            user = session.query(models.User).filter(
+                models.User.user_id == user_id
+            ).one()
+            token_key = user.token_key
+        finally:
+            session.close()
+        token = create_access_token(user_id, token_key)
         return {"Authorization": f"Bearer {token}"}
 
     def _seed_completed_analysis(self, profile_id):
@@ -250,6 +259,58 @@ class UsersAuthorizationTests(_BaseAuthorizationTestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["mail"], "new.byadmin@example.com")
+
+    def test_admin_created_user_gets_non_null_token_key_not_exposed(self):
+        admin_id = self._create_user("admin.create.tkey@example.com", is_admin=True)
+        response = self.client.post(
+            "/users/",
+            json={"name": "New User", "mail": "new.tkey.byadmin@example.com"},
+            headers=self._auth_headers(admin_id),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("token_key", response.json())
+
+        session = self.session_factory()
+        try:
+            created = session.query(models.User).filter(
+                models.User.user_id == response.json()["user_id"]
+            ).one()
+            admin = session.query(models.User).filter(
+                models.User.user_id == admin_id
+            ).one()
+            created_key, admin_key = created.token_key, admin.token_key
+        finally:
+            session.close()
+        self.assertIsInstance(created_key, str)
+        self.assertTrue(created_key)
+        self.assertNotEqual(created_key, admin_key)
+        self.assertNotIn(created_key, response.text)
+
+    def test_stale_admin_token_after_key_change_is_401_not_403(self):
+        admin_id = self._create_user("admin.stale@example.com", is_admin=True)
+        stale_headers = self._auth_headers(admin_id)
+        self.assertEqual(
+            self.client.get("/users/", headers=stale_headers).status_code, 200
+        )
+
+        session = self.session_factory()
+        try:
+            admin = session.query(models.User).filter(
+                models.User.user_id == admin_id
+            ).one()
+            admin.token_key = "synthetic-replaced-admin-token-key-0123456789"
+            session.commit()
+        finally:
+            session.close()
+
+        stale = self.client.get("/users/", headers=stale_headers)
+        self.assertEqual(stale.status_code, 401)
+        self.assertEqual(stale.json(), {"detail": "Could not validate credentials."})
+        self.assertEqual(stale.headers.get("www-authenticate"), "Bearer")
+
+        # A token minted against the admin's current key still works.
+        current = self.client.get("/users/", headers=self._auth_headers(admin_id))
+        self.assertEqual(current.status_code, 200)
 
     def test_delete_own_user_succeeds(self):
         user_id = self._create_user("delete.self@example.com")

@@ -171,7 +171,16 @@ class _BaseJobVisibilityTestCase(unittest.TestCase):
             session.close()
 
     def _headers(self, user_id):
-        return {"Authorization": f"Bearer {create_access_token(user_id)}"}
+        # Mint with the user's real stored token key, exactly as login does.
+        session = self.session_factory()
+        try:
+            user = session.query(models.User).filter(
+                models.User.user_id == user_id
+            ).one()
+            token_key = user.token_key
+        finally:
+            session.close()
+        return {"Authorization": f"Bearer {create_access_token(user_id, token_key)}"}
 
     def _get_ids(self, path, user_id):
         response = self.client.get(path, headers=self._headers(user_id))
