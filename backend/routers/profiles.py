@@ -19,7 +19,16 @@ from ..app.analysis_guard import (
     release_profile_analysis_guard,
     try_acquire_profile_analysis_guard,
 )
-from ..app.auth_dependencies import get_owned_profile, require_user_access
+from ..app.auth_dependencies import (
+    get_current_user,
+    get_owned_profile,
+    require_user_access,
+)
+from ..app.profile_write_guard import (
+    capture_profile_owner_identity,
+    verify_profile_owner_current_or_404,
+    verify_profile_owner_unchanged_or_404,
+)
 from ..app.taxonomy import ROLE_FAMILIES, ROLE_TAGS, SKILL_TAGS
 from ..app.analysis_contract import (
     PROFILE_ANALYSIS_MODEL,
@@ -478,6 +487,8 @@ def analyze_profile(
     profile_id: int,
     force_reanalyze: bool = Query(default=False),
     profile: models.CandidateProfile = Depends(get_owned_profile),
+    # Same per-request cached object get_owned_profile authenticated with.
+    current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     # Still queried directly (not just implied by get_owned_profile): the
@@ -495,6 +506,16 @@ def analyze_profile(
                 "message": f"User with id {user_id} was not found."
             }
         )
+
+    # Captured before anything is read for the response and before the slow
+    # OpenAI call: refreshes `profile` and `user` (same identity-map entry)
+    # from one statement, and for a caller acting on their own profile
+    # requires the owner row to still carry the key this request
+    # authenticated with. Cached returns, the prompt and every write below
+    # are checked against it, so a user/profile deleted mid-request -- or a
+    # new one reusing the same ids -- is never read, analyzed or written.
+    # See profile_write_guard.py.
+    owner_identity = capture_profile_owner_identity(db, profile, current_user)
 
     has_profile_text = bool(
         profile.cv_text
@@ -525,7 +546,9 @@ def analyze_profile(
     if existing_analysis and not force_reanalyze:
         # Cache hit: returns before any E3.2 configuration is read and
         # before the guard is touched at all -- no OpenAI cost is at risk
-        # here, so there is nothing to protect.
+        # here, so there is nothing to protect. The owner is re-checked
+        # after the read, so the returned analysis is provably this owner's.
+        verify_profile_owner_current_or_404(db, owner_identity)
         return {
             "status": "cached",
             "message": "Profile already has a current completed analysis for this model and prompt version.",
@@ -650,10 +673,15 @@ CV text:
 {(profile.cv_text or "")[:12000]}
 """
 
+    # Everything the prompt was built from (user, profile, languages) was
+    # read after capture; re-checked here, before any guard row or OpenAI
+    # cost, so a prompt can never mix two owners' data.
+    verify_profile_owner_current_or_404(db, owner_identity)
+
     guard_acquire_result = try_acquire_profile_analysis_guard(
         db,
-        profile_id=profile.profile_id,
-        owner_user_id=profile.user_id,
+        profile_id=owner_identity.profile_id,
+        owner_user_id=owner_identity.user_id,
         config=analysis_guard_config,
     )
 
@@ -702,14 +730,14 @@ CV text:
         analysis = validated_analysis.model_dump()
 
         db.query(models.ProfileAnalysis).filter(
-            models.ProfileAnalysis.profile_id == profile.profile_id,
+            models.ProfileAnalysis.profile_id == owner_identity.profile_id,
             models.ProfileAnalysis.is_current == True
         ).update({
             "is_current": False
         })
 
         new_analysis = models.ProfileAnalysis(
-            profile_id=profile.profile_id,
+            profile_id=owner_identity.profile_id,
             analysis_status="completed",
             analysis_json=json.dumps(analysis, ensure_ascii=False),
 
@@ -773,24 +801,32 @@ CV text:
         )
 
         db.add(new_analysis)
+        # Rolls back the is_current flip and the new row, then 404s, if
+        # the profile/owner changed during the OpenAI call.
+        verify_profile_owner_unchanged_or_404(db, owner_identity)
         db.commit()
         analysis_committed = True
         db.refresh(new_analysis)
 
         return {
             "status": "created",
-            "profile_id": profile.profile_id,
+            "profile_id": owner_identity.profile_id,
             "analysis_id": new_analysis.analysis_id,
             "analysis_model": new_analysis.analysis_model,
             "analysis_prompt_version": new_analysis.analysis_prompt_version,
             "analysis": analysis
         }
 
+    except HTTPException:
+        # Only the owner-identity 404 above; already rolled back, and it
+        # must not be recorded as a failed analysis.
+        raise
+
     except Exception as e:
         db.rollback()
 
         failed_analysis = models.ProfileAnalysis(
-            profile_id=profile.profile_id,
+            profile_id=owner_identity.profile_id,
             analysis_status="failed",
             analysis_json=None,
             analysis_model=PROFILE_ANALYSIS_MODEL,
@@ -802,14 +838,22 @@ CV text:
         )
 
         db.add(failed_analysis)
-        db.commit()
+        verify_profile_owner_unchanged_or_404(db, owner_identity)
+        try:
+            db.commit()
+        except Exception:
+            # The check above flushed, so this connection holds SQLite's
+            # write lock; never leave it held, or the guard release in
+            # `finally` (its own connection) would block on it.
+            db.rollback()
+            raise
 
         raise HTTPException(
             status_code=500,
             detail={
                 "error_code": "ERR_PROFILE_ANALYSIS_FAILED",
                 "message": "Profile analysis failed.",
-                "profile_id": profile.profile_id,
+                "profile_id": owner_identity.profile_id,
                 "error": str(e)
             }
         )
@@ -823,10 +867,13 @@ CV text:
         # analysis_committed, which is only ever set True immediately
         # after the paid analysis result is actually committed.
         try:
+            # Plain captured ids: `profile` is expired after any
+            # commit/rollback and may no longer exist. A release for a
+            # deleted profile is a token-gated no-op.
             release_profile_analysis_guard(
                 db,
-                profile_id=profile.profile_id,
-                owner_user_id=profile.user_id,
+                profile_id=owner_identity.profile_id,
+                owner_user_id=owner_identity.user_id,
                 owner_token=guard_owner_token,
                 succeeded=analysis_committed,
                 config=analysis_guard_config,

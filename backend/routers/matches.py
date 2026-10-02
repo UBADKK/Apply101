@@ -7,8 +7,15 @@ from sqlalchemy.orm import Session
 
 from ..app.database import get_db
 from ..app import models
-from ..app.auth_dependencies import get_owned_profile
+from ..app.auth_dependencies import get_current_user, get_owned_profile
 from ..app.job_visibility import visible_jobs_clause_for_owner
+from ..app.profile_write_guard import (
+    ProfileOwnerChanged,
+    ProfileOwnerIdentity,
+    capture_profile_owner_identity,
+    verify_profile_owner_current_or_404,
+    verify_profile_owner_unchanged_or_404,
+)
 from ..app.analysis_contract import (
     JOB_ANALYSIS_MODEL,
     JOB_ANALYSIS_PROMPT_VERSION,
@@ -1407,8 +1414,13 @@ def get_profile_matches(
     limit: int = Query(default=100, ge=1, le=MAX_BATCH_MATCH_JOBS),
     offset: int = Query(default=0, ge=0),
     profile: models.CandidateProfile = Depends(get_owned_profile),
+    current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # See profile_write_guard.py: captured before the rows are read and
+    # re-checked after, so only this owner's matches are ever returned.
+    owner_identity = capture_profile_owner_identity(db, profile, current_user)
+
     current_matches_query = (
         db.query(models.JobMatch, models.Job)
         .join(
@@ -1426,7 +1438,7 @@ def get_profile_matches(
             # Applied in SQL so count() and offset/limit both respect it;
             # stale matches against jobs the owner can't see are hidden,
             # not deleted.
-            visible_jobs_clause_for_owner(profile.user_id),
+            visible_jobs_clause_for_owner(owner_identity.user_id),
         )
     )
 
@@ -1442,6 +1454,8 @@ def get_profile_matches(
         .limit(limit)
         .all()
     )
+
+    verify_profile_owner_current_or_404(db, owner_identity)
 
     results = []
 
@@ -1483,6 +1497,42 @@ def get_profile_matches(
     }
 
 
+def _job_not_found(job_id: int) -> HTTPException:
+    return HTTPException(
+        status_code=404,
+        detail={
+            "error_code": "ERR_JOB_NOT_FOUND",
+            "message": f"Job with id {job_id} was not found."
+        }
+    )
+
+
+def _verify_match_write_targets_or_404(
+    db: Session,
+    owner_identity: ProfileOwnerIdentity,
+    job_id: int,
+    job_url: str,
+) -> None:
+    """Call after the match writes are added to the session, right before
+    commit. Profile first (flushes, so this connection holds SQLite's write
+    lock for the rest of the transaction -- see profile_write_guard.py),
+    then the job: it must still exist with the same url (url is UNIQUE, so
+    a different row reusing job_id is detected) and still be visible to the
+    profile owner. On any mismatch everything is rolled back and nothing
+    is written."""
+    verify_profile_owner_unchanged_or_404(db, owner_identity)
+
+    job_unchanged = db.query(models.Job.job_id).filter(
+        models.Job.job_id == job_id,
+        models.Job.url == job_url,
+        visible_jobs_clause_for_owner(owner_identity.user_id),
+    ).first()
+
+    if job_unchanged is None:
+        db.rollback()
+        raise _job_not_found(job_id)
+
+
 def _match_profile_with_job_impl(
     *,
     user_id: int,
@@ -1490,31 +1540,39 @@ def _match_profile_with_job_impl(
     job_id: int,
     force_rematch: bool,
     profile: models.CandidateProfile,
+    owner_identity: ProfileOwnerIdentity,
     db: Session,
+    expected_job_url: str | None = None,
 ):
     """Business logic for a single profile/job match. No Depends(), no
     authentication, no ownership re-checking -- callers (the single-match
-    route and the batch route) must already have authorized the request and
-    resolved `profile` via get_owned_profile before calling this. Never
-    call this from anywhere that hasn't already done that.
+    route and the batch route) must already have authorized the request,
+    resolved `profile` via get_owned_profile, and captured owner_identity
+    via capture_profile_owner_identity before any commit. Never call this
+    from anywhere that hasn't already done that.
+
+    expected_job_url (batch route): the url the job had when the batch
+    selected it, so a different job that reused this job_id is treated as
+    not found rather than matched under the original job's listing entry.
     """
-    # Job visibility follows the profile owner (profile.user_id), never the
-    # caller -- an admin acting on this profile gets no bypass. A job the
-    # owner can't see yields the exact same 404 as a nonexistent job_id,
-    # before any analysis lookup, cached-match return, or DB write.
-    job = db.query(models.Job).filter(
+    # Job visibility follows the profile owner, never the caller -- an
+    # admin acting on this profile gets no bypass. A job the owner can't
+    # see yields the exact same 404 as a nonexistent job_id, before any
+    # analysis lookup, cached-match return, or DB write. owner_identity's
+    # plain user_id is used (not profile.user_id), since in the batch route
+    # `profile` is expired by the previous job's commit/rollback.
+    job_query = db.query(models.Job).filter(
         models.Job.job_id == job_id,
-        visible_jobs_clause_for_owner(profile.user_id),
-    ).first()
+        visible_jobs_clause_for_owner(owner_identity.user_id),
+    )
+    if expected_job_url is not None:
+        job_query = job_query.filter(models.Job.url == expected_job_url)
+    job = job_query.first()
 
     if not job:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error_code": "ERR_JOB_NOT_FOUND",
-                "message": f"Job with id {job_id} was not found."
-            }
-        )
+        raise _job_not_found(job_id)
+
+    job_url = job.url
 
     profile_analysis = db.query(models.ProfileAnalysis).filter(
         models.ProfileAnalysis.profile_id == profile_id,
@@ -1533,6 +1591,10 @@ def _match_profile_with_job_impl(
         ).order_by(
             models.ProfileAnalysis.analysis_id.desc()
         ).first()
+
+        # The detail names analysis ids/versions read above: only reveal
+        # them once the owner is re-confirmed.
+        verify_profile_owner_current_or_404(db, owner_identity)
 
         raise HTTPException(
             status_code=400,
@@ -1581,6 +1643,8 @@ def _match_profile_with_job_impl(
             models.JobAnalysis.analysis_id.desc()
         ).first()
 
+        verify_profile_owner_current_or_404(db, owner_identity)
+
         raise HTTPException(
             status_code=400,
             detail={
@@ -1620,6 +1684,10 @@ def _match_profile_with_job_impl(
     ).first()
 
     if existing_match and not force_rematch:
+        # Re-checked after every read above, so the cached match returned
+        # is provably this owner's (never a new account's that reused the
+        # same profile_id).
+        verify_profile_owner_current_or_404(db, owner_identity)
         return {
             "status": "cached",
             "message": "This profile and job already have a current match for this model and prompt version.",
@@ -1633,6 +1701,11 @@ def _match_profile_with_job_impl(
             if existing_match.match_json else None
         }
 
+
+    # Plain values: both analysis rows are expired by a rollback below and
+    # may have been deleted together with the profile/job meanwhile.
+    profile_analysis_id_value = profile_analysis.analysis_id
+    job_analysis_id_value = job_analysis.analysis_id
 
     now = datetime.now(timezone.utc)
 
@@ -1655,8 +1728,8 @@ def _match_profile_with_job_impl(
         new_match = models.JobMatch(
             profile_id=profile_id,
             job_id=job_id,
-            profile_analysis_id=profile_analysis.analysis_id,
-            job_analysis_id=job_analysis.analysis_id,
+            profile_analysis_id=profile_analysis_id_value,
+            job_analysis_id=job_analysis_id_value,
 
             match_status="completed",
             match_json=json.dumps(match_result, ensure_ascii=False),
@@ -1699,6 +1772,7 @@ def _match_profile_with_job_impl(
         )
 
         db.add(new_match)
+        _verify_match_write_targets_or_404(db, owner_identity, job_id, job_url)
         db.commit()
         db.refresh(new_match)
 
@@ -1707,8 +1781,8 @@ def _match_profile_with_job_impl(
             "match_id": new_match.match_id,
             "profile_id": profile_id,
             "job_id": job_id,
-            "profile_analysis_id": profile_analysis.analysis_id,
-            "job_analysis_id": job_analysis.analysis_id,
+            "profile_analysis_id": profile_analysis_id_value,
+            "job_analysis_id": job_analysis_id_value,
             "match_version": MATCH_VERSION,
             "eligibility_status": match_result.get("eligibility_status"),
             "overall_score": new_match.overall_score,
@@ -1716,14 +1790,19 @@ def _match_profile_with_job_impl(
             "match": match_result
         }
 
+    except HTTPException:
+        # Only the write-target 404s above; already rolled back, and they
+        # must not be recorded as a failed match.
+        raise
+
     except Exception as e:
         db.rollback()
 
         failed_match = models.JobMatch(
             profile_id=profile_id,
             job_id=job_id,
-            profile_analysis_id=profile_analysis.analysis_id,
-            job_analysis_id=job_analysis.analysis_id,
+            profile_analysis_id=profile_analysis_id_value,
+            job_analysis_id=job_analysis_id_value,
             match_status="failed",
             match_json=None,
             match_model=MATCH_MODEL,
@@ -1735,6 +1814,7 @@ def _match_profile_with_job_impl(
         )
 
         db.add(failed_match)
+        _verify_match_write_targets_or_404(db, owner_identity, job_id, job_url)
         db.commit()
 
         raise HTTPException(
@@ -1756,6 +1836,7 @@ def match_profile_with_job(
     job_id: int,
     force_rematch: bool = Query(default=False),
     profile: models.CandidateProfile = Depends(get_owned_profile),
+    current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     return _match_profile_with_job_impl(
@@ -1764,6 +1845,7 @@ def match_profile_with_job(
         job_id=job_id,
         force_rematch=force_rematch,
         profile=profile,
+        owner_identity=capture_profile_owner_identity(db, profile, current_user),
         db=db,
     )
 
@@ -1776,8 +1858,15 @@ def match_profile_with_analyzed_jobs(
     offset: int = Query(default=0, ge=0),
     force_rematch: bool = Query(default=False),
     profile: models.CandidateProfile = Depends(get_owned_profile),
+    current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    # Captured once, before the first job's commit. Every per-job read
+    # that is returned and every write is checked against it; the first
+    # mismatch ends the whole request with the generic profile 404 (see the
+    # loop below).
+    owner_identity = capture_profile_owner_identity(db, profile, current_user)
+
     profile_analysis = db.query(models.ProfileAnalysis).filter(
         models.ProfileAnalysis.profile_id == profile_id,
         models.ProfileAnalysis.analysis_status == "completed",
@@ -1795,6 +1884,10 @@ def match_profile_with_analyzed_jobs(
         ).order_by(
             models.ProfileAnalysis.analysis_id.desc()
         ).first()
+
+        # The detail names analysis ids/versions read above: only reveal
+        # them once the owner is re-confirmed.
+        verify_profile_owner_current_or_404(db, owner_identity)
 
         raise HTTPException(
             status_code=400,
@@ -1838,7 +1931,7 @@ def match_profile_with_analyzed_jobs(
             models.JobAnalysis.role_tags_json != "[]",
             # Only jobs visible to the profile owner (no admin bypass),
             # filtered in SQL before offset/limit.
-            visible_jobs_clause_for_owner(profile.user_id),
+            visible_jobs_clause_for_owner(owner_identity.user_id),
         )
         .order_by(models.Job.job_id.desc())
         .offset(offset)
@@ -1846,7 +1939,26 @@ def match_profile_with_analyzed_jobs(
         .all()
     )
 
-    if not analyzed_jobs:
+    # Plain values, taken before the first commit/rollback below expires
+    # the Job objects: the listing fields in the response always describe
+    # the job as selected here, even if it is deleted or its job_id reused
+    # mid-batch.
+    selected_jobs = [
+        {
+            "job_id": job.job_id,
+            "title": job.title,
+            "company_name": job.company_name,
+            "location": job.location,
+            "url": job.url,
+        }
+        for job in analyzed_jobs
+    ]
+
+    # The selection used the owner's job visibility; confirm the owner
+    # before revealing any of it.
+    verify_profile_owner_current_or_404(db, owner_identity)
+
+    if not selected_jobs:
         return {
             "status": "no_analyzed_jobs_found",
             "user_id": user_id,
@@ -1860,23 +1972,25 @@ def match_profile_with_analyzed_jobs(
 
     results = []
 
-    for job in analyzed_jobs:
+    for selected in selected_jobs:
         try:
             result = _match_profile_with_job_impl(
                 user_id=user_id,
                 profile_id=profile_id,
-                job_id=job.job_id,
+                job_id=selected["job_id"],
                 force_rematch=force_rematch,
                 profile=profile,
+                owner_identity=owner_identity,
                 db=db,
+                expected_job_url=selected["url"],
             )
 
             results.append({
-                "job_id": job.job_id,
-                "title": job.title,
-                "company_name": job.company_name,
-                "location": job.location,
-                "url": job.url,
+                "job_id": selected["job_id"],
+                "title": selected["title"],
+                "company_name": selected["company_name"],
+                "location": selected["location"],
+                "url": selected["url"],
                 "status": result.get("status"),
                 "match_id": result.get("match_id"),
                 "match_version": result.get("match_version") or MATCH_VERSION,
@@ -1896,13 +2010,22 @@ def match_profile_with_analyzed_jobs(
                 )
             })
 
+        except ProfileOwnerChanged:
+            # The profile/owner this batch was authorized for is gone (or
+            # its ids now belong to someone else): stop here and answer the
+            # whole request exactly like a missing profile, discarding the
+            # results collected so far, so nothing from any later job --
+            # and nothing of a new owner's -- is processed or returned.
+            db.rollback()
+            raise
+
         except HTTPException as e:
             db.rollback()
 
             results.append({
-                "job_id": job.job_id,
-                "title": job.title,
-                "company_name": job.company_name,
+                "job_id": selected["job_id"],
+                "title": selected["title"],
+                "company_name": selected["company_name"],
                 "status": "failed",
                 "error": e.detail
             })
@@ -1911,9 +2034,9 @@ def match_profile_with_analyzed_jobs(
             db.rollback()
 
             results.append({
-                "job_id": job.job_id,
-                "title": job.title,
-                "company_name": job.company_name,
+                "job_id": selected["job_id"],
+                "title": selected["title"],
+                "company_name": selected["company_name"],
                 "status": "failed",
                 "error": str(e)
             })
@@ -1940,7 +2063,7 @@ def match_profile_with_analyzed_jobs(
         "profile_id": profile_id,
         "requested_limit": limit,
         "offset": offset,
-        "selected_job_count": len(analyzed_jobs),
+        "selected_job_count": len(selected_jobs),
         "matched_count": matched_count,
         "failed_count": failed_count,
         "max_allowed_limit": MAX_BATCH_MATCH_JOBS,
