@@ -1,9 +1,16 @@
 """Reusable current-user resolution and ownership/authorization helpers.
 
-Not wired into any existing users/profiles/jobs/matches route yet (that is a
-later phase) -- get_current_user backs the /auth endpoints already, and
-get_current_admin / require_user_access / get_owned_profile are the
-authorization building blocks defined here for that later wiring.
+Routers use these as FastAPI dependencies via Depends(...):
+
+- get_current_user: authenticates the bearer JWT and returns the User only
+  if the token's key claim matches that user's currently stored token_key;
+  every token, user or token-key validation failure is the same generic 401.
+- get_current_admin: get_current_user plus an admin check (403 otherwise).
+- require_user_access: allows acting on the path's user_id only for that
+  user or an admin; otherwise a generic 404.
+- get_owned_profile: the same user_id access rule, plus profile_id must
+  belong to that user_id; every access or ownership failure is the same
+  generic 404.
 """
 
 import hmac
