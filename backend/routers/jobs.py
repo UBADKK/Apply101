@@ -688,6 +688,50 @@ def _create_job_sample_analysis_response(prompt: str, *, timeout_seconds: int, m
     )
 
 
+def _job_not_found(job_id: int) -> HTTPException:
+    return HTTPException(
+        status_code=404,
+        detail={
+            "error_code": "ERR_JOB_NOT_FOUND",
+            "message": f"Job with id {job_id} was not found."
+        }
+    )
+
+
+def _verify_job_unchanged_or_404(
+    db: Session,
+    *,
+    job_id: int,
+    job_url: str,
+    job_owner_id: int | None,
+) -> None:
+    """Call after the analysis writes are added to the session, right
+    before commit. Flushes first, so this connection holds SQLite's write
+    lock until commit/rollback and no delete from another connection can
+    commit between this check and our commit (same order as
+    profile_write_guard.verify_profile_owner_unchanged_or_404). Then the
+    job must still exist with the same url (url is UNIQUE, so a different
+    row reusing job_id is detected) and the same owner. On any mismatch
+    everything -- pending rows and any is_current demotion -- is rolled
+    back and nothing is written."""
+    db.flush()
+
+    if job_owner_id is None:
+        owner_matches = models.Job.created_by_user_id.is_(None)
+    else:
+        owner_matches = models.Job.created_by_user_id == job_owner_id
+
+    job_unchanged = db.query(models.Job.job_id).filter(
+        models.Job.job_id == job_id,
+        models.Job.url == job_url,
+        owner_matches,
+    ).first()
+
+    if job_unchanged is None:
+        db.rollback()
+        raise _job_not_found(job_id)
+
+
 def _analyze_job_impl(
     *,
     job_id: int,
@@ -710,13 +754,13 @@ def _analyze_job_impl(
     ).first()
 
     if not job:
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error_code": "ERR_JOB_NOT_FOUND",
-                "message": f"Job with id {job_id} was not found."
-            }
-        )
+        raise _job_not_found(job_id)
+
+    # Captured for the write-time re-check: the OpenAI call below can take
+    # long enough for the job to be deleted (with its owner) and job_id to
+    # be reused by a different job.
+    job_url = job.url
+    job_owner_id = job.created_by_user_id
 
     if not job.description_text:
         raise HTTPException(
@@ -939,6 +983,9 @@ def _analyze_job_impl(
             )
 
             db.add(failed_analysis)
+            _verify_job_unchanged_or_404(
+                db, job_id=job_id, job_url=job_url, job_owner_id=job_owner_id
+            )
             db.commit()
 
             raise HTTPException(
@@ -946,7 +993,7 @@ def _analyze_job_impl(
                 detail={
                     "error_code": "ERR_AI_INVALID_JSON",
                     "message": "AI response was not valid JSON.",
-                    "job_id": job.job_id,
+                    "job_id": job_id,
                     "raw_response": raw_text
                 }
             )
@@ -1016,13 +1063,16 @@ def _analyze_job_impl(
         )
 
         db.add(new_analysis)
+        _verify_job_unchanged_or_404(
+            db, job_id=job_id, job_url=job_url, job_owner_id=job_owner_id
+        )
         db.commit()
         job_analysis_committed = True
         db.refresh(new_analysis)
 
         return {
             "status": "created",
-            "job_id": job.job_id,
+            "job_id": job_id,
             "analysis_id": new_analysis.analysis_id,
             "analysis_model": new_analysis.analysis_model,
             "analysis_prompt_version": new_analysis.analysis_prompt_version,
@@ -1034,7 +1084,7 @@ def _analyze_job_impl(
 
     except Exception as e:
         failed_analysis = models.JobAnalysis(
-            job_id=job.job_id,
+            job_id=job_id,
             analysis_status="failed",
             analysis_json=None,
             analysis_model=JOB_ANALYSIS_MODEL,
@@ -1046,6 +1096,9 @@ def _analyze_job_impl(
         )
 
         db.add(failed_analysis)
+        _verify_job_unchanged_or_404(
+            db, job_id=job_id, job_url=job_url, job_owner_id=job_owner_id
+        )
         db.commit()
 
         raise HTTPException(
@@ -1053,7 +1106,7 @@ def _analyze_job_impl(
             detail={
                 "error_code": "ERR_JOB_ANALYSIS_FAILED",
                 "message": "Job analysis failed.",
-                "job_id": job.job_id,
+                "job_id": job_id,
                 "error": str(e)
             }
         )
@@ -1070,7 +1123,7 @@ def _analyze_job_impl(
         try:
             release_job_analysis_guard(
                 db,
-                job_id=job.job_id,
+                job_id=job_id,
                 owner_token=guard_owner_token,
                 succeeded=job_analysis_committed,
                 config=config,
