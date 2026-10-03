@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, ForeignKey, Text, DateTime, false
+from sqlalchemy import Column, Integer, String, Float, Boolean, ForeignKey, Text, DateTime, Index, false, text
 from sqlalchemy.orm import relationship
 from .database import Base
 from .security import new_token_key
@@ -135,13 +135,36 @@ class ProfileAnalysis(Base):
 class Job(Base):
     __tablename__ = "jobs"
 
+    # url uniqueness depends on ownership (exact string equality, no
+    # normalization): ownerless catalog jobs have unique urls, and one user
+    # cannot own the same url twice; a catalog job and a personal job, or
+    # personal jobs of different users, may share a url. Existing databases
+    # get these indexes only via backend/migrations/phase7_job_url_ownership.py
+    # (create_all never alters indexes of an existing table), which reuses
+    # these Index objects.
+    __table_args__ = (
+        Index(
+            "uq_jobs_catalog_url",
+            "url",
+            unique=True,
+            sqlite_where=text("created_by_user_id IS NULL"),
+        ),
+        Index(
+            "uq_jobs_owner_url",
+            "created_by_user_id",
+            "url",
+            unique=True,
+            sqlite_where=text("created_by_user_id IS NOT NULL"),
+        ),
+    )
+
     job_id = Column(Integer, primary_key=True, index=True)
 
     title = Column(String, nullable=False)
     company_name = Column(String, nullable=True)
     location = Column(String, nullable=True)
 
-    url = Column(String, unique=True, index=True, nullable=False)
+    url = Column(String, nullable=False)
 
     description_text = Column(String, nullable=True)
 
