@@ -423,5 +423,162 @@ class AdminBatchSelectionExcludesOwnedJobsTests(_BaseJobVisibilityTestCase):
         self.assertEqual(mock_openai.call_count, 1)
 
 
+# is_recoverable_analysis_failure lowercases the error and looks for
+# "invalid role family"/"invalid role subfamily": the first message contains
+# neither (False, non-recoverable); the second contains "invalid role family"
+# (True, recoverable).
+NON_RECOVERABLE_ANALYSIS_ERROR = "synthetic non-recoverable analysis failure"
+RECOVERABLE_ANALYSIS_ERROR = "Invalid role family: synthetic"
+
+
+class AnalyzeMissingRetryBlockedCountTests(_BaseJobVisibilityTestCase):
+    """automatic_retry_blocked_count only counts automatic-selection
+    candidates (ownerless, description present, no current completed
+    analysis) that were skipped because of the retry block."""
+
+    def setUp(self):
+        super().setUp()
+        # Never a real client: the OpenAI seam is patched per test.
+        client_patcher = patch.object(jobs, "client", MagicMock())
+        client_patcher.start()
+        self.addCleanup(client_patcher.stop)
+
+    def _seed_failed_analyses(
+        self,
+        job_id,
+        count=jobs.MAX_AUTOMATIC_ANALYSIS_FAILURES_PER_JOB,
+        error=NON_RECOVERABLE_ANALYSIS_ERROR,
+    ):
+        session = self.session_factory()
+        try:
+            for _ in range(count):
+                session.add(models.JobAnalysis(
+                    job_id=job_id,
+                    analysis_status="failed",
+                    analysis_model=JOB_ANALYSIS_MODEL,
+                    analysis_prompt_version=JOB_ANALYSIS_PROMPT_VERSION,
+                    analysis_error=error,
+                    is_current=False,
+                ))
+            session.commit()
+        finally:
+            session.close()
+
+    def _post_analyze_missing(self, limit=10):
+        return self.client.post(
+            f"/jobs/analyze-missing?limit={limit}",
+            headers=self._headers(self.admin_id),
+        )
+
+    def _analyze_missing_with_seam(self, limit=10):
+        with patch(
+            "backend.routers.jobs._create_job_analysis_response",
+            return_value=_mock_response(VALID_JOB_ANALYSIS_PAYLOAD),
+        ) as mock_openai:
+            response = self._post_analyze_missing(limit)
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json(), mock_openai
+
+    def test_owned_blocked_job_is_not_counted(self):
+        blocked_ownerless_id = self._create_job("blocked-ownerless")
+        self._seed_failed_analyses(blocked_ownerless_id)
+        blocked_owned_id = self._create_job(
+            "blocked-owned-by-a",
+            owner_id=self.user_a_id,
+            description_text="owned-blocked-description-marker",
+        )
+        self._seed_failed_analyses(blocked_owned_id)
+        selectable_id = self._create_job("unanalyzed-ownerless")
+
+        body, mock_openai = self._analyze_missing_with_seam()
+
+        self.assertEqual(body["status"], "completed")
+        self.assertEqual(body["selected_job_count"], 1)
+        self.assertEqual([r["job_id"] for r in body["results"]], [selectable_id])
+        self.assertEqual(body["automatic_retry_blocked_count"], 1)
+        self.assertEqual(mock_openai.call_count, 1)
+        prompt = mock_openai.call_args.args[0]
+        self.assertNotIn("owned-blocked-description-marker", prompt)
+
+    def test_only_owned_blocked_job_is_no_op_with_zero_count(self):
+        blocked_owned_id = self._create_job("blocked-owned-by-a", owner_id=self.user_a_id)
+        self._seed_failed_analyses(blocked_owned_id)
+
+        body, mock_openai = self._analyze_missing_with_seam()
+
+        self.assertEqual(body["status"], "no_jobs_to_analyze")
+        self.assertEqual(body["automatic_retry_blocked_count"], 0)
+        mock_openai.assert_not_called()
+
+    def test_only_owned_blocked_job_is_no_op_without_openai(self):
+        blocked_owned_id = self._create_job("blocked-owned-by-a", owner_id=self.user_a_id)
+        self._seed_failed_analyses(blocked_owned_id)
+
+        with patch.object(jobs, "client", None), \
+             patch.dict(os.environ, {}, clear=False), \
+             patch("backend.routers.jobs._create_job_analysis_response") as mock_openai:
+            os.environ.pop("OPENAI_API_KEY", None)
+            response = self._post_analyze_missing()
+
+        # The no-op path still runs before _require_openai_client: no 503.
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["status"], "no_jobs_to_analyze")
+        self.assertEqual(response.json()["automatic_retry_blocked_count"], 0)
+        mock_openai.assert_not_called()
+
+    def test_only_ownerless_blocked_job_is_counted(self):
+        blocked_ownerless_id = self._create_job("blocked-ownerless")
+        self._seed_failed_analyses(blocked_ownerless_id)
+
+        body, mock_openai = self._analyze_missing_with_seam()
+
+        self.assertEqual(body["status"], "no_jobs_to_analyze")
+        self.assertEqual(body["automatic_retry_blocked_count"], 1)
+        mock_openai.assert_not_called()
+
+    def test_non_candidate_failure_rows_are_not_counted(self):
+        # Blocked, but already has a current completed analysis.
+        completed_id = self._create_job("blocked-but-completed")
+        self._seed_failed_analyses(completed_id)
+        self._seed_completed_analysis(completed_id)
+        # Orphan failure rows: no Job row (SQLite FKs are not enforced).
+        self._seed_failed_analyses(NONEXISTENT_JOB_ID)
+        # Blocked ownerless job without description text.
+        no_description_id = self._create_job("blocked-no-description", description_text=None)
+        self._seed_failed_analyses(no_description_id)
+
+        body, mock_openai = self._analyze_missing_with_seam()
+
+        self.assertEqual(body["status"], "no_jobs_to_analyze")
+        self.assertEqual(body["automatic_retry_blocked_count"], 0)
+        mock_openai.assert_not_called()
+
+    def test_recoverable_latest_failure_is_not_blocked(self):
+        recoverable_id = self._create_job("recoverable-ownerless")
+        self._seed_failed_analyses(recoverable_id)
+        self._seed_failed_analyses(recoverable_id, count=1, error=RECOVERABLE_ANALYSIS_ERROR)
+
+        body, mock_openai = self._analyze_missing_with_seam()
+
+        self.assertEqual(body["status"], "completed")
+        self.assertEqual(body["selected_job_count"], 1)
+        self.assertEqual([r["job_id"] for r in body["results"]], [recoverable_id])
+        self.assertEqual(body["automatic_retry_blocked_count"], 0)
+        self.assertEqual(mock_openai.call_count, 1)
+
+    def test_count_is_not_capped_by_limit(self):
+        for slug in ("blocked-ownerless-1", "blocked-ownerless-2"):
+            self._seed_failed_analyses(self._create_job(slug))
+        selectable_id = self._create_job("unanalyzed-ownerless")
+
+        body, mock_openai = self._analyze_missing_with_seam(limit=1)
+
+        self.assertEqual(body["status"], "completed")
+        self.assertEqual(body["selected_job_count"], 1)
+        self.assertEqual([r["job_id"] for r in body["results"]], [selectable_id])
+        self.assertEqual(body["automatic_retry_blocked_count"], 2)
+        self.assertEqual(mock_openai.call_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1127,6 +1127,8 @@ def analyze_missing_jobs(
         # jobs; user-owned jobs are never selected here.
         models.Job.created_by_user_id.is_(None),
     ]
+    # Snapshot of the candidate filters before the retry-block exclusion.
+    base_job_filters = list(job_filters)
 
     if automatic_retry_blocked_job_ids:
         job_filters.append(
@@ -1141,6 +1143,23 @@ def analyze_missing_jobs(
         .all()
     )
 
+    # automatic_retry_blocked_count: jobs that would be automatic-selection
+    # candidates (same base filters as the selection, ignoring `limit`) but
+    # are skipped only because of the repeated-failure retry block. Owned
+    # jobs, jobs with a current completed analysis, jobs without a
+    # description and failure rows without a Job are not counted.
+    if automatic_retry_blocked_job_ids:
+        automatic_retry_blocked_count = (
+            db.query(func.count(models.Job.job_id))
+            .filter(
+                *base_job_filters,
+                models.Job.job_id.in_(automatic_retry_blocked_job_ids),
+            )
+            .scalar()
+        ) or 0
+    else:
+        automatic_retry_blocked_count = 0
+
     if not jobs:
         # No-op: zero OpenAI cost is at risk, so config/batch-guard/per-job-guard
         # are never touched here.
@@ -1150,7 +1169,7 @@ def analyze_missing_jobs(
             "max_allowed_limit": MAX_ANALYZE_MISSING_JOBS,
             "analyzed_count": 0,
             "failed_count": 0,
-            "automatic_retry_blocked_count": len(automatic_retry_blocked_job_ids),
+            "automatic_retry_blocked_count": automatic_retry_blocked_count,
             "results": []
         }
 
@@ -1291,7 +1310,7 @@ def analyze_missing_jobs(
             "selected_job_count": len(jobs),
             "analyzed_count": analyzed_count,
             "failed_count": failed_count,
-            "automatic_retry_blocked_count": len(automatic_retry_blocked_job_ids),
+            "automatic_retry_blocked_count": automatic_retry_blocked_count,
             "results": results
         }
     finally:
