@@ -882,6 +882,107 @@ class MatchingContractTests(unittest.TestCase):
         )
         self.assertTrue(any("employment type" in warning.lower() for warning in warnings))
 
+    def test_required_work_authorization_not_met_for_unauthorized_candidate(self):
+        for requirement in ("germany", "any_valid"):
+            with self.subTest(work_authorization=requirement):
+                job_analysis = self.make_job_analysis(
+                    work_authorization=requirement
+                )
+                failures, reviews = evaluate_hard_requirements(
+                    self.profile, self.profile_analysis, job_analysis
+                )
+                self.assertEqual(
+                    [issue["code"] for issue in failures],
+                    ["required_work_authorization_not_met"],
+                )
+                self.assertEqual([issue["code"] for issue in reviews], [])
+                self.assertEqual(
+                    failures[0]["details"],
+                    {"required": requirement, "candidate": "none"},
+                )
+
+    def test_eu_eea_work_authorization_required_for_unauthorized_candidate(self):
+        job_analysis = self.make_job_analysis(work_authorization="eu_eea")
+        failures, reviews = evaluate_hard_requirements(
+            self.profile, self.profile_analysis, job_analysis
+        )
+        self.assertEqual(
+            [issue["code"] for issue in failures],
+            ["eu_eea_work_authorization_required"],
+        )
+        self.assertEqual([issue["code"] for issue in reviews], [])
+        self.assertEqual(failures[0]["details"], {"candidate": "none"})
+
+    def test_eu_eea_work_authorization_unknown_candidate_needs_review(self):
+        self.profile.work_authorization_status = "unknown"
+        unknown_profile_analysis = SimpleNamespace(
+            analysis_json=json.dumps({
+                **json.loads(self.profile_analysis.analysis_json),
+                "work_authorization_status": "unknown",
+            }),
+            languages_json=self.profile_analysis.languages_json,
+        )
+        job_analysis = self.make_job_analysis(work_authorization="eu_eea")
+        failures, reviews = evaluate_hard_requirements(
+            self.profile, unknown_profile_analysis, job_analysis
+        )
+        self.assertEqual([issue["code"] for issue in failures], [])
+        self.assertEqual(
+            [issue["code"] for issue in reviews],
+            ["eu_eea_authorization_not_confirmed"],
+        )
+        self.assertEqual(reviews[0]["details"], {"candidate": "unknown"})
+
+    def test_eu_eea_residency_required_for_non_eu_resident(self):
+        job_analysis = self.make_job_analysis(residency="eu_eea")
+        failures, reviews = evaluate_hard_requirements(
+            self.profile, self.profile_analysis, job_analysis
+        )
+        self.assertEqual(
+            [issue["code"] for issue in failures],
+            ["eu_eea_residency_required"],
+        )
+        self.assertEqual([issue["code"] for issue in reviews], [])
+        self.assertEqual(
+            failures[0]["details"], {"candidate_country": "turkey"}
+        )
+
+    def test_specific_country_residency_not_met_is_hard_failure(self):
+        job_analysis = self.make_job_analysis(
+            residency="specific_location",
+            residency_locations=["Germany"],
+        )
+        failures, reviews = evaluate_hard_requirements(
+            self.profile, self.profile_analysis, job_analysis
+        )
+        self.assertEqual(
+            [issue["code"] for issue in failures],
+            ["specific_residency_requirement_not_met"],
+        )
+        self.assertEqual([issue["code"] for issue in reviews], [])
+        self.assertEqual(
+            failures[0]["details"],
+            {"required_locations": ["germany"], "candidate_country": "turkey"},
+        )
+
+    def test_specific_city_residency_requires_manual_review(self):
+        job_analysis = self.make_job_analysis(
+            residency="specific_location",
+            residency_locations=["Munich"],
+        )
+        failures, reviews = evaluate_hard_requirements(
+            self.profile, self.profile_analysis, job_analysis
+        )
+        self.assertEqual([issue["code"] for issue in failures], [])
+        self.assertEqual(
+            [issue["code"] for issue in reviews],
+            ["specific_residency_requires_manual_review"],
+        )
+        self.assertEqual(
+            reviews[0]["details"],
+            {"required_locations": ["munich"], "candidate_country": "turkey"},
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
