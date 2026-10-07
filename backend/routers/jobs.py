@@ -712,8 +712,10 @@ def _verify_job_unchanged_or_404(
     lock until commit/rollback and no delete from another connection can
     commit between this check and our commit (same order as
     profile_write_guard.verify_profile_owner_unchanged_or_404). Then the
-    job must still exist with the same url (url is UNIQUE, so a different
-    row reusing job_id is detected) and the same owner. On any mismatch
+    job must still exist with the same url and the same owner (url is only
+    unique among catalog jobs / per owner -- uq_jobs_catalog_url,
+    uq_jobs_owner_url -- so job_id + url + owner identifies the row and a
+    different row reusing job_id is detected). On any mismatch
     everything -- pending rows and any is_current demotion -- is rolled
     back and nothing is written."""
     db.flush()
