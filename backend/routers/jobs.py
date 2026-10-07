@@ -333,7 +333,8 @@ def fetch_jobs(
             continue
 
         existing_job = db.query(models.Job).filter(
-            models.Job.url == job_url
+            models.Job.url == job_url,
+            models.Job.created_by_user_id.is_(None),
         ).first()
 
         if existing_job:
@@ -511,7 +512,8 @@ def fetch_jobs_by_pages(
                 continue
 
             existing_job = db.query(models.Job).filter(
-                models.Job.url == job_url
+                models.Job.url == job_url,
+                models.Job.created_by_user_id.is_(None),
             ).first()
 
             if existing_job:
