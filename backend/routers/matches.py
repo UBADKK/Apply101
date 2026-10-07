@@ -1507,24 +1507,41 @@ def _job_not_found(job_id: int) -> HTTPException:
     )
 
 
+# Default of _match_profile_with_job_impl's expected_job_owner_id: "no
+# expected owner given" (single-match route). None can't be used for that,
+# since None is a real owner value (catalog job).
+_NO_EXPECTED_OWNER = object()
+
+
+def _same_job_owner_clause(job_owner_id: int | None):
+    if job_owner_id is None:
+        return models.Job.created_by_user_id.is_(None)
+    return models.Job.created_by_user_id == job_owner_id
+
+
 def _verify_match_write_targets_or_404(
     db: Session,
     owner_identity: ProfileOwnerIdentity,
     job_id: int,
     job_url: str,
+    job_owner_id: int | None,
 ) -> None:
     """Call after the match writes are added to the session, right before
     commit. Profile first (flushes, so this connection holds SQLite's write
     lock for the rest of the transaction -- see profile_write_guard.py),
-    then the job: it must still exist with the same url (url is UNIQUE, so
-    a different row reusing job_id is detected) and still be visible to the
-    profile owner. On any mismatch everything is rolled back and nothing
-    is written."""
+    then the job: it must still exist with the same url and the same owner
+    (created_by_user_id) and still be visible to the profile owner. url is
+    only unique among catalog jobs / per owner (uq_jobs_catalog_url,
+    uq_jobs_owner_url), so job_id + url + owner identifies the row and a
+    different row reusing job_id -- even with the same url under another
+    visible owner -- is detected. On any mismatch everything is rolled back
+    and nothing is written."""
     verify_profile_owner_unchanged_or_404(db, owner_identity)
 
     job_unchanged = db.query(models.Job.job_id).filter(
         models.Job.job_id == job_id,
         models.Job.url == job_url,
+        _same_job_owner_clause(job_owner_id),
         visible_jobs_clause_for_owner(owner_identity.user_id),
     ).first()
 
@@ -1543,6 +1560,7 @@ def _match_profile_with_job_impl(
     owner_identity: ProfileOwnerIdentity,
     db: Session,
     expected_job_url: str | None = None,
+    expected_job_owner_id=_NO_EXPECTED_OWNER,
 ):
     """Business logic for a single profile/job match. No Depends(), no
     authentication, no ownership re-checking -- callers (the single-match
@@ -1551,9 +1569,15 @@ def _match_profile_with_job_impl(
     via capture_profile_owner_identity before any commit. Never call this
     from anywhere that hasn't already done that.
 
-    expected_job_url (batch route): the url the job had when the batch
-    selected it, so a different job that reused this job_id is treated as
-    not found rather than matched under the original job's listing entry.
+    expected_job_url / expected_job_owner_id (batch route): the url and
+    created_by_user_id the job had when the batch selected it. url is only
+    unique among catalog jobs / per owner (uq_jobs_catalog_url,
+    uq_jobs_owner_url), so job_id + url + owner identifies the row: a
+    different job that reused this job_id (even with the same url under
+    another owner still visible to the profile owner) is treated as not
+    found rather than matched under the original job's listing entry.
+    expected_job_owner_id=None means "expected a catalog job"; leaving it
+    at _NO_EXPECTED_OWNER (single-match route) skips that filter.
     """
     # Job visibility follows the profile owner, never the caller -- an
     # admin acting on this profile gets no bypass. A job the owner can't
@@ -1567,12 +1591,15 @@ def _match_profile_with_job_impl(
     )
     if expected_job_url is not None:
         job_query = job_query.filter(models.Job.url == expected_job_url)
+    if expected_job_owner_id is not _NO_EXPECTED_OWNER:
+        job_query = job_query.filter(_same_job_owner_clause(expected_job_owner_id))
     job = job_query.first()
 
     if not job:
         raise _job_not_found(job_id)
 
     job_url = job.url
+    job_owner_id = job.created_by_user_id
 
     profile_analysis = db.query(models.ProfileAnalysis).filter(
         models.ProfileAnalysis.profile_id == profile_id,
@@ -1772,7 +1799,9 @@ def _match_profile_with_job_impl(
         )
 
         db.add(new_match)
-        _verify_match_write_targets_or_404(db, owner_identity, job_id, job_url)
+        _verify_match_write_targets_or_404(
+            db, owner_identity, job_id, job_url, job_owner_id
+        )
         db.commit()
         db.refresh(new_match)
 
@@ -1814,7 +1843,9 @@ def _match_profile_with_job_impl(
         )
 
         db.add(failed_match)
-        _verify_match_write_targets_or_404(db, owner_identity, job_id, job_url)
+        _verify_match_write_targets_or_404(
+            db, owner_identity, job_id, job_url, job_owner_id
+        )
         db.commit()
 
         raise HTTPException(
@@ -1950,6 +1981,8 @@ def match_profile_with_analyzed_jobs(
             "company_name": job.company_name,
             "location": job.location,
             "url": job.url,
+            # Not returned; only passed to the per-job match below.
+            "created_by_user_id": job.created_by_user_id,
         }
         for job in analyzed_jobs
     ]
@@ -1983,6 +2016,7 @@ def match_profile_with_analyzed_jobs(
                 owner_identity=owner_identity,
                 db=db,
                 expected_job_url=selected["url"],
+                expected_job_owner_id=selected["created_by_user_id"],
             )
 
             results.append({
