@@ -6,6 +6,7 @@ import json
 from bs4 import BeautifulSoup
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
 
@@ -193,6 +194,81 @@ def get_jobs(
     )
 
     return jobs
+
+
+def _job_url_already_exists() -> HTTPException:
+    # Never include a job id: the caller only learns that they already
+    # own a job with this url.
+    return HTTPException(
+        status_code=409,
+        detail={
+            "error_code": "ERR_JOB_URL_ALREADY_EXISTS",
+            "message": "You already have a job with this URL.",
+        },
+    )
+
+
+def _find_owned_job_id_by_url(db: Session, owner_id: int, url: str) -> int | None:
+    """job_id of the job owner_id owns with exactly this url, or None."""
+    row = db.query(models.Job.job_id).filter(
+        models.Job.created_by_user_id == owner_id,
+        models.Job.url == url,
+    ).first()
+
+    return row[0] if row is not None else None
+
+
+# Add a private job by hand. Owned by the caller (visible to them and to
+# admins only); no analysis or OpenAI call happens here.
+@router.post("/manual", response_model=schemas.JobResponse, status_code=201)
+def create_manual_job(
+    payload: schemas.JobCreate,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    # Captured before any commit/rollback, which would expire current_user.
+    owner_id = current_user.user_id
+
+    if _find_owned_job_id_by_url(db, owner_id, payload.url) is not None:
+        raise _job_url_already_exists()
+
+    now = datetime.now(timezone.utc)
+
+    new_job = models.Job(
+        title=payload.title,
+        company_name=payload.company_name,
+        location=payload.location,
+        url=payload.url,
+        description_text=payload.description_text,
+        source="manual",
+        source_job_id=None,
+        source_created_at=None,
+        source_updated_at=None,
+        fetched_at=now,
+        last_seen_at=now,
+        created_at=now,
+        updated_at=now,
+        created_by_user_id=owner_id,
+    )
+
+    db.add(new_job)
+
+    try:
+        db.commit()
+    except IntegrityError:
+        # Another request can commit the same (owner, url) between the
+        # pre-check and this commit; uq_jobs_owner_url is the real source
+        # of truth. Any other integrity failure is re-raised untouched.
+        db.rollback()
+
+        if _find_owned_job_id_by_url(db, owner_id, payload.url) is not None:
+            raise _job_url_already_exists()
+
+        raise
+
+    db.refresh(new_job)
+
+    return new_job
 
 
 @router.get("/analyzed")
