@@ -1,3 +1,6 @@
+import unicodedata
+from urllib.parse import urlsplit
+
 from pydantic import BaseModel, EmailStr, ConfigDict, field_validator
 from typing import Literal
 
@@ -300,13 +303,99 @@ class CandidateProfileResponse(BaseModel):
         from_attributes = True
 
 
-#Currently not being used!
+MANUAL_JOB_TITLE_MAX_LENGTH = 300
+MANUAL_JOB_DESCRIPTION_MIN_LENGTH = 50
+MANUAL_JOB_DESCRIPTION_MAX_LENGTH = 12000
+MANUAL_JOB_OPTIONAL_TEXT_MAX_LENGTH = 200
+MANUAL_JOB_URL_MAX_LENGTH = 2048
+
+
 class JobCreate(BaseModel):
+    """Request body of POST /jobs/manual. The owner and source are never
+    taken from the body (extra keys are rejected)."""
+
+    model_config = ConfigDict(extra="forbid")
+
     title: str
     company_name: str | None = None
     location: str | None = None
     url: str
-    description_text: str | None = None
+    description_text: str
+
+    @field_validator("title")
+    @classmethod
+    def validate_title(cls, value: str) -> str:
+        value = value.strip()
+        if not 1 <= len(value) <= MANUAL_JOB_TITLE_MAX_LENGTH:
+            raise ValueError(
+                f"title must be 1 to {MANUAL_JOB_TITLE_MAX_LENGTH} characters long."
+            )
+        return value
+
+    @field_validator("description_text")
+    @classmethod
+    def validate_description_text(cls, value: str) -> str:
+        value = value.strip()
+        if not (
+            MANUAL_JOB_DESCRIPTION_MIN_LENGTH
+            <= len(value)
+            <= MANUAL_JOB_DESCRIPTION_MAX_LENGTH
+        ):
+            raise ValueError(
+                "description_text must be "
+                f"{MANUAL_JOB_DESCRIPTION_MIN_LENGTH} to "
+                f"{MANUAL_JOB_DESCRIPTION_MAX_LENGTH} characters long."
+            )
+        return value
+
+    @field_validator("company_name", "location")
+    @classmethod
+    def validate_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            return None
+        if len(value) > MANUAL_JOB_OPTIONAL_TEXT_MAX_LENGTH:
+            raise ValueError(
+                "must be at most "
+                f"{MANUAL_JOB_OPTIONAL_TEXT_MAX_LENGTH} characters long."
+            )
+        return value
+
+    @field_validator("url")
+    @classmethod
+    def validate_url(cls, value: str) -> str:
+        # The submitted string is stored unchanged (url uniqueness is exact
+        # string equality), so it is validated but never normalized.
+        if len(value) > MANUAL_JOB_URL_MAX_LENGTH:
+            raise ValueError(
+                f"url must be at most {MANUAL_JOB_URL_MAX_LENGTH} characters long."
+            )
+        # Checked on the raw string first: urlsplit silently strips
+        # tab/CR/LF and leading/trailing spaces.
+        if any(
+            ch.isspace() or unicodedata.category(ch) == "Cc"
+            for ch in value
+        ):
+            raise ValueError(
+                "url must not contain whitespace or control characters."
+            )
+        try:
+            parts = urlsplit(value)
+        except ValueError:
+            raise ValueError("url is not a valid URL.")
+        if parts.scheme.lower() not in ("http", "https"):
+            raise ValueError("url must be an http or https URL.")
+        if not parts.hostname:
+            raise ValueError("url must include a host.")
+        # urlsplit does not validate the port; reading .port does (it raises
+        # ValueError for a non-numeric or out-of-range port).
+        try:
+            parts.port
+        except ValueError:
+            raise ValueError("url must have a valid port.")
+        return value
 
 
 class JobResponse(BaseModel):
