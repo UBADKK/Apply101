@@ -332,13 +332,21 @@ class AdminRouteAuthorizationTests(_BaseJobsAuthorizationTestCase):
         response = self.client.post(f"/jobs/{job_id}/analyze")
         self.assertEqual(response.status_code, 401)
 
-    def test_analyze_job_normal_user_is_403(self):
+    def test_analyze_job_normal_user_is_404(self):
+        # Normal users may only analyze their own manual jobs; catalog,
+        # non-owned and nonexistent jobs all return the same 404.
         user_id = self._create_user("admin.analyze.normal@example.com")
         job_id = self._create_job()
         response = self.client.post(
             f"/jobs/{job_id}/analyze", headers=self._auth_headers(user_id)
         )
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json(), {
+            "detail": {
+                "error_code": "ERR_JOB_NOT_FOUND",
+                "message": f"Job with id {job_id} was not found.",
+            }
+        })
 
     def test_analyze_missing_normal_user_is_403(self):
         user_id = self._create_user("admin.analyzemissing.normal@example.com")
@@ -390,6 +398,8 @@ class DenialBeforeSideEffectTests(_BaseJobsAuthorizationTestCase):
         mock_sleep.assert_not_called()
 
     def test_analyze_job_denied_before_openai_call(self):
+        # Normal users may only analyze their own manual jobs; catalog,
+        # non-owned and nonexistent jobs all return the same 404.
         user_id = self._create_user("denial.analyze.normal@example.com")
         job_id = self._create_job()
 
@@ -398,7 +408,13 @@ class DenialBeforeSideEffectTests(_BaseJobsAuthorizationTestCase):
                 f"/jobs/{job_id}/analyze", headers=self._auth_headers(user_id)
             )
 
-        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json(), {
+            "detail": {
+                "error_code": "ERR_JOB_NOT_FOUND",
+                "message": f"Job with id {job_id} was not found.",
+            }
+        })
         mock_openai.assert_not_called()
 
     def test_analyze_missing_denied_before_openai_and_helper(self):

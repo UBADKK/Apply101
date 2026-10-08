@@ -818,6 +818,7 @@ def _analyze_job_impl(
     force_reanalyze: bool,
     db: Session,
     job_config=None,
+    restrict_to_owner_user_id: int | None = None,
 ):
     """Business logic for analyzing a single job. No Depends(), no
     authentication -- callers (the single-analyze route and the
@@ -828,13 +829,32 @@ def _analyze_job_impl(
     callers load it once and pass it down (avoiding N redundant env reads
     across a large batch); the single-job route leaves this as None so
     _analyze_job_impl loads its own, exactly once per request, as before.
+
+    restrict_to_owner_user_id: None (admins, the batch route) analyzes any
+    job, as before. An int (a non-admin caller's user_id) only matches a
+    job with created_by_user_id == that id and source == "manual"; any
+    other job gets the same 404 as a nonexistent id, and force_reanalyze
+    is then rejected with 403. Both checks run before the cache read, the
+    OpenAI-client check, config load, the guard, OpenAI and any write.
     """
-    job = db.query(models.Job).filter(
-        models.Job.job_id == job_id
-    ).first()
+    job_filters = [models.Job.job_id == job_id]
+    if restrict_to_owner_user_id is not None:
+        job_filters.append(models.Job.created_by_user_id == restrict_to_owner_user_id)
+        job_filters.append(models.Job.source == "manual")
+
+    job = db.query(models.Job).filter(*job_filters).first()
 
     if not job:
         raise _job_not_found(job_id)
+
+    if restrict_to_owner_user_id is not None and force_reanalyze:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error_code": "ERR_FORCE_REANALYZE_ADMIN_ONLY",
+                "message": "force_reanalyze is only available to admins.",
+            }
+        )
 
     # Captured for the write-time re-check: the OpenAI call below can take
     # long enough for the job to be deleted (with its owner) and job_id to
@@ -1224,13 +1244,19 @@ def _analyze_job_impl(
 def analyze_job(
     job_id: int,
     force_reanalyze: bool = Query(default=False),
-    current_admin: models.User = Depends(get_current_admin),
+    current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    # Admins may analyze any job; a normal user only their own manual job
+    # (enforced in _analyze_job_impl). Plain values captured before any
+    # commit, which would expire current_user.
+    restrict_to_owner_user_id = None if current_user.is_admin else current_user.user_id
+
     return _analyze_job_impl(
         job_id=job_id,
         force_reanalyze=force_reanalyze,
         db=db,
+        restrict_to_owner_user_id=restrict_to_owner_user_id,
     )
 
 

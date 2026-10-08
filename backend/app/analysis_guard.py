@@ -585,10 +585,11 @@ def try_acquire_job_analysis_guard(
     config: JobAnalysisConfig,
     clock: Callable[[], float] = time.time,
 ) -> AcquireResult:
-    """Acquires the single per-job guard resource. Jobs have no per-user
-    ownership concept (every job-analysis route requires admin access, and
-    the job corpus is global) -- unlike profile analysis, there is no
-    second "owner" resource dimension here.
+    """Acquires the single per-job guard resource. Admins may analyze any
+    job; a job owner can now also analyze their own manual job through the
+    single-job route (POST /jobs/{job_id}/analyze). The guard is still per
+    job only -- unlike profile analysis, there is no second per-user
+    resource dimension here, and no per-user quota or cost limit.
     """
     return _try_acquire_guard_resources(
         db,
