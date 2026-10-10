@@ -3,6 +3,8 @@ import requests
 import time
 import json
 
+from dataclasses import dataclass
+
 from bs4 import BeautifulSoup
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
@@ -776,12 +778,58 @@ def _job_not_found(job_id: int) -> HTTPException:
     )
 
 
+@dataclass(frozen=True)
+class JobRequesterIdentity:
+    """A non-admin caller of POST /jobs/{job_id}/analyze, as plain values
+    the route captures before any commit/rollback: the user_id and the
+    token_key get_current_user just verified against the JWT. users.user_id
+    and jobs.job_id can be reused (no AUTOINCREMENT, SQLite FKs not
+    enforced), so a user_id alone does not prove the job still belongs to
+    the requester; a token_key is never reused, so an unchanged
+    (user_id, token_key) pair does -- the same protocol as
+    backend/app/profile_write_guard.py."""
+
+    user_id: int
+    token_key: str
+
+
+def _job_unchanged(
+    db: Session,
+    *,
+    job_id: int,
+    job_url: str,
+    job_owner_id: int | None,
+    owner_token_key: str | None = None,
+) -> bool:
+    # Column-only query: never returns identity-mapped ORM objects, so a
+    # stale in-session Job/User can't mask a deleted or reused row.
+    if job_owner_id is None:
+        owner_matches = models.Job.created_by_user_id.is_(None)
+    else:
+        owner_matches = models.Job.created_by_user_id == job_owner_id
+
+    query = db.query(models.Job.job_id).filter(
+        models.Job.job_id == job_id,
+        models.Job.url == job_url,
+        owner_matches,
+    )
+    if owner_token_key is not None:
+        # The owner row must still carry the key the request authenticated
+        # with, i.e. still be the same user (see JobRequesterIdentity).
+        query = query.join(
+            models.User, models.User.user_id == models.Job.created_by_user_id
+        ).filter(models.User.token_key == owner_token_key)
+
+    return query.first() is not None
+
+
 def _verify_job_unchanged_or_404(
     db: Session,
     *,
     job_id: int,
     job_url: str,
     job_owner_id: int | None,
+    owner_token_key: str | None = None,
 ) -> None:
     """Call after the analysis writes are added to the session, right
     before commit. Flushes first, so this connection holds SQLite's write
@@ -791,23 +839,20 @@ def _verify_job_unchanged_or_404(
     job must still exist with the same url and the same owner (url is only
     unique among catalog jobs / per owner -- uq_jobs_catalog_url,
     uq_jobs_owner_url -- so job_id + url + owner identifies the row and a
-    different row reusing job_id is detected). On any mismatch
-    everything -- pending rows and any is_current demotion -- is rolled
-    back and nothing is written."""
+    different row reusing job_id is detected), and, when owner_token_key
+    is given (a non-admin requester), that owner must still have that
+    token_key -- a new user reusing the owner's user_id is detected. On
+    any mismatch everything -- pending rows and any is_current demotion --
+    is rolled back and nothing is written."""
     db.flush()
 
-    if job_owner_id is None:
-        owner_matches = models.Job.created_by_user_id.is_(None)
-    else:
-        owner_matches = models.Job.created_by_user_id == job_owner_id
-
-    job_unchanged = db.query(models.Job.job_id).filter(
-        models.Job.job_id == job_id,
-        models.Job.url == job_url,
-        owner_matches,
-    ).first()
-
-    if job_unchanged is None:
+    if not _job_unchanged(
+        db,
+        job_id=job_id,
+        job_url=job_url,
+        job_owner_id=job_owner_id,
+        owner_token_key=owner_token_key,
+    ):
         db.rollback()
         raise _job_not_found(job_id)
 
@@ -818,7 +863,7 @@ def _analyze_job_impl(
     force_reanalyze: bool,
     db: Session,
     job_config=None,
-    restrict_to_owner_user_id: int | None = None,
+    restrict_to_owner: JobRequesterIdentity | None = None,
 ):
     """Business logic for analyzing a single job. No Depends(), no
     authentication -- callers (the single-analyze route and the
@@ -830,24 +875,42 @@ def _analyze_job_impl(
     across a large batch); the single-job route leaves this as None so
     _analyze_job_impl loads its own, exactly once per request, as before.
 
-    restrict_to_owner_user_id: None (admins, the batch route) analyzes any
-    job, as before. An int (a non-admin caller's user_id) only matches a
-    job with created_by_user_id == that id and source == "manual"; any
-    other job gets the same 404 as a nonexistent id, and force_reanalyze
-    is then rejected with 403. Both checks run before the cache read, the
-    OpenAI-client check, config load, the guard, OpenAI and any write.
+    restrict_to_owner: None (admins, the batch route) analyzes any job, as
+    before. A JobRequesterIdentity (a non-admin caller) only matches a job
+    with created_by_user_id == its user_id and source == "manual" whose
+    owner row still has its token_key, read in one statement; any other
+    job -- including one whose owner was deleted and whose user_id/job_id
+    were reused by someone else -- gets the same 404 as a nonexistent id,
+    and only then is force_reanalyze rejected with 403. Both checks run
+    before the cache read, the OpenAI-client check, config load, the
+    guard, OpenAI and any write. The owner identity is re-checked before a
+    cached analysis is returned, inside the guard acquisition's write
+    transaction before the guard is committed, and, under the write lock,
+    before every analysis write is committed (profile_write_guard's
+    protocol).
     """
+    owner_token_key = None
+    job_query = db.query(models.Job)
     job_filters = [models.Job.job_id == job_id]
-    if restrict_to_owner_user_id is not None:
-        job_filters.append(models.Job.created_by_user_id == restrict_to_owner_user_id)
+    if restrict_to_owner is not None:
+        owner_token_key = restrict_to_owner.token_key
+        if not owner_token_key:
+            # get_current_user never accepts a missing key; never let a
+            # None reach the filter below, where it would become IS NULL.
+            raise _job_not_found(job_id)
+        job_query = job_query.join(
+            models.User, models.User.user_id == models.Job.created_by_user_id
+        ).populate_existing()
+        job_filters.append(models.Job.created_by_user_id == restrict_to_owner.user_id)
         job_filters.append(models.Job.source == "manual")
+        job_filters.append(models.User.token_key == owner_token_key)
 
-    job = db.query(models.Job).filter(*job_filters).first()
+    job = job_query.filter(*job_filters).first()
 
     if not job:
         raise _job_not_found(job_id)
 
-    if restrict_to_owner_user_id is not None and force_reanalyze:
+    if restrict_to_owner is not None and force_reanalyze:
         raise HTTPException(
             status_code=403,
             detail={
@@ -881,6 +944,19 @@ def _analyze_job_impl(
     ).first()
 
     if existing_analysis and not force_reanalyze:
+        # Read-side re-check (profile_write_guard's
+        # verify_profile_owner_current_or_404): the owner may have been
+        # deleted and the ids reused since the job query above, in which
+        # case the analysis just read is someone else's.
+        if restrict_to_owner is not None and not _job_unchanged(
+            db,
+            job_id=job_id,
+            job_url=job_url,
+            job_owner_id=job_owner_id,
+            owner_token_key=owner_token_key,
+        ):
+            raise _job_not_found(job_id)
+
         return {
             "status": "cached",
             "message": "Job already has a current completed analysis for this model and prompt version.",
@@ -1026,7 +1102,29 @@ def _analyze_job_impl(
     {(job.description_text or "")[:12000]}
     """
 
-    guard_acquire_result = try_acquire_job_analysis_guard(db, job_id=job.job_id, config=config)
+    # For a non-admin owner, the job/owner identity is re-checked inside
+    # the guard's own transaction, after its upsert took the write lock and
+    # before the guard is committed: the owner could otherwise be deleted
+    # and the ids reused after the checks above, and this request would
+    # take (and on failure put a cooldown on) the new owner's job guard.
+    # Admins pass no precondition.
+    guard_precondition_kwargs = {}
+    if restrict_to_owner is not None:
+        guard_precondition_kwargs["precondition"] = lambda guard_session: _job_unchanged(
+            guard_session,
+            job_id=job_id,
+            job_url=job_url,
+            job_owner_id=job_owner_id,
+            owner_token_key=owner_token_key,
+        )
+
+    guard_acquire_result = try_acquire_job_analysis_guard(
+        db, job_id=job.job_id, config=config, **guard_precondition_kwargs
+    )
+
+    if guard_acquire_result.outcome is AcquireOutcome.TARGET_CHANGED:
+        # Nothing was acquired, so nothing is released below.
+        raise _job_not_found(job_id)
 
     if guard_acquire_result.outcome is AcquireOutcome.ALREADY_IN_PROGRESS:
         raise HTTPException(
@@ -1084,7 +1182,8 @@ def _analyze_job_impl(
 
             db.add(failed_analysis)
             _verify_job_unchanged_or_404(
-                db, job_id=job_id, job_url=job_url, job_owner_id=job_owner_id
+                db, job_id=job_id, job_url=job_url, job_owner_id=job_owner_id,
+                owner_token_key=owner_token_key,
             )
             db.commit()
 
@@ -1164,7 +1263,8 @@ def _analyze_job_impl(
 
         db.add(new_analysis)
         _verify_job_unchanged_or_404(
-            db, job_id=job_id, job_url=job_url, job_owner_id=job_owner_id
+            db, job_id=job_id, job_url=job_url, job_owner_id=job_owner_id,
+            owner_token_key=owner_token_key,
         )
         db.commit()
         job_analysis_committed = True
@@ -1197,7 +1297,8 @@ def _analyze_job_impl(
 
         db.add(failed_analysis)
         _verify_job_unchanged_or_404(
-            db, job_id=job_id, job_url=job_url, job_owner_id=job_owner_id
+            db, job_id=job_id, job_url=job_url, job_owner_id=job_owner_id,
+            owner_token_key=owner_token_key,
         )
         db.commit()
 
@@ -1249,14 +1350,19 @@ def analyze_job(
 ):
     # Admins may analyze any job; a normal user only their own manual job
     # (enforced in _analyze_job_impl). Plain values captured before any
-    # commit, which would expire current_user.
-    restrict_to_owner_user_id = None if current_user.is_admin else current_user.user_id
+    # commit/rollback, which would expire current_user (and a refresh could
+    # load a different user that reused this user_id): the user_id and the
+    # token_key get_current_user just verified against the JWT.
+    restrict_to_owner = None if current_user.is_admin else JobRequesterIdentity(
+        user_id=current_user.user_id,
+        token_key=current_user.token_key,
+    )
 
     return _analyze_job_impl(
         job_id=job_id,
         force_reanalyze=force_reanalyze,
         db=db,
-        restrict_to_owner_user_id=restrict_to_owner_user_id,
+        restrict_to_owner=restrict_to_owner,
     )
 
 
