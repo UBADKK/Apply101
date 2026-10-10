@@ -267,6 +267,10 @@ class AcquireOutcome(Enum):
     ALREADY_IN_PROGRESS = "already_in_progress"
     COOLDOWN_ACTIVE = "cooldown_active"
     BACKEND_UNAVAILABLE = "backend_unavailable"
+    # Only returned when the caller passed a precondition and it returned
+    # False: the target the caller authorized is gone or changed. Nothing
+    # was acquired (no owner_token) and nothing was written.
+    TARGET_CHANGED = "target_changed"
 
 
 @dataclass(frozen=True)
@@ -321,6 +325,7 @@ def _try_acquire_guard_resources(
     resources: list[tuple[str, int]],
     lease_ttl_seconds: int,
     clock: Callable[[], float] = time.time,
+    precondition: Callable[[Session], bool] | None = None,
 ) -> AcquireResult:
     """Generic core: atomically acquires ALL listed (operation_type,
     resource_id) resources under one owner token, or none. Never calls
@@ -333,6 +338,19 @@ def _try_acquire_guard_resources(
     together, so ordering does not affect correctness here. Works
     identically for a single resource (job analysis) or two (profile
     analysis).
+
+    precondition: optional; None (the default) changes nothing. Otherwise
+    it is called once with the guard session, right after the upserts and
+    before the blocker evaluation and the commit. With pysqlite's legacy
+    transaction control the first upsert emits BEGIN and takes SQLite's
+    RESERVED write lock -- even when its WHERE leaves the row unchanged --
+    and keeps it until commit/rollback, so what the precondition reads
+    cannot be changed by another connection before this guard commits. If
+    it returns False, everything is rolled back and TARGET_CHANGED is
+    returned (no owner_token), even when a lease or cooldown would
+    otherwise have blocked. If it raises, everything is rolled back and
+    BACKEND_UNAVAILABLE is returned, like any other failure of this
+    transaction (fail closed: nothing acquired, nothing written).
     """
     if not resources or len(set(resources)) != len(resources):
         # Internal programmer error, not a runtime/backend condition --
@@ -388,6 +406,10 @@ def _try_acquire_guard_resources(
                     ),
                 )
                 guard_session.execute(stmt)
+
+            if precondition is not None and not precondition(guard_session):
+                _safe_rollback(guard_session)
+                return AcquireResult(outcome=AcquireOutcome.TARGET_CHANGED)
 
             condition = or_(*[
                 and_(AnalysisGuard.operation_type == op, AnalysisGuard.resource_id == rid)
@@ -584,17 +606,26 @@ def try_acquire_job_analysis_guard(
     job_id: int,
     config: JobAnalysisConfig,
     clock: Callable[[], float] = time.time,
+    precondition: Callable[[Session], bool] | None = None,
 ) -> AcquireResult:
-    """Acquires the single per-job guard resource. Jobs have no per-user
-    ownership concept (every job-analysis route requires admin access, and
-    the job corpus is global) -- unlike profile analysis, there is no
-    second "owner" resource dimension here.
+    """Acquires the single per-job guard resource. Admins may analyze any
+    job; a job owner can now also analyze their own manual job through the
+    single-job route (POST /jobs/{job_id}/analyze). The guard is still per
+    job only -- unlike profile analysis, there is no second per-user
+    resource dimension here, and no per-user quota or cost limit.
+
+    precondition: see _try_acquire_guard_resources. The single-job route
+    passes one only for a non-admin owner, to re-check under the guard's
+    write lock that the job and its owner (token_key) are still the ones
+    it authorized; a False result means TARGET_CHANGED. Admins, the batch
+    routes and analyze-sample pass none, which behaves exactly as before.
     """
     return _try_acquire_guard_resources(
         db,
         resources=[(JOB_OPERATION_TYPE, job_id)],
         lease_ttl_seconds=config.lease_ttl_seconds,
         clock=clock,
+        precondition=precondition,
     )
 
 
