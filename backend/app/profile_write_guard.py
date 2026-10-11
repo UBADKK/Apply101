@@ -29,6 +29,10 @@ Protocol, per request:
 2. verify_profile_owner_current_or_404 -- AFTER the reads whose results are
    returned (cached results, error details naming analysis ids/versions,
    listings) and before returning them.
+   Profile analysis also passes profile_owner_unchanged as the precondition
+   of its guard acquisition, so the same check is repeated on the guard
+   session under the guard's write lock; a mismatch there acquires nothing
+   (no lease, no cooldown on a new owner's reused ids) and becomes the 404.
 3. verify_profile_owner_unchanged_or_404 -- after every write of the
    operation was issued to the session (at least one INSERT/UPDATE pending
    or executed) and before commit. It flushes first: with pysqlite's default
@@ -142,6 +146,14 @@ def capture_profile_owner_identity(
 def _owner_unchanged(db: Session, identity: ProfileOwnerIdentity) -> bool:
     row = _current_owner_token_key_row(db, identity.profile_id, identity.user_id)
     return row is not None and row[0] == identity.token_key
+
+
+def profile_owner_unchanged(db: Session, identity: ProfileOwnerIdentity) -> bool:
+    """True if the profile still exists, still belongs to identity.user_id
+    and that user still has the captured token_key. Never raises for a
+    mismatch and never writes, so it can serve as a guard-acquisition
+    precondition run on the guard's own session."""
+    return _owner_unchanged(db, identity)
 
 
 def verify_profile_owner_current_or_404(
