@@ -1106,10 +1106,16 @@ def _analyze_job_impl(
     # the guard's own transaction, after its upsert took the write lock and
     # before the guard is committed: the owner could otherwise be deleted
     # and the ids reused after the checks above, and this request would
-    # take (and on failure put a cooldown on) the new owner's job guard.
-    # Admins pass no precondition.
+    # take (and on failure put a cooldown on) the new owner's job and user
+    # guards. Admins pass no precondition.
+    # A non-admin owner also takes their per-user guard resource (one owner
+    # job analysis in flight per user, plus a per-user cooldown), acquired
+    # and released together with the job resource. Admins take none.
+    guard_owner_user_id = None
     guard_precondition_kwargs = {}
     if restrict_to_owner is not None:
+        guard_owner_user_id = restrict_to_owner.user_id
+        guard_precondition_kwargs["owner_user_id"] = guard_owner_user_id
         guard_precondition_kwargs["precondition"] = lambda guard_session: _job_unchanged(
             guard_session,
             job_id=job_id,
@@ -1322,12 +1328,16 @@ def _analyze_job_impl(
         # ever set True immediately after the paid analysis result is
         # actually committed.
         try:
+            guard_release_kwargs = {}
+            if guard_owner_user_id is not None:
+                guard_release_kwargs["owner_user_id"] = guard_owner_user_id
             release_job_analysis_guard(
                 db,
                 job_id=job_id,
                 owner_token=guard_owner_token,
                 succeeded=job_analysis_committed,
                 config=config,
+                **guard_release_kwargs,
             )
         except Exception as release_exc:
             # Defensive only -- release_job_analysis_guard is designed to
