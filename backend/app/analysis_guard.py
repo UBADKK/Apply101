@@ -60,6 +60,9 @@ PROFILE_OPERATION_TYPE = "profile_analysis_profile"
 USER_OPERATION_TYPE = "profile_analysis_user"
 
 JOB_OPERATION_TYPE = "job_analysis"
+# Per-user dimension of single-job analysis, taken only when a non-admin
+# owner analyzes their own manual job (resource_id = that user's user_id).
+JOB_USER_OPERATION_TYPE = "job_analysis_user"
 JOB_BATCH_OPERATION_TYPE = "job_analysis_batch"
 # The batch guard is a single global singleton shared by both batch
 # endpoints (analyze-missing, analyze-sample) -- not keyed by admin, since
@@ -182,6 +185,9 @@ class JobAnalysisConfig:
     lease_ttl_seconds: int
     success_cooldown_seconds: int
     failure_cooldown_seconds: int
+    # Owner (non-admin) path only; defaults keep existing constructors valid.
+    user_success_cooldown_seconds: int = 60
+    user_failure_cooldown_seconds: int = 30
 
 
 def load_job_analysis_config() -> JobAnalysisConfig:
@@ -197,6 +203,12 @@ def load_job_analysis_config() -> JobAnalysisConfig:
     lease_ttl_seconds = _get_positive_int_env("JOB_ANALYSIS_GUARD_LEASE_TTL_SECONDS", 300)
     success_cooldown = _get_positive_int_env("JOB_ANALYSIS_SUCCESS_COOLDOWN_SECONDS", 300)
     failure_cooldown = _get_positive_int_env("JOB_ANALYSIS_FAILURE_COOLDOWN_SECONDS", 30)
+    user_success_cooldown = _get_positive_int_env(
+        "JOB_ANALYSIS_USER_SUCCESS_COOLDOWN_SECONDS", 60
+    )
+    user_failure_cooldown = _get_positive_int_env(
+        "JOB_ANALYSIS_USER_FAILURE_COOLDOWN_SECONDS", 30
+    )
 
     required_minimum_lease = (
         (max_retries + 1) * timeout_seconds
@@ -218,6 +230,8 @@ def load_job_analysis_config() -> JobAnalysisConfig:
         lease_ttl_seconds=lease_ttl_seconds,
         success_cooldown_seconds=success_cooldown,
         failure_cooldown_seconds=failure_cooldown,
+        user_success_cooldown_seconds=user_success_cooldown,
+        user_failure_cooldown_seconds=user_failure_cooldown,
     )
 
 
@@ -615,22 +629,33 @@ def try_acquire_job_analysis_guard(
     config: JobAnalysisConfig,
     clock: Callable[[], float] = time.time,
     precondition: Callable[[Session], bool] | None = None,
+    owner_user_id: int | None = None,
 ) -> AcquireResult:
-    """Acquires the single per-job guard resource. Admins may analyze any
-    job; a job owner can now also analyze their own manual job through the
-    single-job route (POST /jobs/{job_id}/analyze). The guard is still per
-    job only -- unlike profile analysis, there is no second per-user
-    resource dimension here, and no per-user quota or cost limit.
+    """Acquires the per-job guard resource. Admins may analyze any job; a
+    job owner can also analyze their own manual job through the
+    single-job route (POST /jobs/{job_id}/analyze).
+
+    owner_user_id: None (the default -- admins, the batch routes and
+    analyze-sample) acquires only (JOB_OPERATION_TYPE, job_id), exactly as
+    before. The single-job route passes the requester's user_id only for a
+    non-admin owner; then (JOB_USER_OPERATION_TYPE, owner_user_id) is
+    acquired together with the job resource, under the same owner token in
+    the same transaction (all or nothing), so one user has at most one
+    owner job analysis in flight and a per-user cooldown between them.
 
     precondition: see _try_acquire_guard_resources. The single-job route
     passes one only for a non-admin owner, to re-check under the guard's
     write lock that the job and its owner (token_key) are still the ones
-    it authorized; a False result means TARGET_CHANGED. Admins, the batch
+    it authorized; a False result means TARGET_CHANGED, before any lease
+    or cooldown of either resource is considered. Admins, the batch
     routes and analyze-sample pass none, which behaves exactly as before.
     """
+    resources = [(JOB_OPERATION_TYPE, job_id)]
+    if owner_user_id is not None:
+        resources.append((JOB_USER_OPERATION_TYPE, owner_user_id))
     return _try_acquire_guard_resources(
         db,
-        resources=[(JOB_OPERATION_TYPE, job_id)],
+        resources=resources,
         lease_ttl_seconds=config.lease_ttl_seconds,
         clock=clock,
         precondition=precondition,
@@ -645,14 +670,27 @@ def release_job_analysis_guard(
     succeeded: bool,
     config: JobAnalysisConfig,
     clock: Callable[[], float] = time.time,
+    owner_user_id: int | None = None,
 ) -> bool:
-    """Releases the single per-job guard resource."""
+    """Releases the per-job guard resource and, when owner_user_id is given
+    (it must match the acquisition), the per-user resource too, each with
+    its own success/failure cooldown, in one transaction."""
     cooldown_seconds = (
         config.success_cooldown_seconds if succeeded else config.failure_cooldown_seconds
     )
+    resource_cooldowns = [(JOB_OPERATION_TYPE, job_id, cooldown_seconds)]
+    if owner_user_id is not None:
+        user_cooldown_seconds = (
+            config.user_success_cooldown_seconds
+            if succeeded
+            else config.user_failure_cooldown_seconds
+        )
+        resource_cooldowns.append(
+            (JOB_USER_OPERATION_TYPE, owner_user_id, user_cooldown_seconds)
+        )
     return _release_guard_resources(
         db,
-        resource_cooldowns=[(JOB_OPERATION_TYPE, job_id, cooldown_seconds)],
+        resource_cooldowns=resource_cooldowns,
         owner_token=owner_token,
         clock=clock,
     )
