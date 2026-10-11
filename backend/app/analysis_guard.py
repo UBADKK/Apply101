@@ -483,11 +483,18 @@ def try_acquire_profile_analysis_guard(
     owner_user_id: int,
     config: AnalysisGuardConfig,
     clock: Callable[[], float] = time.time,
+    precondition: Callable[[Session], bool] | None = None,
 ) -> AcquireResult:
     """Atomically acquires BOTH the per-profile and per-owner-user guard
     rows under one owner token, or neither. Thin wrapper over the generic
-    two-resource acquisition core; signature and behavior unchanged from
-    E3.2 (deterministic profile-then-user order, all-or-nothing atomicity).
+    two-resource acquisition core; behavior unchanged from E3.2
+    (deterministic profile-then-user order, all-or-nothing atomicity).
+
+    precondition: see _try_acquire_guard_resources. The profile analysis
+    route passes one (for owner and admin callers alike) to re-check under
+    the guard's write lock that the profile and its owner (token_key) are
+    still the captured identity; a False result means TARGET_CHANGED. None
+    (the default) behaves exactly as before.
     """
     return _try_acquire_guard_resources(
         db,
@@ -497,6 +504,7 @@ def try_acquire_profile_analysis_guard(
         ],
         lease_ttl_seconds=config.lease_ttl_seconds,
         clock=clock,
+        precondition=precondition,
     )
 
 

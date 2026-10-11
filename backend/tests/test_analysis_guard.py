@@ -101,7 +101,12 @@ class GenericCoreCompatibilityTests(unittest.TestCase):
     def test_profile_public_function_signatures_are_unchanged(self):
         acquire_params = list(inspect.signature(try_acquire_profile_analysis_guard).parameters)
         release_params = list(inspect.signature(release_profile_analysis_guard).parameters)
-        self.assertEqual(acquire_params, ["db", "profile_id", "owner_user_id", "config", "clock"])
+        # precondition: keyword-only, default None (profile guard identity
+        # re-check); every existing call site is unchanged.
+        self.assertEqual(
+            acquire_params,
+            ["db", "profile_id", "owner_user_id", "config", "clock", "precondition"],
+        )
         self.assertEqual(
             release_params,
             ["db", "profile_id", "owner_user_id", "owner_token", "succeeded", "config", "clock"],

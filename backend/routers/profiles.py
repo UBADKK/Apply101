@@ -25,7 +25,9 @@ from ..app.auth_dependencies import (
     require_user_access,
 )
 from ..app.profile_write_guard import (
+    ProfileOwnerChanged,
     capture_profile_owner_identity,
+    profile_owner_unchanged,
     verify_profile_owner_current_or_404,
     verify_profile_owner_unchanged_or_404,
 )
@@ -678,12 +680,21 @@ CV text:
     # cost, so a prompt can never mix two owners' data.
     verify_profile_owner_current_or_404(db, owner_identity)
 
+    # The guard is keyed by plain ids, which a new owner may have taken
+    # over since the check above; the precondition repeats it under the
+    # guard's write lock so a reused id's guard rows are never acquired
+    # (nor later given a cooldown).
     guard_acquire_result = try_acquire_profile_analysis_guard(
         db,
         profile_id=owner_identity.profile_id,
         owner_user_id=owner_identity.user_id,
         config=analysis_guard_config,
+        precondition=lambda guard_db: profile_owner_unchanged(guard_db, owner_identity),
     )
+
+    if guard_acquire_result.outcome is AcquireOutcome.TARGET_CHANGED:
+        # Nothing was acquired, so nothing is released below.
+        raise ProfileOwnerChanged()
 
     if guard_acquire_result.outcome is AcquireOutcome.ALREADY_IN_PROGRESS:
         raise HTTPException(
