@@ -37,6 +37,7 @@ from ..app.job_analysis_sanitizer import sanitize_job_analysis_requirements
 from ..app.openai_client import (
     ANALYSIS_SERVICE_NOT_CONFIGURED_DETAIL,
     create_openai_client_or_none,
+    provider_spend_limit_error_code,
 )
 
 
@@ -54,6 +55,27 @@ router = APIRouter(
 MAX_ANALYZE_JOBS = 10
 MAX_ANALYZE_MISSING_JOBS = 100
 MAX_AUTOMATIC_ANALYSIS_FAILURES_PER_JOB = 3
+
+# Fixed 503 detail for an exhausted provider spend/credit limit. Never
+# carries the job_id, the provider's error text or its error code.
+JOB_ANALYSIS_PROVIDER_UNAVAILABLE_ERROR_CODE = "ERR_JOB_ANALYSIS_PROVIDER_UNAVAILABLE"
+JOB_ANALYSIS_PROVIDER_UNAVAILABLE_MESSAGE = (
+    "Job analysis is temporarily unavailable. Please try again later."
+)
+
+
+class _JobAnalysisProviderUnavailableError(HTTPException):
+    """Always a 503 with the fixed provider-unavailable detail (a fresh dict
+    per instance). A distinct type so analyze-missing can stop its batch."""
+
+    def __init__(self):
+        super().__init__(
+            status_code=503,
+            detail={
+                "error_code": JOB_ANALYSIS_PROVIDER_UNAVAILABLE_ERROR_CODE,
+                "message": JOB_ANALYSIS_PROVIDER_UNAVAILABLE_MESSAGE,
+            },
+        )
 
 
 def is_recoverable_analysis_failure(error_message: str | None) -> bool:
@@ -1301,6 +1323,19 @@ def _analyze_job_impl(
         raise
 
     except Exception as e:
+        spend_limit_code = provider_spend_limit_error_code(e)
+        if spend_limit_code is not None:
+            # Provider spend/credit limit exhausted: not this job's fault,
+            # so no failed row is written. The finally below still releases
+            # the guard(s) with the failure cooldown. Never log or return
+            # the provider's text; only the matched code constant.
+            db.rollback()
+            logger.warning(
+                "_analyze_job_impl: job analysis provider spend limit reached (%s)",
+                spend_limit_code,
+            )
+            raise _JobAnalysisProviderUnavailableError() from None
+
         failed_analysis = models.JobAnalysis(
             job_id=job_id,
             analysis_status="failed",
@@ -1547,6 +1582,15 @@ def analyze_missing_jobs(
                     "analysis_id": result.get("analysis_id"),
                     "analysis_prompt_version": result.get("analysis_prompt_version")
                 })
+
+            except _JobAnalysisProviderUnavailableError as e:
+                # Provider spend limit exhausted: every further job would
+                # fail the same way, so stop issuing OpenAI calls and return
+                # this same fixed 503 for the whole batch (the existing
+                # early-stop path; jobs committed above stay committed).
+                db.rollback()
+                lock_lost_response = e
+                break
 
             except HTTPException as e:
                 # A per-job 409/429/503/500 (including a per-job guard
