@@ -325,3 +325,31 @@ class AnalysisGuard(Base):
     owner_token = Column(String, nullable=True)
     lock_expires_at = Column(Float, nullable=True)
     cooldown_until = Column(Float, nullable=True)
+
+
+class AnalysisQuotaReservation(Base):
+    """One counted attempt of a rolling per-user quota (currently owner
+    manual job analysis), inserted by backend/app/analysis_guard.py inside
+    the guard transaction right before the paid call; never refunded.
+    reserved_at is Unix epoch seconds (Float), like AnalysisGuard. No
+    foreign keys (like analysis_guards); job_id is for auditing only.
+    Existing databases get this table via
+    backend/migrations/phase8_analysis_quota_reservations.py or via the
+    Base.metadata.create_all call at app startup (backend/app/main.py).
+    """
+
+    __tablename__ = "analysis_quota_reservations"
+    __table_args__ = (
+        Index(
+            "ix_analysis_quota_reservations_op_user_reserved_at",
+            "operation_type",
+            "user_id",
+            "reserved_at",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    operation_type = Column(String, nullable=False)
+    user_id = Column(Integer, nullable=False)
+    job_id = Column(Integer, nullable=True)
+    reserved_at = Column(Float, nullable=False)

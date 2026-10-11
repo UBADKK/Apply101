@@ -37,12 +37,12 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable
 
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, delete, insert, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
-from .models import AnalysisGuard
+from .models import AnalysisGuard, AnalysisQuotaReservation
 
 
 logger = logging.getLogger(__name__)
@@ -188,6 +188,9 @@ class JobAnalysisConfig:
     # Owner (non-admin) path only; defaults keep existing constructors valid.
     user_success_cooldown_seconds: int = 60
     user_failure_cooldown_seconds: int = 30
+    # Rolling per-user quota of counted owner analyses (owner path only).
+    user_quota_max_attempts: int = 10
+    user_quota_window_seconds: int = 86400
 
 
 def load_job_analysis_config() -> JobAnalysisConfig:
@@ -208,6 +211,10 @@ def load_job_analysis_config() -> JobAnalysisConfig:
     )
     user_failure_cooldown = _get_positive_int_env(
         "JOB_ANALYSIS_USER_FAILURE_COOLDOWN_SECONDS", 30
+    )
+    user_quota_max_attempts = _get_positive_int_env("JOB_ANALYSIS_USER_QUOTA_MAX_ATTEMPTS", 10)
+    user_quota_window_seconds = _get_positive_int_env(
+        "JOB_ANALYSIS_USER_QUOTA_WINDOW_SECONDS", 86400
     )
 
     required_minimum_lease = (
@@ -232,6 +239,8 @@ def load_job_analysis_config() -> JobAnalysisConfig:
         failure_cooldown_seconds=failure_cooldown,
         user_success_cooldown_seconds=user_success_cooldown,
         user_failure_cooldown_seconds=user_failure_cooldown,
+        user_quota_max_attempts=user_quota_max_attempts,
+        user_quota_window_seconds=user_quota_window_seconds,
     )
 
 
@@ -285,6 +294,10 @@ class AcquireOutcome(Enum):
     # False: the target the caller authorized is gone or changed. Nothing
     # was acquired (no owner_token) and nothing was written.
     TARGET_CHANGED = "target_changed"
+    # Only returned when the caller passed a quota: every resource was free,
+    # but the user's rolling quota is used up. Nothing was acquired or
+    # written; retry_after_seconds says when the next slot frees up.
+    QUOTA_EXCEEDED = "quota_exceeded"
 
 
 @dataclass(frozen=True)
@@ -316,6 +329,63 @@ def _safe_close(session: Session) -> None:
         logger.warning("analysis guard: session close failed (%s)", type(exc).__name__)
 
 
+@dataclass(frozen=True)
+class _QuotaSpec:
+    """A rolling quota checked and reserved inside the guard transaction:
+    at most max_attempts reservations per (operation_type, user_id) whose
+    reserved_at lies within the last window_seconds."""
+
+    operation_type: str
+    user_id: int
+    job_id: int | None
+    max_attempts: int
+    window_seconds: int
+
+
+def _reserve_quota_slot(guard_session: Session, quota: _QuotaSpec, now: float) -> int | None:
+    """Runs inside the guard transaction, after every resource was won and
+    before the commit, on the same guard_session (which already holds
+    SQLite's write lock). Deletes this user's expired reservations for
+    this operation_type, then, if fewer than max_attempts unexpired ones
+    remain, inserts one reservation at `now` and returns None. Otherwise
+    inserts nothing and returns the Retry-After seconds until enough
+    reservations expire; the caller then rolls back (undoing the prune
+    too). May raise -- the caller fails closed.
+    """
+    cutoff = now - quota.window_seconds
+    same_user = and_(
+        AnalysisQuotaReservation.operation_type == quota.operation_type,
+        AnalysisQuotaReservation.user_id == quota.user_id,
+    )
+    guard_session.execute(
+        delete(AnalysisQuotaReservation).where(
+            same_user, AnalysisQuotaReservation.reserved_at <= cutoff
+        )
+    )
+    reserved_ats = guard_session.execute(
+        select(AnalysisQuotaReservation.reserved_at)
+        .where(same_user, AnalysisQuotaReservation.reserved_at > cutoff)
+        .order_by(AnalysisQuotaReservation.reserved_at.asc())
+    ).scalars().all()
+
+    count = len(reserved_ats)
+    if count >= quota.max_attempts:
+        # The (count - max_attempts + 1) oldest reservations must expire
+        # before a slot is free; with count == max_attempts, the oldest.
+        frees_at = reserved_ats[count - quota.max_attempts] + quota.window_seconds
+        return max(1, math.ceil(frees_at - now))
+
+    guard_session.execute(
+        insert(AnalysisQuotaReservation).values(
+            operation_type=quota.operation_type,
+            user_id=quota.user_id,
+            job_id=quota.job_id,
+            reserved_at=now,
+        )
+    )
+    return None
+
+
 def _guard_session(db: Session) -> Session:
     """Derives a genuinely independent, short-lived Session bound to the
     SAME engine as the route's injected `db` session (via db.get_bind()),
@@ -340,6 +410,7 @@ def _try_acquire_guard_resources(
     lease_ttl_seconds: int,
     clock: Callable[[], float] = time.time,
     precondition: Callable[[Session], bool] | None = None,
+    quota: _QuotaSpec | None = None,
 ) -> AcquireResult:
     """Generic core: atomically acquires ALL listed (operation_type,
     resource_id) resources under one owner token, or none. Never calls
@@ -365,6 +436,14 @@ def _try_acquire_guard_resources(
     otherwise have blocked. If it raises, everything is rolled back and
     BACKEND_UNAVAILABLE is returned, like any other failure of this
     transaction (fail closed: nothing acquired, nothing written).
+
+    quota: optional; None (the default) changes nothing. Otherwise, only
+    once every resource was won (so never on TARGET_CHANGED, a live lease
+    or a cooldown), _reserve_quota_slot runs in the same transaction with
+    the same `now`, right before the commit. A used-up quota rolls
+    everything back and returns QUOTA_EXCEEDED; a reserved slot is
+    committed together with the leases (and rolled back with them if the
+    commit fails); an error rolls everything back as BACKEND_UNAVAILABLE.
     """
     if not resources or len(set(resources)) != len(resources):
         # Internal programmer error, not a runtime/backend condition --
@@ -441,6 +520,22 @@ def _try_acquire_guard_resources(
         won = {(row.operation_type, row.resource_id) for row in rows if row.owner_token == owner_token}
 
         if won == set(resources):
+            if quota is not None:
+                try:
+                    quota_retry_after = _reserve_quota_slot(guard_session, quota, now)
+                except Exception as exc:
+                    _safe_rollback(guard_session)
+                    logger.warning(
+                        "analysis guard: quota reservation failed (%s); backend unavailable",
+                        type(exc).__name__,
+                    )
+                    return AcquireResult(outcome=AcquireOutcome.BACKEND_UNAVAILABLE)
+                if quota_retry_after is not None:
+                    _safe_rollback(guard_session)
+                    return AcquireResult(
+                        outcome=AcquireOutcome.QUOTA_EXCEEDED,
+                        retry_after_seconds=quota_retry_after,
+                    )
             try:
                 guard_session.commit()
             except Exception as exc:
@@ -649,16 +744,31 @@ def try_acquire_job_analysis_guard(
     it authorized; a False result means TARGET_CHANGED, before any lease
     or cooldown of either resource is considered. Admins, the batch
     routes and analyze-sample pass none, which behaves exactly as before.
+
+    With owner_user_id, a granted acquisition also reserves one slot of
+    the user's rolling quota (config.user_quota_max_attempts per
+    config.user_quota_window_seconds) in the same transaction; reserved
+    slots are never refunded. A used-up quota returns QUOTA_EXCEEDED and
+    writes nothing. Without owner_user_id no quota is checked or counted.
     """
     resources = [(JOB_OPERATION_TYPE, job_id)]
+    quota = None
     if owner_user_id is not None:
         resources.append((JOB_USER_OPERATION_TYPE, owner_user_id))
+        quota = _QuotaSpec(
+            operation_type=JOB_USER_OPERATION_TYPE,
+            user_id=owner_user_id,
+            job_id=job_id,
+            max_attempts=config.user_quota_max_attempts,
+            window_seconds=config.user_quota_window_seconds,
+        )
     return _try_acquire_guard_resources(
         db,
         resources=resources,
         lease_ttl_seconds=config.lease_ttl_seconds,
         clock=clock,
         precondition=precondition,
+        quota=quota,
     )
 
 

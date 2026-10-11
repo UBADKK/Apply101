@@ -118,8 +118,9 @@ def delete_user(
     # Guard rows for this user's own profiles (already-collected
     # profile_ids, same list used for the cascades above) and for the
     # user-level guard dimensions (profile analysis and owner job
-    # analysis), so a new user reusing this user_id inherits no lease or
-    # cooldown. Left in place: any OTHER user's guard
+    # analysis), plus all of this user's quota reservations, so a new user
+    # reusing this user_id inherits no lease, cooldown or used quota. Left
+    # in place: any OTHER user's guard/quota
     # rows, and any other operation_type this table might ever hold.
     if profile_ids:
         db.query(models.AnalysisGuard).filter(
@@ -135,6 +136,10 @@ def delete_user(
     db.query(models.AnalysisGuard).filter(
         models.AnalysisGuard.operation_type == JOB_USER_OPERATION_TYPE,
         models.AnalysisGuard.resource_id == user_id
+    ).delete(synchronize_session=False)
+
+    db.query(models.AnalysisQuotaReservation).filter(
+        models.AnalysisQuotaReservation.user_id == user_id
     ).delete(synchronize_session=False)
 
     # Jobs this user created, plus everything depending on them, children

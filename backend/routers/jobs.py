@@ -1138,7 +1138,12 @@ def _analyze_job_impl(
             detail="An analysis for this job is already in progress.",
         )
 
-    if guard_acquire_result.outcome is AcquireOutcome.COOLDOWN_ACTIVE:
+    # QUOTA_EXCEEDED: only a non-admin owner (owner_user_id passed) has a
+    # rolling quota; same response as a cooldown, nothing was acquired.
+    if guard_acquire_result.outcome in (
+        AcquireOutcome.COOLDOWN_ACTIVE,
+        AcquireOutcome.QUOTA_EXCEEDED,
+    ):
         raise HTTPException(
             status_code=429,
             detail="Too many requests. Please try again later.",
@@ -1146,6 +1151,13 @@ def _analyze_job_impl(
         )
 
     if guard_acquire_result.outcome is AcquireOutcome.BACKEND_UNAVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Service temporarily unavailable. Please try again shortly.",
+        )
+
+    # Defensive: any other outcome than GRANTED must never reach OpenAI.
+    if guard_acquire_result.outcome is not AcquireOutcome.GRANTED:
         raise HTTPException(
             status_code=503,
             detail="Service temporarily unavailable. Please try again shortly.",
