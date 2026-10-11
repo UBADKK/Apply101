@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Edit|MultiEdit|Write|NotebookEdit|Grep|Glob|Bash|PowerShell|Agent|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "shell": "bash",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/agent_file_guard.sh\"",
+            "timeout": 15,
+            "onFailure": "block",
+            "statusMessage": "Apply101 agent file guard"
+          }
+        ]
+      }
+    ]
+  }
+}
