@@ -5,7 +5,8 @@ export interface Resource<T> {
   error: unknown;
   loading: boolean;
   reload: () => void;
-  setData: (value: T) => void;
+  /** Replace the data, or update it from the latest value (never a stale copy). */
+  setData: (value: T | ((current: T | undefined) => T)) => void;
 }
 
 /** Loads data when deps change; stale responses from earlier loads are ignored. */

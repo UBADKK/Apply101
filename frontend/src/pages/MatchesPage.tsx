@@ -18,6 +18,7 @@ export function MatchesPage() {
     [user.user_id, profile?.profile_id, Boolean(workspace.data)],
   );
 
+  const currentAnalysisId = workspace.data?.analysis?.analysis_id;
   const loading = workspace.loading || (matches.loading && !matches.data);
   const error = workspace.error ?? matches.error;
 
@@ -57,6 +58,11 @@ export function MatchesPage() {
           Open an analyzed job and choose “Match with my profile”.
         </EmptyState>
       )}
+      {!loading && matches.data && matches.data.total_count > matches.data.returned_count && (
+        <p className="muted small">
+          Showing the {matches.data.returned_count} best of {matches.data.total_count} saved matches.
+        </p>
+      )}
       {!loading && matches.data && matches.data.results.length > 0 && (
         <ul className="card-list">
           {matches.data.results.map((item) => (
@@ -67,6 +73,9 @@ export function MatchesPage() {
                 </h2>
                 <p className="muted">{[item.company_name, item.location].filter(Boolean).join(' · ')}</p>
                 <p className="muted small">Matched {formatDateTime(item.matched_at)}</p>
+                {currentAnalysisId != null && item.profile_analysis_id !== currentAnalysisId && (
+                  <p className="outdated-note small">Computed from an older profile analysis. Open it to re-run.</p>
+                )}
               </div>
               <div className="match-card-side">
                 <EligibilityBadge status={item.eligibility_status} />

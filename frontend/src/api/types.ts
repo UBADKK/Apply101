@@ -204,6 +204,8 @@ export interface MatchResponse {
   match_id: number;
   profile_id: number;
   job_id: number;
+  profile_analysis_id: number | null;
+  job_analysis_id: number | null;
   match_version: string;
   eligibility_status: EligibilityStatus;
   overall_score: number;
@@ -215,6 +217,10 @@ export interface SavedMatch {
   match_id: number;
   profile_id: number;
   job_id: number;
+  /** The analyses the result was computed from; compare with the current
+   * ones to tell whether the saved result is outdated. */
+  profile_analysis_id: number | null;
+  job_analysis_id: number | null;
   title: string;
   company_name: string | null;
   location: string | null;

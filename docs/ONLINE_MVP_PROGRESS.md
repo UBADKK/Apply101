@@ -162,6 +162,7 @@ that an interrupted session can resume.
   | `APPLY101_DATABASE_URL` | `sqlite:///./apply101.db` | SQLAlchemy URL. Migrations and scripts read it too, but only from the process environment (only `main.py` loads `.env`). SQLite URI URLs (a `uri` query parameter or a `file:` database) are refused with `ConfigError` before any engine exists; use a plain `sqlite:///<path>` URL. |
   | `APPLY101_UPLOAD_DIR` | `uploads` | CV upload directory. The app refuses to start when it points to the repository's `uploads/` and the database is not the repository's `apply101.db`, because CV file names come from database ids. |
   | `APPLY101_LOAD_DOTENV` | on | `0`/`false`/`no`/`off` skips `.env`; any other unrecognized value is an error. |
+  | `APPLY101_CORS_ORIGINS` | none | Comma-separated browser origins allowed by CORS, e.g. `http://localhost:5173` for the web client's dev server. `*`, paths and other schemes are an error; unset means no CORS middleware. |
   | `APPLY101_ANALYSIS_PROVIDER` | `openai` | `fake` selects the deterministic demo provider. It is accepted only when both the database and the upload directory resolve away from the defaults and the repository's real files; any other unrecognized value is an error. |
 
 - **Demo server.** This command runs the app from the repository root without
@@ -179,10 +180,14 @@ that an interrupted session can resume.
   APPLY101_DATABASE_URL="sqlite:///$SANDBOX/demo.db" \
   APPLY101_UPLOAD_DIR="$SANDBOX/uploads" \
   APPLY101_ANALYSIS_PROVIDER=fake \
+  APPLY101_CORS_ORIGINS=http://localhost:5173 \
   JWT_SECRET_KEY="$(.venv/Scripts/python.exe -c 'import secrets; print(secrets.token_urlsafe(48))')" \
   OPENAI_API_KEY= \
   .venv/Scripts/python.exe -m uvicorn backend.app.main:app --port 8001
   ```
+
+  The web client then runs with `npm run dev` in `frontend/` (see
+  `frontend/README.md`).
 
   Fake analyses are stored with the real model name and prompt version, so
   matching accepts them, and demo CVs are named after database ids. That is

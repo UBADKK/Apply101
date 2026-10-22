@@ -11,6 +11,7 @@ import { formatDateTime, titleCase } from '../components/labels';
 import { LoadingState } from '../components/LoadingState';
 import { MatchResultView } from '../components/MatchResultView';
 import { PageHeader } from '../components/PageHeader';
+import { outdatedParts, StaleMatchNotice } from '../components/StaleMatchNotice';
 import { useAction } from '../hooks/useAction';
 import { useResource } from '../hooks/useResource';
 import { loadJobAnalysis, loadMatches, useWorkspace } from '../hooks/useWorkspace';
@@ -19,6 +20,8 @@ interface ShownMatch {
   data: MatchData;
   source: 'saved' | 'created' | 'cached';
   matchedAt: string | null;
+  profile_analysis_id: number | null;
+  job_analysis_id: number | null;
 }
 
 function known(value: string | null | undefined): value is string {
@@ -110,7 +113,18 @@ export function JobDetailPage() {
 
   useEffect(() => {
     const entry = saved.data?.results.find((item) => item.job_id === jobId);
-    if (entry) setShown((current) => current ?? { data: entry.match, source: 'saved', matchedAt: entry.matched_at });
+    if (entry) {
+      setShown(
+        (current) =>
+          current ?? {
+            data: entry.match,
+            source: 'saved',
+            matchedAt: entry.matched_at,
+            profile_analysis_id: entry.profile_analysis_id,
+            job_analysis_id: entry.job_analysis_id,
+          },
+      );
+    }
   }, [saved.data, jobId]);
 
   const analyze = useAction(async () => {
@@ -122,7 +136,13 @@ export function JobDetailPage() {
   const match = useAction(async (force: boolean) => {
     if (!profile) return undefined;
     const response = await api.match(user.user_id, profile.profile_id, jobId, force);
-    setShown({ data: response.match, source: response.status === 'cached' ? 'cached' : 'created', matchedAt: null });
+    setShown({
+      data: response.match,
+      source: response.status === 'cached' ? 'cached' : 'created',
+      matchedAt: null,
+      profile_analysis_id: response.profile_analysis_id,
+      job_analysis_id: response.job_analysis_id,
+    });
     return response;
   });
 
@@ -164,6 +184,10 @@ export function JobDetailPage() {
   const data = job.data;
   const analysisReady = Boolean(jobAnalysis.data);
   const canMatch = Boolean(profile && profileAnalysis && analysisReady);
+  const stale = shown?.source === 'saved' ? outdatedParts(shown, profileAnalysis?.analysis_id, jobAnalysis.data?.analysis_id) : [];
+  // Only jobs the user added can be analyzed by them; a visible catalog job
+  // answers the analyze request with a 404.
+  const analyzeNotAllowed = isApiError(analyze.error) && analyze.error.status === 404;
 
   return (
     <>
@@ -198,7 +222,13 @@ export function JobDetailPage() {
         {!jobAnalysis.loading && jobAnalysis.error === null && !jobAnalysis.data && (
           <>
             <p>This job has not been analyzed with the current analysis version yet.</p>
-            <ErrorAlert error={analyze.error} cooldownSeconds={analyze.cooldownSeconds} />
+            {analyzeNotAllowed ? (
+              <Alert tone="warning" title="Cannot analyze this job">
+                Only jobs you added yourself can be analyzed. Add this posting as your own job to analyze it.
+              </Alert>
+            ) : (
+              <ErrorAlert error={analyze.error} cooldownSeconds={analyze.cooldownSeconds} />
+            )}
             <button
               type="button"
               className="button button-primary"
@@ -238,6 +268,7 @@ export function JobDetailPage() {
               {shown.source === 'cached' && 'Saved result (nothing changed since it was computed).'}
               {shown.source === 'created' && 'Freshly computed result.'}
             </p>
+            <StaleMatchNotice parts={stale} />
             <MatchResultView match={shown.data} />
           </>
         )}

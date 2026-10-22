@@ -334,6 +334,12 @@ p {
   gap: 0.25rem;
 }
 
+.outdated-note {
+  color: var(--color-warning);
+  font-weight: 600;
+  margin: 0;
+}
+
 .match-card-score {
   font-weight: 700;
   font-size: 1.1rem;

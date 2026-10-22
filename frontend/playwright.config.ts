@@ -18,7 +18,9 @@ const frontendDir = dirname(fileURLToPath(import.meta.url));
  * backend interpreter with APPLY101_PYTHON.
  */
 const repoRoot = resolve(frontendDir, '..');
-const sandbox = mkdtempSync(join(tmpdir(), 'apply101-e2e-'));
+// Created once: worker processes load this config again but inherit the env.
+const sandbox = process.env.APPLY101_E2E_SANDBOX ?? mkdtempSync(join(tmpdir(), 'apply101-e2e-'));
+process.env.APPLY101_E2E_SANDBOX = sandbox;
 const backendPort = 8011;
 const frontendPort = 4173;
 const python =

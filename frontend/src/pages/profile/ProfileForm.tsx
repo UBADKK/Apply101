@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { isApiError } from '../../api/client';
 import type { Language, Profile, ProfileInput, StudentStatus, WorkAuthorization } from '../../api/types';
 import { ErrorAlert } from '../../components/ErrorAlert';
-import { SelectField, TextAreaField, TextField, type Option } from '../../components/fields';
+import { SelectField, TextAreaField, TextField, withCurrentValue, type Option } from '../../components/fields';
 
 export const LANGUAGE_OPTIONS: Option[] = [
   ['en', 'English'],
@@ -30,6 +30,7 @@ export const LANGUAGE_OPTIONS: Option[] = [
 ].map(([value, label]) => ({ value, label }));
 
 const LEVEL_OPTIONS: Option[] = [
+  { value: '', label: 'Not specified' },
   { value: 'A1', label: 'A1 (beginner)' },
   { value: 'A2', label: 'A2 (elementary)' },
   { value: 'B1', label: 'B1 (intermediate)' },
@@ -80,8 +81,17 @@ const STUDENT_OPTIONS: Option[] = [
 interface LanguageRow {
   key: number;
   code: string;
+  /** Stored name and scale are kept as they are unless the user picks
+   * another language, so saving the form does not rewrite them. */
+  name: string;
+  scale: string | null;
+  /** '' means not specified (sent as null, i.e. unknown to matching). */
   level: string;
   primary: boolean;
+}
+
+function languageName(code: string): string | undefined {
+  return LANGUAGE_OPTIONS.find((option) => option.value === code)?.label;
 }
 
 interface FormState {
@@ -128,7 +138,9 @@ function initialRows(languages: Language[]): LanguageRow[] {
   return languages.map((language) => ({
     key: nextRowKey++,
     code: language.language_code,
-    level: language.proficiency_level ?? 'B2',
+    name: language.language_name,
+    scale: language.proficiency_scale,
+    level: language.proficiency_level ?? '',
     primary: Boolean(language.is_primary),
   }));
 }
@@ -157,9 +169,9 @@ export function toProfileInput(state: FormState, rows: LanguageRow[]): ProfileIn
     student_status: (optional(state.student_status) as StudentStatus | null) ?? null,
     languages: rows.map((row) => ({
       language_code: row.code,
-      language_name: LANGUAGE_OPTIONS.find((option) => option.value === row.code)?.label ?? row.code,
-      proficiency_level: row.level,
-      proficiency_scale: 'CEFR',
+      language_name: row.name,
+      proficiency_level: row.level || null,
+      proficiency_scale: row.scale ?? 'CEFR',
       is_primary: row.primary,
     })),
   };
@@ -193,8 +205,14 @@ export function ProfileForm({ profile, languages, onSave, pending, error }: Prof
   const addRow = () => {
     const used = new Set(rows.map((row) => row.code));
     const code = LANGUAGE_OPTIONS.find((option) => !used.has(option.value))?.value ?? 'en';
-    setRows((current) => [...current, { key: nextRowKey++, code, level: 'B2', primary: current.length === 0 }]);
+    setRows((current) => [
+      ...current,
+      { key: nextRowKey++, code, name: languageName(code) ?? code, scale: 'CEFR', level: '', primary: current.length === 0 },
+    ]);
   };
+
+  const changeLanguage = (key: number, code: string) =>
+    updateRow(key, { code, name: languageName(code) ?? code });
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();
@@ -253,11 +271,24 @@ export function ProfileForm({ profile, languages, onSave, pending, error }: Prof
         <ul className="language-rows">
           {rows.map((row, index) => (
             <li className="language-row" key={row.key}>
-              <SelectField label={`Language ${index + 1}`} name={`language-${row.key}`} value={row.code} onChange={(code) => updateRow(row.key, { code })} options={LANGUAGE_OPTIONS} />
-              <SelectField label="Level" name={`level-${row.key}`} value={row.level} onChange={(level) => updateRow(row.key, { level })} options={LEVEL_OPTIONS} />
+              <SelectField
+                label={`Language ${index + 1}`}
+                name={`language-${row.key}`}
+                value={row.code}
+                onChange={(code) => changeLanguage(row.key, code)}
+                options={withCurrentValue(LANGUAGE_OPTIONS, row.code, row.name)}
+              />
+              <SelectField
+                label={`Level of language ${index + 1}`}
+                name={`level-${row.key}`}
+                value={row.level}
+                onChange={(level) => updateRow(row.key, { level })}
+                options={LEVEL_OPTIONS}
+                hint={!row.level ? 'Unknown levels lead to a review instead of a clear result.' : undefined}
+              />
               <label className="checkbox">
                 <input type="radio" name="primary-language" checked={row.primary} onChange={() => updateRow(row.key, { primary: true })} />
-                Primary
+                Primary<span className="visually-hidden"> language {index + 1}</span>
               </label>
               <button type="button" className="button button-ghost button-small" onClick={() => setRows((current) => current.filter((item) => item.key !== row.key))}>
                 Remove<span className="visually-hidden"> language {index + 1}</span>

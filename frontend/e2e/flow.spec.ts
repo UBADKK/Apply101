@@ -114,8 +114,8 @@ test.describe.serial('Apply101 web client', () => {
     await page.getByLabel('Country you live in').fill('Germany');
     await page.getByLabel('Student status').selectOption('not_enrolled');
     await page.getByRole('button', { name: 'Add a language' }).click();
-    await page.getByLabel('Language 1').selectOption('en');
-    await page.getByLabel('Level').selectOption('C1');
+    await page.getByLabel('Language 1', { exact: true }).selectOption('en');
+    await page.getByLabel('Level of language 1', { exact: true }).selectOption('C1');
     await page.getByRole('button', { name: 'Create profile' }).click();
     await expect(page.getByText('Profile saved.')).toBeVisible();
 
@@ -157,6 +157,7 @@ test.describe.serial('Apply101 web client', () => {
     await shot(page, '04-desktop-cooldown-429');
     // The countdown ends without any automatic retry; the user starts it again.
     await expect(page.getByRole('button', { name: 'Analyze job' })).toBeEnabled({ timeout: 40_000 });
+    await expect(page.getByText('You can try again now.')).toBeVisible();
     expect(analyzeRequests).toHaveLength(1);
     await page.getByRole('button', { name: 'Analyze job' }).click();
     await expect(page.getByText('German C1 (required)')).toBeVisible();

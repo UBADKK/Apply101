@@ -77,7 +77,10 @@ export function DashboardPage() {
               <p className="muted">No matches yet.</p>
             ) : (
               <ul className="plain-list recent-matches">
-                {matches.data!.results.slice(0, 3).map((item) => (
+                {[...matches.data!.results]
+                  .sort((a, b) => (b.matched_at ?? '').localeCompare(a.matched_at ?? ''))
+                  .slice(0, 3)
+                  .map((item) => (
                   <li key={item.match_id}>
                     <Link to={`/matches/${item.match_id}`}>{item.title}</Link> <EligibilityBadge status={item.eligibility_status} />{' '}
                     <span className="muted">

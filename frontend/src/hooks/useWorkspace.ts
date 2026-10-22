@@ -37,19 +37,26 @@ export function useWorkspace() {
   return useResource(load, [load]);
 }
 
-/** Saved match results of the user's profile; empty without a profile. */
+/** Saved match results of the user's profile (the backend's maximum page,
+ * best score first); empty without a profile. */
 export async function loadMatches(userId: number, profile: Profile | null): Promise<MatchList> {
   if (!profile) return { total_count: 0, returned_count: 0, results: [] };
   return api.listMatches(userId, profile.profile_id);
 }
 
-/** GET /jobs/analyzed/{id} answers 404 with a plain message when the job
- * exists but has no current analysis; that is "not analyzed", not an error. */
+/** Detail of the 404 for a missing or invisible job (backend/app/job_visibility.py). */
+const JOB_NOT_FOUND_DETAIL = 'Job not found.';
+
+/** GET /jobs/analyzed/{id}: null when the job is visible but has no current
+ * analysis (a 404 with another plain message); a missing or invisible job
+ * stays an error. */
 export async function loadJobAnalysis(jobId: number) {
   try {
     return await api.analyzedJob(jobId);
   } catch (error) {
-    if (isApiError(error) && error.status === 404 && typeof error.detail === 'string') return null;
+    if (isApiError(error) && error.status === 404 && typeof error.detail === 'string' && error.detail !== JOB_NOT_FOUND_DETAIL) {
+      return null;
+    }
     throw error;
   }
 }

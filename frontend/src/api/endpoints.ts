@@ -55,5 +55,5 @@ export const api = {
       query: forceRematch ? { force_rematch: true } : undefined,
     }),
   listMatches: (userId: number, profileId: number) =>
-    apiRequest<MatchList>(`/users/${userId}/profiles/${profileId}/matches`, { query: { limit: 100 } }),
+    apiRequest<MatchList>(`/users/${userId}/profiles/${profileId}/matches`, { query: { limit: 500 } }),
 };

@@ -116,10 +116,19 @@ interface SelectFieldProps extends BaseFieldProps {
   options: Option[];
 }
 
+/** A stored value outside the option list (e.g. written through the API)
+ * stays selectable as itself, so saving the form never silently replaces it
+ * with the first option. */
+export function withCurrentValue(options: Option[], value: string, currentLabel?: string): Option[] {
+  if (options.some((option) => option.value === value)) return options;
+  return [...options, { value, label: currentLabel ?? `${value} (current value)` }];
+}
+
 export function SelectField({ label, name, hint, error, required, value, onChange, options }: SelectFieldProps) {
   const id = useId();
   const hintId = `${id}-hint`;
   const errorId = `${id}-error`;
+  options = withCurrentValue(options, value);
   return (
     <FieldFrame id={id} label={label} name={name} hint={hint} error={error} required={required} hintId={hintId} errorId={errorId}>
       <select

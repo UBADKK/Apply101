@@ -11,12 +11,13 @@ interface ErrorAlertProps {
 export function ErrorAlert({ error, context, cooldownSeconds }: ErrorAlertProps) {
   if (!error) return null;
   const view = describeError(error, context);
-  const waiting = cooldownSeconds !== undefined && cooldownSeconds > 0;
+  const countdown = cooldownSeconds !== undefined && view.retryAfterSeconds !== null;
+  let message = view.message;
+  if (countdown && cooldownSeconds > 0) message = `Too many requests. You can try again in ${cooldownSeconds} seconds.`;
+  else if (countdown) message = 'You can try again now.';
   return (
     <Alert tone={view.retryAfterSeconds !== null ? 'warning' : 'error'} title={view.title}>
-      <p>
-        {waiting ? `Too many requests. You can try again in ${cooldownSeconds} seconds.` : view.message}
-      </p>
+      <p>{message}</p>
     </Alert>
   );
 }

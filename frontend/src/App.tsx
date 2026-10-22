@@ -1,4 +1,4 @@
-import { BrowserRouter, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Route, Routes, useParams } from 'react-router-dom';
 import { AuthProvider } from './auth/AuthContext';
 import { PublicOnly, RequireAuth } from './auth/RequireAuth';
 import { Layout, PublicLayout } from './components/Layout';
@@ -12,6 +12,12 @@ import { NewJobPage } from './pages/NewJobPage';
 import { NotFoundPage } from './pages/NotFoundPage';
 import { ProfilePage } from './pages/ProfilePage';
 import { RegisterPage } from './pages/RegisterPage';
+
+/** A different job id is a different page: start from fresh state. */
+function JobDetailRoute() {
+  const { jobId } = useParams();
+  return <JobDetailPage key={jobId} />;
+}
 
 export function AppRoutes() {
   return (
@@ -37,7 +43,7 @@ export function AppRoutes() {
         <Route path="/profile" element={<ProfilePage />} />
         <Route path="/jobs" element={<JobsPage />} />
         <Route path="/jobs/new" element={<NewJobPage />} />
-        <Route path="/jobs/:jobId" element={<JobDetailPage />} />
+        <Route path="/jobs/:jobId" element={<JobDetailRoute />} />
         <Route path="/matches" element={<MatchesPage />} />
         <Route path="/matches/:matchId" element={<MatchDetailPage />} />
         <Route path="*" element={<NotFoundPage />} />

@@ -139,7 +139,11 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     response = await fetch(url.toString(), { method, headers, body: payload, signal });
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw error;
-    throw new ApiError({ status: 0, message: 'Cannot reach the Apply101 server. Check that the backend is running.' });
+    // Also what an unexpected server error without CORS headers looks like.
+    throw new ApiError({
+      status: 0,
+      message: 'Cannot reach the Apply101 server, or it failed to answer. Check that the backend is running and try again.',
+    });
   }
 
   if (response.ok) {
