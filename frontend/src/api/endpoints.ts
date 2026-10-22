@@ -1,7 +1,7 @@
 import { apiRequest } from './client';
 import type {
   AnalyzedJob,
-  AnalyzedProfile,
+  AnalyzedProfileEntry,
   AnalyzeResponse,
   CurrentUser,
   Job,
@@ -36,7 +36,7 @@ export const api = {
     body.append('file', file);
     return apiRequest<Profile>(`/users/${userId}/profiles/${profileId}/upload-cv`, { method: 'POST', body });
   },
-  analyzedProfiles: (userId: number) => apiRequest<AnalyzedProfile[]>(`/users/${userId}/profiles/analyzed`),
+  analyzedProfiles: (userId: number) => apiRequest<AnalyzedProfileEntry[]>(`/users/${userId}/profiles/analyzed`),
   analyzeProfile: (userId: number, profileId: number, forceReanalyze: boolean) =>
     apiRequest<AnalyzeResponse<ProfileAnalysisPayload>>(`/users/${userId}/profiles/${profileId}/analyze`, {
       method: 'POST',

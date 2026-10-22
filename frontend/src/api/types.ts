@@ -78,9 +78,15 @@ export interface AnalysisLanguage {
   scale: string;
 }
 
-/** One entry of GET /users/{user_id}/profiles/analyzed. */
-export interface AnalyzedProfile {
+/** One entry of GET /users/{user_id}/profiles/analyzed: the profile's fields
+ * plus its current analysis. */
+export interface AnalyzedProfileEntry {
   profile_id: number;
+  analysis: AnalyzedProfile;
+}
+
+/** The `analysis` object of an AnalyzedProfileEntry. */
+export interface AnalyzedProfile {
   analysis_id: number;
   analysis_status: string;
   analysis_model: string;

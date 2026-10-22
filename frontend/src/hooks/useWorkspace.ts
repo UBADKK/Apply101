@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 import { isApiError } from '../api/client';
 import { api } from '../api/endpoints';
-import type { AnalyzedProfile, Language, MatchList, Profile } from '../api/types';
+import type { AnalyzedProfile, AnalyzedProfileEntry, Language, MatchList, Profile } from '../api/types';
 import { useCurrentUser } from '../auth/AuthContext';
 import { useResource } from './useResource';
 
@@ -11,6 +11,10 @@ export interface Workspace {
   languages: Language[];
   /** Current analysis of that profile (current analysis version), if any. */
   analysis: AnalyzedProfile | null;
+}
+
+export function currentAnalysis(entries: AnalyzedProfileEntry[], profileId: number): AnalyzedProfile | null {
+  return entries.find((entry) => entry.profile_id === profileId)?.analysis ?? null;
 }
 
 export function pickProfile(profiles: Profile[]): Profile | null {
@@ -28,8 +32,7 @@ export function useWorkspace() {
       api.analyzedProfiles(user.user_id),
     ]);
     const profile = pickProfile(profiles);
-    const analysis = profile ? (analyzed.find((item) => item.profile_id === profile.profile_id) ?? null) : null;
-    return { profile, languages, analysis };
+    return { profile, languages, analysis: profile ? currentAnalysis(analyzed, profile.profile_id) : null };
   }, [user.user_id]);
   return useResource(load, [load]);
 }

@@ -91,7 +91,7 @@ export function NewJobPage() {
             value={description}
             onChange={setDescription}
             maxLength={JOB_LIMITS.descriptionMax}
-            hint={`${description.trim().length.toLocaleString()} / ${JOB_LIMITS.descriptionMax.toLocaleString()} characters (at least ${JOB_LIMITS.descriptionMin}).`}
+            hint={`${description.trim().length.toLocaleString('en-GB')} / ${JOB_LIMITS.descriptionMax.toLocaleString('en-GB')} characters (at least ${JOB_LIMITS.descriptionMin}).`}
             error={fieldError('description_text')}
           />
           <div className="form-actions">

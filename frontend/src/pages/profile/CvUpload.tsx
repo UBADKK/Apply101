@@ -52,7 +52,7 @@ export function CvUpload({ profile, onUpload, pending, error }: CvUploadProps) {
         <div className="cv-current">
           <p>
             Current CV: <strong>{profile.cv_filename}</strong>{' '}
-            <span className="muted">({textLength.toLocaleString()} characters of text extracted)</span>
+            <span className="muted">({textLength.toLocaleString('en-GB')} characters of text extracted)</span>
           </p>
           {textLength > 0 && (
             <details>
@@ -70,7 +70,7 @@ export function CvUpload({ profile, onUpload, pending, error }: CvUploadProps) {
 
       {uploaded && (
         <Alert tone="success" title="CV uploaded">
-          {uploaded.cv_filename}: {(uploaded.cv_text?.length ?? 0).toLocaleString()} characters of text extracted.
+          {uploaded.cv_filename}: {(uploaded.cv_text?.length ?? 0).toLocaleString('en-GB')} characters of text extracted.
         </Alert>
       )}
       <ErrorAlert error={error} />

@@ -7,7 +7,7 @@ import { ErrorAlert } from '../components/ErrorAlert';
 import { LoadingState } from '../components/LoadingState';
 import { PageHeader } from '../components/PageHeader';
 import { useAction } from '../hooks/useAction';
-import { useWorkspace } from '../hooks/useWorkspace';
+import { currentAnalysis, useWorkspace } from '../hooks/useWorkspace';
 import { CvUpload } from './profile/CvUpload';
 import { ProfileAnalysisCard } from './profile/ProfileAnalysisCard';
 import { ProfileForm } from './profile/ProfileForm';
@@ -45,8 +45,7 @@ export function ProfilePage() {
     const current = workspace.data?.profile;
     if (!current) return undefined;
     await api.analyzeProfile(user.user_id, current.profile_id, Boolean(workspace.data?.analysis));
-    const analyzed = await api.analyzedProfiles(user.user_id);
-    const analysis = analyzed.find((item) => item.profile_id === current.profile_id) ?? null;
+    const analysis = currentAnalysis(await api.analyzedProfiles(user.user_id), current.profile_id);
     workspace.setData({ ...workspace.data!, analysis });
     setStale(false);
     return analysis;

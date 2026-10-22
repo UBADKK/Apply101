@@ -42,7 +42,8 @@ export function formatDateTime(value: string | null | undefined): string {
   if (!value) return 'unknown time';
   const date = new Date(value.endsWith('Z') || /[+-]\d\d:\d\d$/.test(value) ? value : `${value}Z`);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  // The UI is English, so dates are too, whatever the browser locale is.
+  return date.toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
 }
 
 export function titleCase(value: string): string {
