@@ -151,8 +151,8 @@ a recorded check on staging does.
 
 ## Open decisions (owner: project owner)
 
-- **D1** Web client approach, for example server-rendered pages or a
-  separate single-page app.
+- **D1** Web client approach. Decided 2026-10-22: a React + TypeScript +
+  Vite single-page app in `frontend/`, using the existing FastAPI backend.
 - **D2** Hosting provider and database engine for the first release.
 - **D3** OpenAI budget: the model, and the per-user limits for profile and
   job analysis.

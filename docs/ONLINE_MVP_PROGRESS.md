@@ -9,7 +9,7 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 
 | ID | Decision | Status | Outcome |
 |---|---|---|---|
-| D1 | Web client approach | todo | |
+| D1 | Web client approach | done | React + TypeScript + Vite single-page app in `frontend/`, talking to the existing FastAPI backend (decided by the project owner, 2026-10-22) |
 | D2 | Hosting provider and database engine | todo | |
 | D3 | OpenAI budget and per-user analysis limits | todo | |
 | D4 | Registration policy (open / invite) | todo | |
@@ -23,7 +23,7 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 | W1 | Configurable database URL and upload directory, explicit `.env` loading | done | `APPLY101_DATABASE_URL`, `APPLY101_UPLOAD_DIR`, `APPLY101_LOAD_DOTENV`; defaults unchanged |
 | W2 | Fake analysis provider for development and end-to-end tests | done | `APPLY101_ANALYSIS_PROVIDER=fake`, only with a non-default database and upload directory; no fallback |
 | W3 | Per-user limit for profile analysis | todo | Depends on D3 |
-| W4 | Web client and CORS | todo | Depends on D1 |
+| W4 | Web client and CORS | in progress | Branch `feat/online-mvp-web-client`; see "W4 task" below |
 | W5 | Hosting and database setup | todo | Depends on D2 |
 | W6 | Portable stored CV paths | todo | Existing rows store OS-specific relative paths; a configured upload dir on Windows stores mixed separators (`C:/.../uploads\user_1_profile_1_cv.pdf`) |
 | W7 | Account deletion removes CV files | todo | |
@@ -40,6 +40,72 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 | AC4 | Analysis | in progress | Works end to end with the fake provider in a sandbox; profile analysis limit open (W3); real provider not exercised |
 | AC5 | Reasoned match result | in progress | Sandbox demo returned `eligible` and `ineligible` results with reason codes; staging check open |
 | AC6 | End to end and operations | todo | Needs W1-W8 |
+
+## W4 task (web client)
+
+Scope, as given by the project owner on 2026-10-22. It is recorded here so
+that an interrupted session can resume.
+
+- **Stack:** React + TypeScript + Vite SPA in `frontend/` (D1), English UI,
+  the existing FastAPI backend, stable dependencies with a committed
+  lockfile. D2-D6 stay open.
+- **Flow in the browser:**
+  - register, log in and log out;
+  - protected pages that survive a page reload and handle an expired
+    session;
+  - create, open and edit a profile, including every matching field
+    (languages, experience, preferences, work authorization), and upload a
+    PDF CV;
+  - list and open the user's own jobs, and add a manual job (title, URL,
+    text);
+  - start profile and job analysis, show status and summary, and guide the
+    user when an analysis is missing or outdated;
+  - match results with `eligible` / `ineligible` / `review_required`,
+    scores, strengths, weaknesses and readable reasons;
+  - reopen saved results and use the existing rematch behaviour.
+- **Quality:**
+  - a simple, consistent, presentable design that works on mobile;
+  - labelled forms, keyboard use, and empty, loading, success and error
+    states;
+  - no double submits;
+  - clear handling of 401, 404, 409, 422, 429 and 503;
+  - Retry-After and quotas respected, and analyses never re-sent
+    automatically.
+- **Backend:**
+  - real endpoints with the fake analysis provider, and a visible demo
+    marker;
+  - a configurable API URL, and CORS with an explicit origin list;
+  - only small, backward-compatible additions. Auth, ownership, quota,
+    analysis and matching rules stay unchanged.
+  - No secrets in the frontend; example settings are documented in
+    Markdown.
+- **Safety:** never touch the real `.env`, `apply101.db` or `uploads/`.
+  - Use the documented isolation: temp DB and CV directory, `.env` off,
+    throwaway JWT secret, fake analysis.
+  - No real OpenAI calls, no weaker hooks or permissions, no new agent
+    infrastructure.
+- **Verification:**
+  - frontend build and typecheck, meaningful flow tests, and the backend
+    test suite;
+  - in a real browser against an isolated real server: the main flow,
+    saved results, error states, and data separation between two users;
+  - desktop and mobile views, and both a matching and a non-matching
+    result.
+- **Delivery:** reviewer pass on the final diff, commit and push, and a
+  draft PR. No merge or deploy.
+
+### W4 plan and status
+
+| Step | Status |
+|---|---|
+| Node.js v24.22.1 LTS (official zip, SHA-256 checked) in `%LOCALAPPDATA%\Programs\node-v24.22.1-win-x64` | done |
+| Backend additions: `APPLY101_CORS_ORIGINS` and CORS middleware; `GET /jobs/?owned=true`; `GET /jobs/{job_id}`; `GET /users/{user_id}/languages`; `GET /meta` (demo marker) | in progress (developer agent) |
+| Frontend scaffold (Vite, React, TypeScript, React Router, Vitest), API client with typed errors, auth context | todo |
+| Screens: login/register, dashboard, profile (fields, languages, CV, analysis), jobs (list, new, detail with analysis and match), saved matches | todo |
+| Frontend unit and flow tests (Vitest + Testing Library) | todo |
+| End-to-end browser checks against isolated servers (desktop and mobile, two users, error states), screenshots | todo |
+| Docs: run commands, example settings | todo |
+| Review, fixes, commit, push, draft PR | todo |
 
 ## Development environment
 
