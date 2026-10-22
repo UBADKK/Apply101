@@ -20,6 +20,7 @@ Main application entry point:
 
 The current API is organized around:
 
+- authentication (register / login, JWT)
 - users
 - candidate profiles
 - jobs and job analysis
@@ -40,26 +41,31 @@ backend/
 │   ├── schemas.py
 │   ├── analysis_contract.py
 │   ├── job_analysis_sanitizer.py
-│   └── taxonomy.py
+│   ├── taxonomy.py
+│   ├── security.py, auth_dependencies.py, rate_limiting.py
+│   ├── analysis_guard.py, profile_write_guard.py
+│   ├── job_visibility.py
+│   └── openai_client.py
 │
 ├── routers/
+│   ├── auth.py
 │   ├── users.py
 │   ├── profiles.py
 │   ├── jobs.py
 │   └── matches.py
 │
-├── migrations/
-│   └── ...
-│
-├── tests/
-│   └── test_matching.py
+├── migrations/        phase2 ... phase8
+├── scripts/           set_admin.py
+├── tests/             test_*.py (unittest)
 │
 ├── MATCHING_CONTRACT.md
 └── PHASE2_2_INSTALL.md
 
+.claude/               project agents, agent guard hook, settings.json
+docs/                  ONLINE_MVP_PLAN.md, ONLINE_MVP_PROGRESS.md
 requirements.txt
-apply101.db
-uploads/
+apply101.db            real local data (not in git)
+uploads/               real CV files (not in git)
 ```
 
 Before making architectural assumptions, inspect the actual repository because this document may lag behind active development.
@@ -144,6 +150,11 @@ However, ALWAYS verify these values directly from:
 
 before relying on them.
 
+Known discrepancy: the "Current versions" list at the top of
+`backend/MATCHING_CONTRACT.md` still shows `job_analysis_v8` /
+`backend_match_v3`. The constants and the same document further down show
+`job_analysis_v13` / `backend_match_v6`.
+
 ---
 
 # Database Safety
@@ -155,6 +166,19 @@ The current local database is SQLite:
 Database configuration is defined in:
 
 `backend/app/database.py`
+
+Where real data is touched:
+
+- `DATABASE_URL` is hard-coded to `sqlite:///./apply101.db`, so the
+  database path is relative to the current working directory.
+- CV uploads go to the relative directory `uploads/`.
+- `backend/app/main.py` calls `load_dotenv()`, which finds the repository
+  `.env` from the file's location, whatever the working directory. Importing
+  `backend.app.main` also runs `Base.metadata.create_all` on the database.
+
+So any app run, script or import from the repository root works on the real
+data. For development runs, use the sandbox described in
+`docs/ONLINE_MVP_PROGRESS.md`.
 
 Important rules:
 
@@ -192,6 +216,26 @@ Never:
 - replace environment variables with literal credentials.
 
 If an environment variable is missing, report it instead of inventing a value.
+
+---
+
+# Claude Code Guards
+
+There are two separate guards, with different scopes:
+
+- **Project agents.** `.claude/hooks/agent_file_guard.py` (PreToolUse) applies
+  only to the four project agents (`project-auditor`, `project-developer`,
+  `project-reviewer`, `project-supervisor`).
+  - It blocks access to `apply101.db*`, `.env` and `uploads/`, file deletion,
+    and real-database entry points.
+  - It inspects shell commands as text, so it is not a security boundary.
+- **Main session.** The guard does not cover the main session.
+  - `.claude/settings.json` denies Read and Edit on `.env`, `.env.*`,
+    `apply101.db*` and `uploads/**` for every session.
+  - Shell commands are not covered by these rules, so the rules above still
+    apply.
+
+Do not weaken either guard to get a task done; report the conflict instead.
 
 ---
 
@@ -384,6 +428,18 @@ python -m unittest discover backend/tests
 
 Plain `python -m unittest discover` from the root runs 0 tests because `backend/` has no `__init__.py`.
 
+On Windows, use the project venv: `.venv/Scripts/python.exe -m unittest ...`.
+
+Tests must only use throwaway SQLite databases and temporary directories.
+They must never import `backend.app.main`, load `.env`, or call the real
+OpenAI API.
+
+The agent guard hook has its own tests:
+
+```bash
+.venv/Scripts/python.exe -m unittest discover -s .claude/hooks -p "test_*.py"
+```
+
 For bug fixes:
 
 1. reproduce the bug,
@@ -405,6 +461,12 @@ From the repository root, the FastAPI application can normally be run with:
 ```bash
 uvicorn backend.app.main:app --reload
 ```
+
+Run from the repository root, this uses the real `apply101.db`, `uploads/`
+and `.env`. Only do that when the user explicitly asks. For development and
+testing, use the isolated sandbox command in `docs/ONLINE_MVP_PROGRESS.md`:
+an empty working directory, `PYTHON_DOTENV_DISABLED=1` and a throwaway JWT
+secret.
 
 If the command fails due to environment/setup differences, investigate rather than changing imports blindly.
 
