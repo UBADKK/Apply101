@@ -16,17 +16,19 @@ export interface OutdatedPart {
   missing: boolean;
 }
 
+function outdated(part: OutdatedPart['part'], savedId: number | null, current: CurrentAnalysisId): OutdatedPart | null {
+  if (current === undefined) return null;
+  if (current === null) return { part, missing: true };
+  return savedId === current ? null : { part, missing: false };
+}
+
 /** Why a saved result no longer reflects the current analyses. Ids that are
  * not known yet are not compared. */
 export function outdatedParts(saved: AnalysisIds, currentProfile: CurrentAnalysisId, currentJob: CurrentAnalysisId): OutdatedPart[] {
-  const parts: OutdatedPart[] = [];
-  if (currentProfile !== undefined && saved.profile_analysis_id !== currentProfile) {
-    parts.push({ part: 'profile', missing: currentProfile === null });
-  }
-  if (currentJob !== undefined && saved.job_analysis_id !== currentJob) {
-    parts.push({ part: 'job', missing: currentJob === null });
-  }
-  return parts;
+  return [
+    outdated('profile', saved.profile_analysis_id, currentProfile),
+    outdated('job', saved.job_analysis_id, currentJob),
+  ].filter((item): item is OutdatedPart => item !== null);
 }
 
 const SUBJECT = { profile: 'your profile', job: 'this job' };
