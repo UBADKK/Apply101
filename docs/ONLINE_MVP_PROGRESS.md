@@ -23,7 +23,7 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 | W1 | Configurable database URL and upload directory, explicit `.env` loading | done | `APPLY101_DATABASE_URL`, `APPLY101_UPLOAD_DIR`, `APPLY101_LOAD_DOTENV`; defaults unchanged |
 | W2 | Fake analysis provider for development and end-to-end tests | done | `APPLY101_ANALYSIS_PROVIDER=fake`, only with a non-default database and upload directory; no fallback |
 | W3 | Per-user limit for profile analysis | todo | Depends on D3 |
-| W4 | Web client and CORS | in review | `frontend/` and the backend additions on branch `feat/online-mvp-web-client`; verified locally (Vitest, Playwright in Edge); see "W4 task" below |
+| W4 | Web client and CORS | in review | Draft PR [UBADKK/Apply101#26](https://github.com/UBADKK/Apply101/pull/26) from `feat/online-mvp-web-client`; verified locally (Vitest, Playwright in Edge); reviewer approved; see "W4 task" below |
 | W5 | Hosting and database setup | todo | Depends on D2 |
 | W6 | Portable stored CV paths | todo | Existing rows store OS-specific relative paths; a configured upload dir on Windows stores mixed separators (`C:/.../uploads\user_1_profile_1_cv.pdf`) |
 | W7 | Account deletion removes CV files | todo | |
@@ -101,46 +101,22 @@ that an interrupted session can resume.
 | Node.js v24.22.1 LTS (official zip, SHA-256 checked) in `%LOCALAPPDATA%\Programs\node-v24.22.1-win-x64` | done |
 | Backend additions: `APPLY101_CORS_ORIGINS` and CORS middleware (`expose_headers=["Retry-After"]`); `GET /jobs/?owned=true`; `GET /jobs/{job_id}`; `GET /users/{user_id}/languages`; `GET /meta` | done (commit `26bc320`; 36 new tests, backend 833 OK) |
 | Frontend scaffold (Vite, React, TypeScript, React Router, Vitest), API client with typed errors, auth context | done |
-| Screens: login/register, dashboard, profile (fields, languages, CV, analysis), jobs (list, new, detail with analysis and match), saved matches | done (typecheck and build pass); browser check pending |
-| Frontend unit and flow tests (Vitest + Testing Library) | done (21 tests) |
+| Screens: login/register, dashboard, profile (fields, languages, CV, analysis), jobs (list, new, detail with analysis and match), saved matches | done (typecheck and build pass, checked in the browser) |
+| Frontend unit and flow tests (Vitest + Testing Library) | done (29 tests) |
 | End-to-end browser checks against isolated servers (desktop and mobile, two users, error states), screenshots | done (Playwright, 5 tests in Edge, 12 screenshots; also checked by hand in the built-in browser) |
 | Docs: run commands, example settings | done (`frontend/README.md`) |
-| Review, fixes, commit, push, draft PR | todo |
+| Review, fixes, commit, push, draft PR | done (review rounds 1 and 2 fixed in `9b46f2b` and `a66e759`, round 3 approved; draft PR [UBADKK/Apply101#26](https://github.com/UBADKK/Apply101/pull/26), not merged) |
 
-### W4 resume notes (2026-10-22, usage limit)
+### W4 notes for later sessions
 
 - **Node:** `export PATH="/c/Users/umutbaris/AppData/Local/Programs/node-v24.22.1-win-x64:$PATH"`
   in Git Bash (no system PATH change).
 - **npm:** npm 11 skips package install scripts. esbuild still works,
   because its `@esbuild/win32-x64` binary comes as an optional dependency.
-- **Done in `frontend/`:**
-  - `package.json` and `package-lock.json`: React 19.3, React Router 7.18,
-    Vite 7.3, Vitest 3.2, TypeScript 5.9, Testing Library, Playwright 1.64
-    (to run against the installed Edge, `channel: 'msedge'`, with no
-    browser download), `@types/node`;
-  - `tsconfig.json`, `vite.config.ts`, `index.html`, `.gitignore`;
-  - `src/vite-env.d.ts` and `src/config.ts` (`VITE_API_BASE_URL`, default
-    `http://localhost:8001`);
-  - `src/api/types.ts`, `src/api/client.ts` (`ApiError` with status, code,
-    hint, field errors and Retry-After; the 401 handler),
-    `src/api/endpoints.ts`, `src/api/errors.ts` (`describeError`);
-  - `src/auth/session.ts` (token in localStorage, JWT `exp`),
-    `src/auth/AuthContext.tsx`, `src/auth/RequireAuth.tsx`.
-- **Next, in order:**
-  1. Components: `Alert` and `LoadingState` (already imported), `Layout`
-     with nav, the logout button and the `/meta` demo banner, form fields,
-     `MatchResultView`.
-  2. `src/styles.css`, `src/main.tsx` and `src/App.tsx` (routes: `/login`,
-     `/register`, `/`, `/profile`, `/jobs`, `/jobs/new`, `/jobs/:jobId`,
-     `/matches`, `/matches/:matchId`, 404).
-  3. The pages.
-  4. Vitest tests (`src/test/setup.ts`).
-  5. A Playwright e2e test with `webServer`: an isolated backend (temp DB
-     and uploads, `APPLY101_LOAD_DOTENV=0`, fake provider, random JWT
-     secret, `APPLY101_CORS_ORIGINS`, a short
-     `JOB_ANALYSIS_USER_SUCCESS_COOLDOWN_SECONDS`) plus the Vite server.
-     It saves screenshots to `e2e/screenshots/`, which is gitignored.
-  6. Docs and a README, the reviewer pass, and a draft PR.
+- **Playwright** runs against the installed Edge (`channel: 'msedge'`), with
+  no browser download. It starts its own isolated backend on port 8011 and
+  `vite preview` on port 4173; screenshots go to `frontend/e2e/screenshots/`,
+  which is gitignored.
 - **API facts:**
   - Profile `force_reanalyze` is allowed for owners; job
     `force_reanalyze` is admin-only (403).
@@ -198,6 +174,37 @@ that an interrupted session can resume.
   second job within 60 seconds returns 429 with `Retry-After`.
 
 ## Log
+
+### 2026-10-23: W4 review rounds
+- **Round 1** (`9b46f2b`):
+  - The profile form no longer overwrites stored values it does not
+    offer (unknown language levels, names, scales, free-text choices).
+  - Rematch no longer flashes "not found".
+  - Saved results warn when they used an older analysis.
+- **Round 2** (`a66e759`):
+  - Saved matches never show "Match not found" while opening: `useResource`
+    reports loading as soon as its deps change.
+  - A saved result whose profile or job has no current analysis asks for a
+    new analysis.
+  - The "profile changed after its analysis" marker is per user and shows
+    on match results.
+  - "Cannot analyze this job" only for `ERR_JOB_NOT_FOUND`.
+  - The alert after a 429 countdown says the user can try again.
+- **Checks:**
+  - typecheck and build pass; Vitest 29 OK;
+  - Playwright 5 OK in Edge;
+  - backend 833 OK (the backend is unchanged since `26bc320`); hook tests
+    25 tests and 781 subtests OK.
+- **Review:** round 3 approved with no blocking findings. Its hardening
+  suggestion went into `770cc3e`: no current analysis always counts as
+  missing.
+- **Delivery:** draft PR
+  [UBADKK/Apply101#26](https://github.com/UBADKK/Apply101/pull/26). No merge
+  or deploy.
+- **Next:**
+  - the project owner's review of the PR;
+  - then W3, W5-W9 and the decisions D2-D6;
+  - staging checks for AC1-AC5, and AC6.
 
 ### 2026-10-22: W4 web client
 - **Branch:** `feat/online-mvp-web-client`, opened from `main` at `c56c1df`.
