@@ -99,13 +99,54 @@ that an interrupted session can resume.
 | Step | Status |
 |---|---|
 | Node.js v24.22.1 LTS (official zip, SHA-256 checked) in `%LOCALAPPDATA%\Programs\node-v24.22.1-win-x64` | done |
-| Backend additions: `APPLY101_CORS_ORIGINS` and CORS middleware; `GET /jobs/?owned=true`; `GET /jobs/{job_id}`; `GET /users/{user_id}/languages`; `GET /meta` (demo marker) | in progress (developer agent) |
-| Frontend scaffold (Vite, React, TypeScript, React Router, Vitest), API client with typed errors, auth context | todo |
+| Backend additions: `APPLY101_CORS_ORIGINS` and CORS middleware (`expose_headers=["Retry-After"]`); `GET /jobs/?owned=true`; `GET /jobs/{job_id}` (declared after the static GET routes); `GET /users/{user_id}/languages`; `GET /meta` (`{analysis_provider, demo}`) | in progress: a developer agent was still working when the usage limit hit. Its changes in `backend/` are uncommitted. On resume, review `git status` / `git diff backend/` and the new tests, finish them, then run the full backend suite. |
+| Frontend scaffold (Vite, React, TypeScript, React Router, Vitest), API client with typed errors, auth context | in progress, see "Resume notes" |
 | Screens: login/register, dashboard, profile (fields, languages, CV, analysis), jobs (list, new, detail with analysis and match), saved matches | todo |
 | Frontend unit and flow tests (Vitest + Testing Library) | todo |
 | End-to-end browser checks against isolated servers (desktop and mobile, two users, error states), screenshots | todo |
 | Docs: run commands, example settings | todo |
 | Review, fixes, commit, push, draft PR | todo |
+
+### W4 resume notes (2026-10-22, usage limit)
+
+- **Node:** `export PATH="/c/Users/umutbaris/AppData/Local/Programs/node-v24.22.1-win-x64:$PATH"`
+  in Git Bash (no system PATH change).
+- **npm:** npm 11 skips package install scripts. esbuild still works,
+  because its `@esbuild/win32-x64` binary comes as an optional dependency.
+- **Done in `frontend/`:**
+  - `package.json` and `package-lock.json`: React 19.3, React Router 7.18,
+    Vite 7.3, Vitest 3.2, TypeScript 5.9, Testing Library, Playwright 1.64
+    (to run against the installed Edge, `channel: 'msedge'`, with no
+    browser download), `@types/node`;
+  - `tsconfig.json`, `vite.config.ts`, `index.html`, `.gitignore`;
+  - `src/vite-env.d.ts` and `src/config.ts` (`VITE_API_BASE_URL`, default
+    `http://localhost:8001`);
+  - `src/api/types.ts`, `src/api/client.ts` (`ApiError` with status, code,
+    hint, field errors and Retry-After; the 401 handler),
+    `src/api/endpoints.ts`, `src/api/errors.ts` (`describeError`);
+  - `src/auth/session.ts` (token in localStorage, JWT `exp`),
+    `src/auth/AuthContext.tsx`, `src/auth/RequireAuth.tsx`.
+- **Next, in order:**
+  1. Components: `Alert` and `LoadingState` (already imported), `Layout`
+     with nav, the logout button and the `/meta` demo banner, form fields,
+     `MatchResultView`.
+  2. `src/styles.css`, `src/main.tsx` and `src/App.tsx` (routes: `/login`,
+     `/register`, `/`, `/profile`, `/jobs`, `/jobs/new`, `/jobs/:jobId`,
+     `/matches`, `/matches/:matchId`, 404).
+  3. The pages.
+  4. Vitest tests (`src/test/setup.ts`).
+  5. A Playwright e2e test with `webServer`: an isolated backend (temp DB
+     and uploads, `APPLY101_LOAD_DOTENV=0`, fake provider, random JWT
+     secret, `APPLY101_CORS_ORIGINS`, a short
+     `JOB_ANALYSIS_USER_SUCCESS_COOLDOWN_SECONDS`) plus the Vite server.
+     It saves screenshots to `e2e/screenshots/`, which is gitignored.
+  6. Docs and a README, the reviewer pass, and a draft PR.
+- **API facts:**
+  - Profile `force_reanalyze` is allowed for owners; job
+    `force_reanalyze` is admin-only (403).
+  - The profile-level success cooldown is 300 s
+    (`PROFILE_ANALYSIS_PROFILE_SUCCESS_COOLDOWN_SECONDS`).
+  - The saved-match list already contains the full `match` result.
 
 ## Development environment
 
