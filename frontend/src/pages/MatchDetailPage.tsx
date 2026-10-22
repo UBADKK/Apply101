@@ -13,7 +13,14 @@ import { PageHeader } from '../components/PageHeader';
 import { outdatedParts, StaleMatchNotice } from '../components/StaleMatchNotice';
 import { useAction } from '../hooks/useAction';
 import { useResource } from '../hooks/useResource';
-import { loadJobAnalysis, loadMatches, useWorkspace } from '../hooks/useWorkspace';
+import {
+  currentJobAnalysisId,
+  currentProfileAnalysisId,
+  loadJobAnalysis,
+  loadMatches,
+  useWorkspace,
+} from '../hooks/useWorkspace';
+import { isProfileMarkedStale } from './profile/staleness';
 
 export function MatchDetailPage() {
   const params = useParams();
@@ -35,17 +42,20 @@ export function MatchDetailPage() {
   useEffect(() => {
     if (listed) setShown(listed);
   }, [listed]);
+  // Render from the list right away; the effect above only keeps it on
+  // screen while the list reloads after a rematch.
+  const current = shown ?? listed;
 
   const jobAnalysis = useResource(
-    () => (shown ? loadJobAnalysis(shown.job_id) : Promise.resolve(null)),
-    [shown?.job_id],
+    () => (current ? loadJobAnalysis(current.job_id) : Promise.resolve(null)),
+    [current?.job_id],
   );
 
   const rematch = useAction(async () => {
-    if (!profile || !shown) return undefined;
-    const response = await api.match(user.user_id, profile.profile_id, shown.job_id, true);
+    if (!profile || !current) return undefined;
+    const response = await api.match(user.user_id, profile.profile_id, current.job_id, true);
     setShown({
-      ...shown,
+      ...current,
       match_id: response.match_id,
       profile_analysis_id: response.profile_analysis_id,
       job_analysis_id: response.job_analysis_id,
@@ -61,10 +71,11 @@ export function MatchDetailPage() {
     return response;
   });
 
-  const loading = workspace.loading || (matches.loading && !matches.data);
+  // Until the list for the loaded profile has arrived, "not found" is not known.
+  const loading = workspace.loading || matches.loading || (workspace.data !== undefined && matches.data == null && matches.error === null);
   const error = workspace.error ?? matches.error;
 
-  if (!shown && loading) {
+  if (!current && loading) {
     return (
       <>
         <PageHeader title="Match result" />
@@ -72,7 +83,7 @@ export function MatchDetailPage() {
       </>
     );
   }
-  if (!shown && error) {
+  if (!current && error) {
     return (
       <>
         <PageHeader title="Match result" />
@@ -80,7 +91,7 @@ export function MatchDetailPage() {
       </>
     );
   }
-  if (!shown) {
+  if (!current) {
     return (
       <>
         <PageHeader title="Match not found" />
@@ -96,16 +107,17 @@ export function MatchDetailPage() {
     );
   }
 
-  const stale = rerun ? [] : outdatedParts(shown, workspace.data?.analysis?.analysis_id, jobAnalysis.data?.analysis_id);
+  const stale = rerun ? [] : outdatedParts(current, currentProfileAnalysisId(workspace), currentJobAnalysisId(jobAnalysis));
+  const profileEdited = Boolean(profile && workspace.data?.analysis && isProfileMarkedStale(user.user_id, profile.profile_id));
 
   return (
     <>
       <PageHeader
-        title={shown.title}
-        description={[shown.company_name, shown.location].filter(Boolean).join(' · ') || undefined}
+        title={current.title}
+        description={[current.company_name, current.location].filter(Boolean).join(' · ') || undefined}
         actions={
           <>
-            <Link to={`/jobs/${shown.job_id}`} className="button button-ghost">
+            <Link to={`/jobs/${current.job_id}`} className="button button-ghost">
               Open the job
             </Link>
             <Link to="/matches" className="button button-ghost">
@@ -118,11 +130,11 @@ export function MatchDetailPage() {
         {rerun ? (
           <Alert tone="success">Match re-run with your current profile and job analyses.</Alert>
         ) : (
-          <p className="muted small">Saved result from {formatDateTime(shown.matched_at)}.</p>
+          <p className="muted small">Saved result from {formatDateTime(current.matched_at)}.</p>
         )}
-        <StaleMatchNotice parts={stale} />
+        <StaleMatchNotice parts={stale} profileEdited={profileEdited} />
         <ErrorAlert error={rematch.error} cooldownSeconds={rematch.cooldownSeconds} />
-        <MatchResultView match={shown.match} />
+        <MatchResultView match={current.match} />
         <div className="form-actions">
           <button
             type="button"

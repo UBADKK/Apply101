@@ -161,6 +161,48 @@ describe('saved match detail', () => {
     expect(screen.getByText(/older analysis of your profile\./)).toBeInTheDocument();
   });
 
+  it('never renders "Match not found" while the match is opening', async () => {
+    // React may only change the text of the existing heading, so watch text
+    // changes too, and check what each commit left on the page.
+    let flashed = false;
+    const observer = new MutationObserver(() => {
+      if (document.body.textContent?.includes('Match not found')) flashed = true;
+    });
+    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    installFakeFetch({
+      ...signedIn(11),
+      'GET /users/1/profiles/1/matches': { body: { total_count: 1, returned_count: 1, results: [saved({})] } },
+    });
+    renderApp('/matches/1');
+    expect(await screen.findByText(/Saved result from/)).toBeInTheDocument();
+    observer.disconnect();
+    expect(flashed).toBe(false);
+  });
+
+  it('asks for a new analysis when the profile and the job have no current analysis', async () => {
+    installFakeFetch({
+      ...signedIn(11),
+      'GET /users/1/profiles/analyzed': { body: [] },
+      'GET /jobs/analyzed/7': { status: 404, body: { detail: 'No current analysis for this job.' } },
+      'GET /users/1/profiles/1/matches': { body: { total_count: 1, returned_count: 1, results: [saved({})] } },
+    });
+    renderApp('/matches/1');
+    expect(await screen.findByText('Result may be outdated')).toBeInTheDocument();
+    expect(
+      await screen.findByText(/There is no current analysis of your profile or this job any more\. Analyze them again/),
+    ).toBeInTheDocument();
+  });
+
+  it('warns when the profile was edited after its analysis', async () => {
+    window.localStorage.setItem('apply101.profileChangedAfterAnalysis.1.1', '1');
+    installFakeFetch({
+      ...signedIn(11),
+      'GET /users/1/profiles/1/matches': { body: { total_count: 1, returned_count: 1, results: [saved({})] } },
+    });
+    renderApp('/matches/1');
+    expect(await screen.findByText(/You changed your profile after it was analyzed/)).toBeInTheDocument();
+  });
+
   it('does not warn when the analyses are current', async () => {
     installFakeFetch({
       ...signedIn(11),
@@ -169,5 +211,17 @@ describe('saved match detail', () => {
     renderApp('/matches/1');
     expect(await screen.findByText(/Saved result from/)).toBeInTheDocument();
     expect(screen.queryByText('Result may be outdated')).not.toBeInTheDocument();
+  });
+});
+
+describe('saved matches list', () => {
+  it('notes results whose profile has no current analysis any more', async () => {
+    installFakeFetch({
+      ...signedIn(11),
+      'GET /users/1/profiles/analyzed': { body: [] },
+      'GET /users/1/profiles/1/matches': { body: { total_count: 1, returned_count: 1, results: [saved({})] } },
+    });
+    renderApp('/matches');
+    expect(await screen.findByText(/Your profile has no current analysis\. Analyze it, then open this match/)).toBeInTheDocument();
   });
 });

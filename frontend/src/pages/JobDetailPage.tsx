@@ -14,7 +14,14 @@ import { PageHeader } from '../components/PageHeader';
 import { outdatedParts, StaleMatchNotice } from '../components/StaleMatchNotice';
 import { useAction } from '../hooks/useAction';
 import { useResource } from '../hooks/useResource';
-import { loadJobAnalysis, loadMatches, useWorkspace } from '../hooks/useWorkspace';
+import {
+  currentJobAnalysisId,
+  currentProfileAnalysisId,
+  loadJobAnalysis,
+  loadMatches,
+  useWorkspace,
+} from '../hooks/useWorkspace';
+import { isProfileMarkedStale } from './profile/staleness';
 
 interface ShownMatch {
   data: MatchData;
@@ -184,10 +191,13 @@ export function JobDetailPage() {
   const data = job.data;
   const analysisReady = Boolean(jobAnalysis.data);
   const canMatch = Boolean(profile && profileAnalysis && analysisReady);
-  const stale = shown?.source === 'saved' ? outdatedParts(shown, profileAnalysis?.analysis_id, jobAnalysis.data?.analysis_id) : [];
+  const savedShown = shown?.source === 'saved';
+  const stale = savedShown ? outdatedParts(shown, currentProfileAnalysisId(workspace), currentJobAnalysisId(jobAnalysis)) : [];
+  // Every result, saved or fresh, used the analysis from before the edit.
+  const profileEdited = Boolean(shown && profile && profileAnalysis && isProfileMarkedStale(user.user_id, profile.profile_id));
   // Only jobs the user added can be analyzed by them; a visible catalog job
-  // answers the analyze request with a 404.
-  const analyzeNotAllowed = isApiError(analyze.error) && analyze.error.status === 404;
+  // answers the analyze request with ERR_JOB_NOT_FOUND.
+  const analyzeNotAllowed = isApiError(analyze.error) && analyze.error.status === 404 && analyze.error.code === 'ERR_JOB_NOT_FOUND';
 
   return (
     <>
@@ -268,7 +278,7 @@ export function JobDetailPage() {
               {shown.source === 'cached' && 'Saved result (nothing changed since it was computed).'}
               {shown.source === 'created' && 'Freshly computed result.'}
             </p>
-            <StaleMatchNotice parts={stale} />
+            <StaleMatchNotice parts={stale} profileEdited={profileEdited} />
             <MatchResultView match={shown.data} />
           </>
         )}

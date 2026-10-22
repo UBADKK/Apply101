@@ -5,25 +5,55 @@ export interface AnalysisIds {
   job_analysis_id: number | null;
 }
 
-/** Which current analyses differ from the ones a saved result used. Unknown
- * current ids (not loaded, or no current analysis) are not compared. */
-export function outdatedParts(
-  saved: AnalysisIds,
-  currentProfileAnalysisId: number | null | undefined,
-  currentJobAnalysisId: number | null | undefined,
-): ('profile' | 'job')[] {
-  const parts: ('profile' | 'job')[] = [];
-  if (currentProfileAnalysisId != null && saved.profile_analysis_id !== currentProfileAnalysisId) parts.push('profile');
-  if (currentJobAnalysisId != null && saved.job_analysis_id !== currentJobAnalysisId) parts.push('job');
+/** A current analysis id: a number, null when loaded and there is no
+ * current analysis, or undefined while it is not known yet. */
+export type CurrentAnalysisId = number | null | undefined;
+
+export interface OutdatedPart {
+  part: 'profile' | 'job';
+  /** True when there is no current analysis at all (e.g. after a new
+   * analysis version), false when a newer one exists. */
+  missing: boolean;
+}
+
+/** Why a saved result no longer reflects the current analyses. Ids that are
+ * not known yet are not compared. */
+export function outdatedParts(saved: AnalysisIds, currentProfile: CurrentAnalysisId, currentJob: CurrentAnalysisId): OutdatedPart[] {
+  const parts: OutdatedPart[] = [];
+  if (currentProfile !== undefined && saved.profile_analysis_id !== currentProfile) {
+    parts.push({ part: 'profile', missing: currentProfile === null });
+  }
+  if (currentJob !== undefined && saved.job_analysis_id !== currentJob) {
+    parts.push({ part: 'job', missing: currentJob === null });
+  }
   return parts;
 }
 
-export function StaleMatchNotice({ parts }: { parts: ('profile' | 'job')[] }) {
-  if (parts.length === 0) return null;
-  const what = parts.length === 2 ? 'your profile and this job' : parts[0] === 'profile' ? 'your profile' : 'this job';
+const SUBJECT = { profile: 'your profile', job: 'this job' };
+
+interface StaleMatchNoticeProps {
+  parts: OutdatedPart[];
+  /** The profile was edited after its current analysis (this browser). */
+  profileEdited?: boolean;
+}
+
+export function StaleMatchNotice({ parts, profileEdited = false }: StaleMatchNoticeProps) {
+  if (parts.length === 0 && !profileEdited) return null;
+  const missing = parts.filter((item) => item.missing).map((item) => SUBJECT[item.part]);
+  const older = parts.filter((item) => !item.missing).map((item) => SUBJECT[item.part]);
   return (
     <Alert tone="warning" title="Result may be outdated">
-      This saved result was computed from an older analysis of {what}. Re-run the match to use the current analyses.
+      {older.length > 0 && <p>This saved result was computed from an older analysis of {older.join(' and ')}.</p>}
+      {missing.length > 0 && (
+        <p>
+          There is no current analysis of {missing.join(' or ')} any more. Analyze {missing.length > 1 ? 'them' : 'it'} again,
+          then re-run the match.
+        </p>
+      )}
+      {profileEdited && parts.length === 0 && (
+        <p>You changed your profile after it was analyzed. Re-run the profile analysis, then re-run the match.</p>
+      )}
+      {older.length > 0 && missing.length === 0 && <p>Re-run the match to use the current analyses.</p>}
     </Alert>
   );
 }

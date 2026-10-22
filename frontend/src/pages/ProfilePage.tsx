@@ -30,7 +30,7 @@ export function ProfilePage() {
 
   const markChanged = (profileId: number, hadAnalysis: boolean) => {
     if (!hadAnalysis) return;
-    markProfileStale(profileId);
+    markProfileStale(user.user_id, profileId);
     setStaleVersion((value) => value + 1);
   };
 
@@ -62,7 +62,7 @@ export function ProfilePage() {
     await api.analyzeProfile(user.user_id, current.profile_id, Boolean(workspace.data?.analysis));
     const analysis = currentAnalysis(await api.analyzedProfiles(user.user_id), current.profile_id);
     setData((latest) => ({ profile: current, languages: [], ...latest, analysis }));
-    clearProfileStale(current.profile_id);
+    clearProfileStale(user.user_id, current.profile_id);
     setStaleVersion((value) => value + 1);
     return analysis;
   });
@@ -89,7 +89,7 @@ export function ProfilePage() {
 
   const { profile, languages, analysis } = workspace.data!;
   // staleVersion re-renders after the marker changes.
-  const stale = staleVersion >= 0 && Boolean(profile && analysis && isProfileMarkedStale(profile.profile_id));
+  const stale = staleVersion >= 0 && Boolean(profile && analysis && isProfileMarkedStale(user.user_id, profile.profile_id));
 
   return (
     <>

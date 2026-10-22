@@ -1,9 +1,9 @@
 import { useCallback } from 'react';
 import { isApiError } from '../api/client';
 import { api } from '../api/endpoints';
-import type { AnalyzedProfile, AnalyzedProfileEntry, Language, MatchList, Profile } from '../api/types';
+import type { AnalyzedJob, AnalyzedProfile, AnalyzedProfileEntry, Language, MatchList, Profile } from '../api/types';
 import { useCurrentUser } from '../auth/AuthContext';
-import { useResource } from './useResource';
+import { useResource, type Resource } from './useResource';
 
 export interface Workspace {
   /** The user's profile: the first one, as the web client manages one profile. */
@@ -37,6 +37,19 @@ export function useWorkspace() {
   return useResource(load, [load]);
 }
 
+/** The current profile analysis id: undefined while not known, null when
+ * the profile has no current analysis. */
+export function currentProfileAnalysisId(workspace: Resource<Workspace>): number | null | undefined {
+  if (workspace.loading || !workspace.data) return undefined;
+  return workspace.data.analysis?.analysis_id ?? null;
+}
+
+/** Same for a job analysis loaded with loadJobAnalysis. */
+export function currentJobAnalysisId(jobAnalysis: Resource<AnalyzedJob | null>): number | null | undefined {
+  if (jobAnalysis.loading || jobAnalysis.error || jobAnalysis.data === undefined) return undefined;
+  return jobAnalysis.data?.analysis_id ?? null;
+}
+
 /** Saved match results of the user's profile (the backend's maximum page,
  * best score first); empty without a profile. */
 export async function loadMatches(userId: number, profile: Profile | null): Promise<MatchList> {
@@ -50,7 +63,7 @@ const JOB_NOT_FOUND_DETAIL = 'Job not found.';
 /** GET /jobs/analyzed/{id}: null when the job is visible but has no current
  * analysis (a 404 with another plain message); a missing or invisible job
  * stays an error. */
-export async function loadJobAnalysis(jobId: number) {
+export async function loadJobAnalysis(jobId: number): Promise<AnalyzedJob | null> {
   try {
     return await api.analyzedJob(jobId);
   } catch (error) {

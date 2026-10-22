@@ -157,7 +157,7 @@ test.describe.serial('Apply101 web client', () => {
     await shot(page, '04-desktop-cooldown-429');
     // The countdown ends without any automatic retry; the user starts it again.
     await expect(page.getByRole('button', { name: 'Analyze job' })).toBeEnabled({ timeout: 40_000 });
-    await expect(page.getByText('You can try again now.')).toBeVisible();
+    await expect(page.getByText('You can try again', { exact: true })).toBeVisible();
     expect(analyzeRequests).toHaveLength(1);
     await page.getByRole('button', { name: 'Analyze job' }).click();
     await expect(page.getByText('German C1 (required)')).toBeVisible();

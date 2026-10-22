@@ -7,7 +7,7 @@ import { LoadingState } from '../components/LoadingState';
 import { EligibilityBadge } from '../components/MatchResultView';
 import { PageHeader } from '../components/PageHeader';
 import { useResource } from '../hooks/useResource';
-import { loadMatches, useWorkspace } from '../hooks/useWorkspace';
+import { currentProfileAnalysisId, loadMatches, useWorkspace } from '../hooks/useWorkspace';
 
 export function MatchesPage() {
   const user = useCurrentUser();
@@ -18,7 +18,7 @@ export function MatchesPage() {
     [user.user_id, profile?.profile_id, Boolean(workspace.data)],
   );
 
-  const currentAnalysisId = workspace.data?.analysis?.analysis_id;
+  const currentAnalysisId = currentProfileAnalysisId(workspace);
   const loading = workspace.loading || (matches.loading && !matches.data);
   const error = workspace.error ?? matches.error;
 
@@ -73,8 +73,12 @@ export function MatchesPage() {
                 </h2>
                 <p className="muted">{[item.company_name, item.location].filter(Boolean).join(' · ')}</p>
                 <p className="muted small">Matched {formatDateTime(item.matched_at)}</p>
-                {currentAnalysisId != null && item.profile_analysis_id !== currentAnalysisId && (
-                  <p className="outdated-note small">Computed from an older profile analysis. Open it to re-run.</p>
+                {currentAnalysisId !== undefined && item.profile_analysis_id !== currentAnalysisId && (
+                  <p className="outdated-note small">
+                    {currentAnalysisId === null
+                      ? 'Your profile has no current analysis. Analyze it, then open this match to re-run it.'
+                      : 'Computed from an older profile analysis. Open it to re-run.'}
+                  </p>
                 )}
               </div>
               <div className="match-card-side">
