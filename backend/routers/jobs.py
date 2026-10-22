@@ -205,12 +205,18 @@ def build_analyzed_job_response(
 def get_jobs(
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
+    owned: bool = Query(default=False),
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    query = db.query(models.Job).filter(visible_jobs_clause(current_user))
+
+    if owned:
+        # Only jobs the caller created, admins included.
+        query = query.filter(models.Job.created_by_user_id == current_user.user_id)
+
     jobs = (
-        db.query(models.Job)
-        .filter(visible_jobs_clause(current_user))
+        query
         .order_by(models.Job.job_id.desc())
         .offset(offset)
         .limit(limit)
@@ -1962,3 +1968,15 @@ Rules:
                 "analyze_sample_jobs: batch guard release attempt raised unexpectedly (%s)",
                 type(release_exc).__name__,
             )
+
+
+# Declared last so the static GET paths above (/analyzed, /analyzed/{job_id},
+# /fetch-runs) are matched before this one. Another user's job gets the same
+# 404 as a nonexistent job_id.
+@router.get("/{job_id}", response_model=schemas.JobResponse)
+def get_job(
+    job_id: int,
+    current_user: models.User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    return get_visible_job_or_404(db, job_id, current_user)
