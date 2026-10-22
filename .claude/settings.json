@@ -1,4 +1,16 @@
 {
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Read(./.env.*)",
+      "Read(./apply101.db*)",
+      "Read(./uploads/**)",
+      "Edit(./.env)",
+      "Edit(./.env.*)",
+      "Edit(./apply101.db*)",
+      "Edit(./uploads/**)"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {

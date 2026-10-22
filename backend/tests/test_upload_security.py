@@ -131,6 +131,10 @@ class _BaseUploadSecurityTestCase(unittest.TestCase):
         )
         env_patcher.start()
         self.addCleanup(env_patcher.stop)
+        # These tests pin the default relative "uploads" directory; a value
+        # from the developer's shell must not redirect them (restored by
+        # env_patcher.stop).
+        os.environ.pop("APPLY101_UPLOAD_DIR", None)
 
         # The router uses a relative "uploads" directory -- chdir into a
         # fresh temp workdir (nested, so ../.. escapes stay observable and
