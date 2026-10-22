@@ -99,9 +99,9 @@ that an interrupted session can resume.
 | Step | Status |
 |---|---|
 | Node.js v24.22.1 LTS (official zip, SHA-256 checked) in `%LOCALAPPDATA%\Programs\node-v24.22.1-win-x64` | done |
-| Backend additions: `APPLY101_CORS_ORIGINS` and CORS middleware (`expose_headers=["Retry-After"]`); `GET /jobs/?owned=true`; `GET /jobs/{job_id}` (declared after the static GET routes); `GET /users/{user_id}/languages`; `GET /meta` (`{analysis_provider, demo}`) | in progress: a developer agent was still working when the usage limit hit. Its changes in `backend/` are uncommitted. On resume, review `git status` / `git diff backend/` and the new tests, finish them, then run the full backend suite. |
-| Frontend scaffold (Vite, React, TypeScript, React Router, Vitest), API client with typed errors, auth context | in progress, see "Resume notes" |
-| Screens: login/register, dashboard, profile (fields, languages, CV, analysis), jobs (list, new, detail with analysis and match), saved matches | todo |
+| Backend additions: `APPLY101_CORS_ORIGINS` and CORS middleware (`expose_headers=["Retry-After"]`); `GET /jobs/?owned=true`; `GET /jobs/{job_id}`; `GET /users/{user_id}/languages`; `GET /meta` | done (commit `26bc320`; 36 new tests, backend 833 OK) |
+| Frontend scaffold (Vite, React, TypeScript, React Router, Vitest), API client with typed errors, auth context | done |
+| Screens: login/register, dashboard, profile (fields, languages, CV, analysis), jobs (list, new, detail with analysis and match), saved matches | done (typecheck and build pass); browser check pending |
 | Frontend unit and flow tests (Vitest + Testing Library) | todo |
 | End-to-end browser checks against isolated servers (desktop and mobile, two users, error states), screenshots | todo |
 | Docs: run commands, example settings | todo |
