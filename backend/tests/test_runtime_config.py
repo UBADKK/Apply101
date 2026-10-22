@@ -127,6 +127,68 @@ class DatabaseUrlTests(_FakeLocationsTestCase):
         self.assertEqual(os.listdir(tmp_dir), [])
 
 
+class SqliteUriTests(_FakeLocationsTestCase):
+    """SQLite URI URLs can reach the default file under another spelling,
+    so they are refused before any engine exists."""
+
+    def uri_urls(self):
+        fake_repo_db = os.path.join(self.fake_repo, "apply101.db").replace("\\", "/")
+        temp_db = os.path.join(self.tmp_dir, "demo.db").replace("\\", "/")
+        return (
+            "sqlite:///file:apply101.db?uri=true",
+            f"sqlite:///file:{fake_repo_db}?mode=ro&uri=true",
+            f"sqlite:///file:{temp_db}?uri=true",
+            f"sqlite:///{temp_db}?uri=true",
+            f"sqlite:///file:{temp_db}",
+            "sqlite+pysqlite:///file:apply101.db?uri=true",
+        )
+
+    def test_uri_urls_are_refused(self):
+        for url in self.uri_urls():
+            with self.subTest(url=url), self.env(APPLY101_DATABASE_URL=url):
+                with self.assertRaises(config.ConfigError):
+                    config.database_url()
+                # Every check built on the URL fails closed as well.
+                with self.assertRaises(config.ConfigError):
+                    config.database_is_default()
+                with self.assertRaises(config.ConfigError):
+                    config.check_data_locations()
+
+    def test_plain_urls_are_still_accepted(self):
+        temp_db = os.path.join(self.tmp_dir, "demo.db").replace("\\", "/")
+        for url in (
+            None,
+            "sqlite:///./apply101.db",
+            "sqlite:///apply101.db",
+            f"sqlite:///{temp_db}",
+            f"sqlite:///{temp_db}?timeout=10",
+            "sqlite://",
+            "sqlite:///:memory:",
+            "postgresql://synthetic@localhost/demo?sslmode=disable",
+        ):
+            env = {} if url is None else {config.DATABASE_URL_ENV: url}
+            with self.subTest(url=url), self.env(**env):
+                self.assertEqual(config.database_url(), url or config.DEFAULT_DATABASE_URL)
+
+    def test_database_module_refuses_a_uri_url_at_import(self):
+        # Fresh interpreter in a temp working directory: the import fails
+        # with ConfigError before create_engine, and no file appears.
+        tmp_dir = tempfile.mkdtemp(prefix="apply101_runtime_config_uri_test_")
+        self.addCleanup(shutil.rmtree, tmp_dir, True)
+        url = "sqlite:///file:" + os.path.join(tmp_dir, "uri.db").replace("\\", "/") + "?uri=true"
+        result = subprocess.run(
+            [sys.executable, "-c", "import backend.app.database"],
+            cwd=tmp_dir,
+            env=_env_without_config(PYTHONPATH=REPO_ROOT, **{config.DATABASE_URL_ENV: url}),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("ConfigError", result.stderr)
+        self.assertEqual(os.listdir(tmp_dir), [])
+
+
 class UploadDirTests(_FakeLocationsTestCase):
     def test_default_is_the_relative_uploads_dir(self):
         with self.env():

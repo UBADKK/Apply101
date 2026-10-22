@@ -129,6 +129,18 @@ class ProviderSelectionTests(unittest.TestCase):
                     with self.assertRaises(openai_client.AnalysisProviderConfigError):
                         openai_client.create_openai_client_or_none()
 
+    def test_fake_is_refused_with_a_sqlite_uri_database(self):
+        # sqlite:///file:apply101.db?uri=true reaches ./apply101.db; it
+        # used to pass the default-database check.
+        for database_url in (
+            "sqlite:///file:apply101.db?uri=true",
+            "sqlite:///file:" + os.path.join(self.fake_repo, "apply101.db").replace("\\", "/") + "?uri=true",
+        ):
+            with self.subTest(database_url=database_url):
+                with patch.dict(os.environ, self.fake_env(APPLY101_DATABASE_URL=database_url), clear=True):
+                    with self.assertRaises(config.ConfigError):
+                        openai_client.create_openai_client_or_none()
+
     def test_fake_is_refused_with_the_default_upload_dir(self):
         for upload_dir in (
             None,

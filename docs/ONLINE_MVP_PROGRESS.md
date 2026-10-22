@@ -52,7 +52,7 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 
   | Variable | Default | Effect |
   |---|---|---|
-  | `APPLY101_DATABASE_URL` | `sqlite:///./apply101.db` | SQLAlchemy URL. Migrations and scripts read it too, but only from the process environment (only `main.py` loads `.env`). |
+  | `APPLY101_DATABASE_URL` | `sqlite:///./apply101.db` | SQLAlchemy URL. Migrations and scripts read it too, but only from the process environment (only `main.py` loads `.env`). SQLite URI URLs (a `uri` query parameter or a `file:` database) are refused with `ConfigError` before any engine exists; use a plain `sqlite:///<path>` URL. |
   | `APPLY101_UPLOAD_DIR` | `uploads` | CV upload directory. The app refuses to start when it points to the repository's `uploads/` and the database is not the repository's `apply101.db`, because CV file names come from database ids. |
   | `APPLY101_LOAD_DOTENV` | on | `0`/`false`/`no`/`off` skips `.env`; any other unrecognized value is an error. |
   | `APPLY101_ANALYSIS_PROVIDER` | `openai` | `fake` selects the deterministic demo provider. It is accepted only when both the database and the upload directory resolve away from the defaults and the repository's real files; any other unrecognized value is an error. |
@@ -87,6 +87,37 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 
 ## Log
 
+### 2026-10-22: SQLite URI URLs refused
+- **Gap:** `sqlite:///file:apply101.db?uri=true` passed `database_is_default()`,
+  so it was not recognized as the default database, and the fake provider
+  turned on. Yet SQLAlchemy's pysqlite driver opens that URL in URI mode,
+  which reaches the same `apply101.db` file.
+- **Fix:** `config.database_url()` refuses a SQLite URL with a `uri` query
+  parameter or a `file:` database, raising `ConfigError`. There is no URI
+  parser.
+  - `database.py` calls it before `create_engine`, so no engine or
+    connection exists.
+  - `check_data_locations()` calls it first at startup.
+  - Plain SQLite paths, `:memory:` and server URLs are unchanged.
+- **Tests:** regression tests with a fake repository root, a temp working
+  directory and temp database paths. They cover:
+  - refusal of each URI spelling by `database_url()`,
+    `database_is_default()` and `check_data_locations()`;
+  - plain URLs still accepted;
+  - `import backend.app.database` failing with `ConfigError` and creating
+    nothing;
+  - fake mode refused with URI URLs.
+- **Test results:**
+  - Backend 797 OK (4 new).
+  - Hook 25 tests (781 subtests) OK.
+  - The real `apply101.db`, `.env` and `uploads/` kept the same size and
+    mtime.
+- **Startup checks:**
+  - `import backend.app.main` with a URI URL pointing to a temp file failed
+    with `ConfigError` before any file existed.
+  - The documented demo command still starts, and the end-to-end demo gave
+    the same results (eligible 74, ineligible 20).
+
 ### 2026-10-22: W1 and W2
 - **Branch:** `feat/online-mvp-config-fake-analysis`, opened from the
   preparation commit `b12f709`.
@@ -115,9 +146,8 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
     - "Default" is decided by resolved path, not by text.
     - The app refuses the repository's `uploads/` with any database other
       than the repository's `apply101.db`.
-    - Not handled: a SQLite URI-style URL
-      (`sqlite:///file:apply101.db?uri=true`) is not recognized as the
-      default database. It has to be written on purpose.
+    - SQLite URI URLs such as `sqlite:///file:apply101.db?uri=true` are
+      refused (see the next log entry).
     - Language lines are parsed loosely, so a language is never dropped.
     - The prompt's data section is found by its first marker.
 - **Tests:**

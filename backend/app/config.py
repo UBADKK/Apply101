@@ -51,7 +51,30 @@ def _env_value(name: str) -> str:
 
 
 def database_url() -> str:
-    return _env_value(DATABASE_URL_ENV) or DEFAULT_DATABASE_URL
+    """APPLY101_DATABASE_URL or the default. SQLite URI-style URLs are
+    refused here, before any engine or connection exists (see
+    _reject_sqlite_uri)."""
+    url = _env_value(DATABASE_URL_ENV) or DEFAULT_DATABASE_URL
+    _reject_sqlite_uri(url)
+    return url
+
+
+def _reject_sqlite_uri(url: str) -> None:
+    """SQLite URI URLs (a "uri" query parameter, or a "file:" database such
+    as sqlite:///file:apply101.db?uri=true) can reach the same file as a
+    plain path while the default-database checks below compare paths only,
+    so they are not supported; use a plain sqlite:///<path> URL."""
+    try:
+        parsed = make_url(url)
+    except ArgumentError:
+        return  # Not a URL at all: left to SQLAlchemy, as before.
+    if parsed.get_backend_name() != "sqlite":
+        return
+    if "uri" in parsed.query or (parsed.database or "").startswith("file:"):
+        raise ConfigError(
+            f"{DATABASE_URL_ENV} must not use a SQLite URI (a 'uri' query parameter "
+            "or a 'file:' database); use a plain sqlite:///<path> URL."
+        )
 
 
 def upload_dir() -> str:
@@ -106,8 +129,10 @@ def check_data_locations() -> None:
     so another database -- also a fresh ./apply101.db in some other working
     directory -- writing into the real uploads/ would replace real users'
     CVs. The defaults from the repository root, or both settings moved,
-    are fine.
+    are fine. Also validates the database URL (see _reject_sqlite_uri) so
+    startup fails before anything imports database.py.
     """
+    database_url()
     if _same_path(upload_dir(), REPO_ROOT / DEFAULT_UPLOAD_DIR) and not _is_repository_database():
         raise ConfigError(
             "CV uploads would go to the repository's uploads/ directory while the "
