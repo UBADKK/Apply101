@@ -169,16 +169,26 @@ Database configuration is defined in:
 
 Where real data is touched:
 
-- `DATABASE_URL` is hard-coded to `sqlite:///./apply101.db`, so the
-  database path is relative to the current working directory.
-- CV uploads go to the relative directory `uploads/`.
-- `backend/app/main.py` calls `load_dotenv()`, which finds the repository
-  `.env` from the file's location, whatever the working directory. Importing
-  `backend.app.main` also runs `Base.metadata.create_all` on the database.
+- The database URL is `APPLY101_DATABASE_URL` (see `backend/app/config.py`).
+  It defaults to `sqlite:///./apply101.db`, which is relative to the current
+  working directory.
+- Migrations and scripts read the same variable, but only from the process
+  environment: they never load `.env`.
+- At startup the app refuses the repository's `uploads/` with any database
+  other than the repository's `apply101.db`, because CV file names come from
+  database ids.
+- CV uploads go to `APPLY101_UPLOAD_DIR`, default the relative directory
+  `uploads/`.
+- `backend/app/main.py` loads `.env` through `config.load_env_file()`, unless
+  `APPLY101_LOAD_DOTENV=0`. python-dotenv finds the repository `.env` from
+  the package location, whatever the working directory.
+- Importing `backend.app.main` also runs `Base.metadata.create_all` on the
+  configured database.
 
-So any app run, script or import from the repository root works on the real
-data. For development runs, use the sandbox described in
-`docs/ONLINE_MVP_PROGRESS.md`.
+So any app run, script or import without these variables works on the real
+data. For development runs, use the demo command in
+`docs/ONLINE_MVP_PROGRESS.md`. It sets every variable, together with
+`APPLY101_ANALYSIS_PROVIDER=fake`.
 
 Important rules:
 
@@ -402,6 +412,15 @@ Before changing an analysis prompt:
 - inspect existing examples/tests,
 - determine whether its version must be bumped.
 
+`backend/app/fake_analysis.py` is the deterministic stand-in for the
+OpenAI client, selected only with `APPLY101_ANALYSIS_PROVIDER=fake`.
+- It reads the data section of the analysis prompts, starting at
+  `User basic information:` and `Job title:`.
+- It returns payloads for the structured-output schemas.
+- If you change a prompt's data labels or a structured-output schema,
+  update it and run `backend.tests.test_fake_analysis_provider`.
+- Never make it a fallback for the real provider.
+
 Never solve deterministic business logic by adding an LLM call when normal code is sufficient.
 
 Prefer:
@@ -462,11 +481,14 @@ From the repository root, the FastAPI application can normally be run with:
 uvicorn backend.app.main:app --reload
 ```
 
-Run from the repository root, this uses the real `apply101.db`, `uploads/`
-and `.env`. Only do that when the user explicitly asks. For development and
-testing, use the isolated sandbox command in `docs/ONLINE_MVP_PROGRESS.md`:
-an empty working directory, `PYTHON_DOTENV_DISABLED=1` and a throwaway JWT
-secret.
+Without the `APPLY101_*` variables, this uses the real `apply101.db`,
+`uploads/` and `.env`. Only do that when the user explicitly asks.
+
+For development and testing, use the demo command in
+`docs/ONLINE_MVP_PROGRESS.md`:
+- a temp database and upload directory;
+- `APPLY101_LOAD_DOTENV=0` and a throwaway JWT secret;
+- the fake analysis provider, so no OpenAI calls are made.
 
 If the command fails due to environment/setup differences, investigate rather than changing imports blindly.
 

@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 from ..app.database import get_db
 from ..app import models, schemas
+from ..app.config import upload_dir as configured_upload_dir
 from ..app.analysis_guard import (
     AcquireOutcome,
     AnalysisGuardConfigError,
@@ -237,7 +238,8 @@ def upload_cv(
 ):
     display_filename = _validate_cv_display_filename(file.filename)
 
-    upload_dir = "uploads"
+    # APPLY101_UPLOAD_DIR, default "uploads" (see app/config.py).
+    upload_dir = configured_upload_dir()
     os.makedirs(upload_dir, exist_ok=True)
 
     # The on-disk filename is entirely server-generated from trusted path

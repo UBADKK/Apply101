@@ -1,9 +1,28 @@
+import logging
 import os
 
 from openai import OpenAI, OpenAIError, RateLimitError
 
+from .config import (
+    DATABASE_URL_ENV,
+    UPLOAD_DIR_ENV,
+    database_is_default,
+    upload_dir_is_default,
+)
+from .fake_analysis import FakeAnalysisClient
+
 
 OPENAI_API_KEY_ENV = "OPENAI_API_KEY"
+
+# Which analysis provider the analysis seams use. Unset or "openai": the
+# real OpenAI client (unchanged behavior). "fake": the deterministic
+# fake_analysis.FakeAnalysisClient for development and demos -- only when
+# selected here, never as a fallback when OpenAI is missing or failing.
+ANALYSIS_PROVIDER_ENV = "APPLY101_ANALYSIS_PROVIDER"
+OPENAI_ANALYSIS_PROVIDER = "openai"
+FAKE_ANALYSIS_PROVIDER = "fake"
+
+logger = logging.getLogger(__name__)
 
 # Generic, key-free error text shared by every analysis route that needs
 # OpenAI. Never include the key or any raw exception text in a response.
@@ -19,8 +38,44 @@ PROVIDER_SPEND_LIMIT_ERROR_CODES = frozenset({
 })
 
 
-def create_openai_client_or_none() -> OpenAI | None:
+class AnalysisProviderConfigError(ValueError):
+    """APPLY101_ANALYSIS_PROVIDER has a value that cannot be used."""
+
+
+def selected_analysis_provider() -> str:
+    """Returns OPENAI_ANALYSIS_PROVIDER or FAKE_ANALYSIS_PROVIDER.
+
+    The fake provider stores its results like real analyses (same model and
+    prompt version, so matching accepts them), and its demo users' CVs are
+    named after their database ids. So it is refused unless both
+    APPLY101_DATABASE_URL and APPLY101_UPLOAD_DIR point away from the
+    default (and the repository's real) database and upload directory.
+    Any other value is an error, never silently the real provider.
+    """
+    value = (os.environ.get(ANALYSIS_PROVIDER_ENV) or "").strip().lower()
+    if not value or value == OPENAI_ANALYSIS_PROVIDER:
+        return OPENAI_ANALYSIS_PROVIDER
+    if value == FAKE_ANALYSIS_PROVIDER:
+        if database_is_default() or upload_dir_is_default():
+            raise AnalysisProviderConfigError(
+                f"{ANALYSIS_PROVIDER_ENV}={FAKE_ANALYSIS_PROVIDER} requires "
+                f"{DATABASE_URL_ENV} and {UPLOAD_DIR_ENV} to point away from "
+                "the default database and upload directory, so fake analyses "
+                "and demo CVs never mix with real data."
+            )
+        return FAKE_ANALYSIS_PROVIDER
+    raise AnalysisProviderConfigError(
+        f"{ANALYSIS_PROVIDER_ENV} must be '{OPENAI_ANALYSIS_PROVIDER}' or "
+        f"'{FAKE_ANALYSIS_PROVIDER}'; got {value!r}."
+    )
+
+
+def create_openai_client_or_none() -> OpenAI | FakeAnalysisClient | None:
     """Returns an OpenAI client, or None when analysis is not configured.
+
+    With APPLY101_ANALYSIS_PROVIDER=fake it returns a FakeAnalysisClient
+    instead and never constructs an OpenAI client, whatever OPENAI_API_KEY
+    holds (see selected_analysis_provider).
 
     Requires a non-blank OPENAI_API_KEY: the analysis seams call the
     Responses API, which authenticates only with that key. The SDK itself
@@ -34,6 +89,14 @@ def create_openai_client_or_none() -> OpenAI | None:
     any SDK error text is logged or returned; construction performs no
     network call.
     """
+    if selected_analysis_provider() == FAKE_ANALYSIS_PROVIDER:
+        logger.warning(
+            "Fake analysis provider active (%s=%s): analyses are deterministic "
+            "demo data, not OpenAI results.",
+            ANALYSIS_PROVIDER_ENV,
+            FAKE_ANALYSIS_PROVIDER,
+        )
+        return FakeAnalysisClient()
     if not (os.environ.get(OPENAI_API_KEY_ENV) or "").strip():
         return None
     try:

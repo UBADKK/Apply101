@@ -1,5 +1,7 @@
-from dotenv import load_dotenv
-load_dotenv()
+# Before anything reads the environment; APPLY101_LOAD_DOTENV=0 skips it.
+from .config import check_data_locations, load_env_file
+load_env_file()
+check_data_locations()
 from fastapi import FastAPI
 
 from .database import engine, Base
