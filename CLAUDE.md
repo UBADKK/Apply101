@@ -63,6 +63,7 @@ backend/
 
 .claude/               project agents, agent guard hook, settings.json
 docs/                  ONLINE_MVP_PLAN.md, ONLINE_MVP_PROGRESS.md
+frontend/              React + TypeScript + Vite web client (see frontend/README.md)
 requirements.txt
 apply101.db            real local data (not in git)
 uploads/               real CV files (not in git)
@@ -489,6 +490,12 @@ For development and testing, use the demo command in
 - a temp database and upload directory;
 - `APPLY101_LOAD_DOTENV=0` and a throwaway JWT secret;
 - the fake analysis provider, so no OpenAI calls are made.
+
+The web client in `frontend/` talks to this backend.
+- It needs `APPLY101_CORS_ORIGINS` set to its origin.
+- Its own tests are `npm test` (Vitest) and `npm run e2e`. The e2e run
+  starts an isolated backend with the fake provider.
+- See `frontend/README.md`.
 
 If the command fails due to environment/setup differences, investigate rather than changing imports blindly.
 
