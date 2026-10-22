@@ -9,7 +9,7 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 
 | ID | Decision | Status | Outcome |
 |---|---|---|---|
-| D1 | Web client approach | todo | |
+| D1 | Web client approach | done | React + TypeScript + Vite single-page app in `frontend/`, talking to the existing FastAPI backend (decided by the project owner, 2026-10-22) |
 | D2 | Hosting provider and database engine | todo | |
 | D3 | OpenAI budget and per-user analysis limits | todo | |
 | D4 | Registration policy (open / invite) | todo | |
@@ -23,7 +23,7 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 | W1 | Configurable database URL and upload directory, explicit `.env` loading | done | `APPLY101_DATABASE_URL`, `APPLY101_UPLOAD_DIR`, `APPLY101_LOAD_DOTENV`; defaults unchanged |
 | W2 | Fake analysis provider for development and end-to-end tests | done | `APPLY101_ANALYSIS_PROVIDER=fake`, only with a non-default database and upload directory; no fallback |
 | W3 | Per-user limit for profile analysis | todo | Depends on D3 |
-| W4 | Web client and CORS | todo | Depends on D1 |
+| W4 | Web client and CORS | in review | Draft PR [UBADKK/Apply101#26](https://github.com/UBADKK/Apply101/pull/26) from `feat/online-mvp-web-client`; verified locally (Vitest, Playwright in Edge); reviewer approved; see "W4 task" below |
 | W5 | Hosting and database setup | todo | Depends on D2 |
 | W6 | Portable stored CV paths | todo | Existing rows store OS-specific relative paths; a configured upload dir on Windows stores mixed separators (`C:/.../uploads\user_1_profile_1_cv.pdf`) |
 | W7 | Account deletion removes CV files | todo | |
@@ -34,12 +34,95 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 
 | ID | Area | Status | Evidence |
 |---|---|---|---|
-| AC1 | Registration and login | todo | Backend endpoints exist and are tested |
-| AC2 | Profile and PDF CV | todo | Backend endpoints exist; persistence and paths open (W1, W6) |
-| AC3 | Manual job (text and URL) | todo | Backend endpoint exists and is tested |
-| AC4 | Analysis | in progress | Works end to end with the fake provider in a sandbox; profile analysis limit open (W3); real provider not exercised |
-| AC5 | Reasoned match result | in progress | Sandbox demo returned `eligible` and `ineligible` results with reason codes; staging check open |
+| AC1 | Registration and login | in progress | Web client: register, login, logout, reload and expiry verified locally in Edge; multi-process rate limiting (W5) and staging open |
+| AC2 | Profile and PDF CV | in progress | Web client profile (all matching fields, languages) and PDF upload verified locally; persistence and paths on the host open (W5, W6) |
+| AC3 | Manual job (text and URL) | in progress | Web client add, list and open, duplicate URL (409), and another user's job (404) verified locally; staging open |
+| AC4 | Analysis | in progress | Web client analyses with the fake provider, 429 countdown without retry, and mocked 503 verified locally; profile analysis limit open (W3); real provider not exercised |
+| AC5 | Reasoned match result | in progress | Web client shows `eligible` (74) and `ineligible` (20, `required_language_missing`) with reasons; saved results reopen and rematch work; `review_required` covered by a unit test only; staging open |
 | AC6 | End to end and operations | todo | Needs W1-W8 |
+
+## W4 task (web client)
+
+Scope, as given by the project owner on 2026-10-22. It is recorded here so
+that an interrupted session can resume.
+
+- **Stack:** React + TypeScript + Vite SPA in `frontend/` (D1), English UI,
+  the existing FastAPI backend, stable dependencies with a committed
+  lockfile. D2-D6 stay open.
+- **Flow in the browser:**
+  - register, log in and log out;
+  - protected pages that survive a page reload and handle an expired
+    session;
+  - create, open and edit a profile, including every matching field
+    (languages, experience, preferences, work authorization), and upload a
+    PDF CV;
+  - list and open the user's own jobs, and add a manual job (title, URL,
+    text);
+  - start profile and job analysis, show status and summary, and guide the
+    user when an analysis is missing or outdated;
+  - match results with `eligible` / `ineligible` / `review_required`,
+    scores, strengths, weaknesses and readable reasons;
+  - reopen saved results and use the existing rematch behaviour.
+- **Quality:**
+  - a simple, consistent, presentable design that works on mobile;
+  - labelled forms, keyboard use, and empty, loading, success and error
+    states;
+  - no double submits;
+  - clear handling of 401, 404, 409, 422, 429 and 503;
+  - Retry-After and quotas respected, and analyses never re-sent
+    automatically.
+- **Backend:**
+  - real endpoints with the fake analysis provider, and a visible demo
+    marker;
+  - a configurable API URL, and CORS with an explicit origin list;
+  - only small, backward-compatible additions. Auth, ownership, quota,
+    analysis and matching rules stay unchanged.
+  - No secrets in the frontend; example settings are documented in
+    Markdown.
+- **Safety:** never touch the real `.env`, `apply101.db` or `uploads/`.
+  - Use the documented isolation: temp DB and CV directory, `.env` off,
+    throwaway JWT secret, fake analysis.
+  - No real OpenAI calls, no weaker hooks or permissions, no new agent
+    infrastructure.
+- **Verification:**
+  - frontend build and typecheck, meaningful flow tests, and the backend
+    test suite;
+  - in a real browser against an isolated real server: the main flow,
+    saved results, error states, and data separation between two users;
+  - desktop and mobile views, and both a matching and a non-matching
+    result.
+- **Delivery:** reviewer pass on the final diff, commit and push, and a
+  draft PR. No merge or deploy.
+
+### W4 plan and status
+
+| Step | Status |
+|---|---|
+| Node.js v24.22.1 LTS (official zip, SHA-256 checked) in `%LOCALAPPDATA%\Programs\node-v24.22.1-win-x64` | done |
+| Backend additions: `APPLY101_CORS_ORIGINS` and CORS middleware (`expose_headers=["Retry-After"]`); `GET /jobs/?owned=true`; `GET /jobs/{job_id}`; `GET /users/{user_id}/languages`; `GET /meta` | done (commit `26bc320`; 36 new tests, backend 833 OK) |
+| Frontend scaffold (Vite, React, TypeScript, React Router, Vitest), API client with typed errors, auth context | done |
+| Screens: login/register, dashboard, profile (fields, languages, CV, analysis), jobs (list, new, detail with analysis and match), saved matches | done (typecheck and build pass, checked in the browser) |
+| Frontend unit and flow tests (Vitest + Testing Library) | done (29 tests) |
+| End-to-end browser checks against isolated servers (desktop and mobile, two users, error states), screenshots | done (Playwright, 5 tests in Edge, 12 screenshots; also checked by hand in the built-in browser) |
+| Docs: run commands, example settings | done (`frontend/README.md`) |
+| Review, fixes, commit, push, draft PR | done (review rounds 1 and 2 fixed in `9b46f2b` and `a66e759`, round 3 approved; draft PR [UBADKK/Apply101#26](https://github.com/UBADKK/Apply101/pull/26), not merged) |
+
+### W4 notes for later sessions
+
+- **Node:** `export PATH="/c/Users/umutbaris/AppData/Local/Programs/node-v24.22.1-win-x64:$PATH"`
+  in Git Bash (no system PATH change).
+- **npm:** npm 11 skips package install scripts. esbuild still works,
+  because its `@esbuild/win32-x64` binary comes as an optional dependency.
+- **Playwright** runs against the installed Edge (`channel: 'msedge'`), with
+  no browser download. It starts its own isolated backend on port 8011 and
+  `vite preview` on port 4173; screenshots go to `frontend/e2e/screenshots/`,
+  which is gitignored.
+- **API facts:**
+  - Profile `force_reanalyze` is allowed for owners; job
+    `force_reanalyze` is admin-only (403).
+  - The profile-level success cooldown is 300 s
+    (`PROFILE_ANALYSIS_PROFILE_SUCCESS_COOLDOWN_SECONDS`).
+  - The saved-match list already contains the full `match` result.
 
 ## Development environment
 
@@ -55,6 +138,7 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
   | `APPLY101_DATABASE_URL` | `sqlite:///./apply101.db` | SQLAlchemy URL. Migrations and scripts read it too, but only from the process environment (only `main.py` loads `.env`). SQLite URI URLs (a `uri` query parameter or a `file:` database) are refused with `ConfigError` before any engine exists; use a plain `sqlite:///<path>` URL. |
   | `APPLY101_UPLOAD_DIR` | `uploads` | CV upload directory. The app refuses to start when it points to the repository's `uploads/` and the database is not the repository's `apply101.db`, because CV file names come from database ids. |
   | `APPLY101_LOAD_DOTENV` | on | `0`/`false`/`no`/`off` skips `.env`; any other unrecognized value is an error. |
+  | `APPLY101_CORS_ORIGINS` | none | Comma-separated browser origins allowed by CORS, e.g. `http://localhost:5173` for the web client's dev server. `*`, paths and other schemes are an error; unset means no CORS middleware. |
   | `APPLY101_ANALYSIS_PROVIDER` | `openai` | `fake` selects the deterministic demo provider. It is accepted only when both the database and the upload directory resolve away from the defaults and the repository's real files; any other unrecognized value is an error. |
 
 - **Demo server.** This command runs the app from the repository root without
@@ -72,10 +156,14 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
   APPLY101_DATABASE_URL="sqlite:///$SANDBOX/demo.db" \
   APPLY101_UPLOAD_DIR="$SANDBOX/uploads" \
   APPLY101_ANALYSIS_PROVIDER=fake \
+  APPLY101_CORS_ORIGINS=http://localhost:5173 \
   JWT_SECRET_KEY="$(.venv/Scripts/python.exe -c 'import secrets; print(secrets.token_urlsafe(48))')" \
   OPENAI_API_KEY= \
   .venv/Scripts/python.exe -m uvicorn backend.app.main:app --port 8001
   ```
+
+  The web client then runs with `npm run dev` in `frontend/` (see
+  `frontend/README.md`).
 
   Fake analyses are stored with the real model name and prompt version, so
   matching accepts them, and demo CVs are named after database ids. That is
@@ -86,6 +174,63 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
   second job within 60 seconds returns 429 with `Retry-After`.
 
 ## Log
+
+### 2026-10-23: W4 review rounds
+- **Round 1** (`9b46f2b`):
+  - The profile form no longer overwrites stored values it does not
+    offer (unknown language levels, names, scales, free-text choices).
+  - Rematch no longer flashes "not found".
+  - Saved results warn when they used an older analysis.
+- **Round 2** (`a66e759`):
+  - Saved matches never show "Match not found" while opening: `useResource`
+    reports loading as soon as its deps change.
+  - A saved result whose profile or job has no current analysis asks for a
+    new analysis.
+  - The "profile changed after its analysis" marker is per user and shows
+    on match results.
+  - "Cannot analyze this job" only for `ERR_JOB_NOT_FOUND`.
+  - The alert after a 429 countdown says the user can try again.
+- **Checks:**
+  - typecheck and build pass; Vitest 29 OK;
+  - Playwright 5 OK in Edge;
+  - backend 833 OK (the backend is unchanged since `26bc320`); hook tests
+    25 tests and 781 subtests OK.
+- **Review:** round 3 approved with no blocking findings. Its hardening
+  suggestion went into `770cc3e`: no current analysis always counts as
+  missing.
+- **Delivery:** draft PR
+  [UBADKK/Apply101#26](https://github.com/UBADKK/Apply101/pull/26). No merge
+  or deploy.
+- **Next:**
+  - the project owner's review of the PR;
+  - then W3, W5-W9 and the decisions D2-D6;
+  - staging checks for AC1-AC5, and AC6.
+
+### 2026-10-22: W4 web client
+- **Branch:** `feat/online-mvp-web-client`, opened from `main` at `c56c1df`.
+  - Node.js v24.22.1 LTS is installed per user (official zip, SHA-256
+    checked).
+- **Backend:** additive changes only (`26bc320`):
+  - `APPLY101_CORS_ORIGINS`, with an explicit origin list and Retry-After
+    exposed;
+  - `GET /jobs/?owned=true`, `GET /jobs/{job_id}`,
+    `GET /users/{user_id}/languages`, `GET /meta`.
+  - Backend 833 OK.
+- **Frontend (`frontend/`):** React 19, React Router 7, Vite 7 and
+  TypeScript 5.9, with a lockfile.
+  - Screens: login/register, overview, profile (matching fields,
+    languages, PDF CV, analysis), jobs (list, add, detail with analysis and
+    match), saved matches (list, reopen, rematch).
+  - The demo banner comes from `GET /meta`.
+- **Checks:**
+  - `npm run build` and the typecheck pass; Vitest 21 OK.
+  - Playwright (installed Edge, isolated servers): 5 OK, covering the main
+    flow, two-user isolation, 429 without automatic retry, a mocked 503,
+    keyboard login, logout and expiry, and mobile without horizontal
+    overflow.
+  - A manual pass in the built-in browser found two bugs, both fixed: the
+    nested profile-analysis response, and locale-dependent dates.
+- **Next:** reviewer pass, then fixes, push and a draft PR.
 
 ### 2026-10-22: SQLite URI URLs refused
 - **Gap:** `sqlite:///file:apply101.db?uri=true` passed `database_is_default()`,

@@ -219,6 +219,17 @@ class UserLanguageInput(BaseModel):
     proficiency_level: str | None = None
     proficiency_scale: str | None = "CEFR"
     is_primary: bool = False
+
+
+class UserLanguageResponse(BaseModel):
+    language_code: str
+    language_name: str
+    proficiency_level: str | None = None
+    proficiency_scale: str | None = None
+    is_primary: bool | None = None
+
+    class Config:
+        from_attributes = True
     
 
 class CandidateProfileCreate(BaseModel):
@@ -396,6 +407,11 @@ class JobCreate(BaseModel):
         except ValueError:
             raise ValueError("url must have a valid port.")
         return value
+
+
+class MetaResponse(BaseModel):
+    analysis_provider: str
+    demo: bool
 
 
 class JobResponse(BaseModel):
