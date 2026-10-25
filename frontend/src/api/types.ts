@@ -253,6 +253,7 @@ export interface CatalogJob {
   source: string | null;
   source_label: string | null;
   attribution: string | null;
+  attribution_url: string | null;
   url: string;
   first_seen_at: string | null;
   last_seen_at: string | null;

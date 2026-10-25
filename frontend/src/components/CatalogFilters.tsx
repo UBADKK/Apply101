@@ -99,7 +99,18 @@ export function JobFacts({ job }: { job: CatalogJob }) {
         <a href={job.url} target="_blank" rel="noopener noreferrer nofollow">
           Original posting<span className="visually-hidden"> (opens in a new tab)</span>
         </a>
-        {job.attribution && <span className="muted"> · {job.attribution}</span>}
+        {job.attribution && (
+          <span className="muted">
+            {' · '}
+            {job.attribution_url ? (
+              <a href={job.attribution_url} target="_blank" rel="noopener noreferrer">
+                {job.attribution}
+              </a>
+            ) : (
+              job.attribution
+            )}
+          </span>
+        )}
       </p>
     </>
   );

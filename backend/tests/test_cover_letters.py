@@ -17,6 +17,12 @@ from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
 
 from backend.app import cover_letter, models
+from backend.app.analysis_contract import (
+    JOB_ANALYSIS_MODEL,
+    JOB_ANALYSIS_PROMPT_VERSION,
+    PROFILE_ANALYSIS_MODEL,
+    PROFILE_ANALYSIS_PROMPT_VERSION,
+)
 from backend.app.database import Base, get_db
 from backend.app.fake_analysis import FakeAnalysisClient
 from backend.app.security import create_access_token, hash_password
@@ -234,14 +240,14 @@ class CoverLetterTests(unittest.TestCase):
     def test_skill_gaps_agree_with_matching(self):
         db = self.Session()
         db.add(models.ProfileAnalysis(
-            profile_id=self.profile_id, analysis_status="completed", analysis_model="gpt-4.1-mini",
-            analysis_prompt_version="profile_analysis_v5", is_current=True,
-            strong_skills_json='["js"]', moderate_skills_json="[]", weak_or_basic_skills_json='["kubernetes"]', tools_json='["docker"]',
+            profile_id=self.profile_id, analysis_status="completed", analysis_model=PROFILE_ANALYSIS_MODEL,
+            analysis_prompt_version=PROFILE_ANALYSIS_PROMPT_VERSION, is_current=True,
+            strong_skills_json='["js", "NA"]', moderate_skills_json="[]", weak_or_basic_skills_json='["kubernetes"]', tools_json='["docker"]',
         ))
         db.add(models.JobAnalysis(
-            job_id=self.catalog_job, analysis_status="completed", analysis_model="gpt-4.1-mini",
-            analysis_prompt_version="job_analysis_v13", is_current=True,
-            required_skills_json='["JavaScript", "docker", "kubernetes", "rust"]',
+            job_id=self.catalog_job, analysis_status="completed", analysis_model=JOB_ANALYSIS_MODEL,
+            analysis_prompt_version=JOB_ANALYSIS_PROMPT_VERSION, is_current=True,
+            required_skills_json='["JavaScript", "docker", "kubernetes", "rust", "data analysis"]',
         ))
         db.commit()
         profile = db.get(models.CandidateProfile, self.profile_id)
@@ -250,6 +256,7 @@ class CoverLetterTests(unittest.TestCase):
         db.close()
         gap = next(g for g in grounding.gaps if g["code"] == "SKILLS_NOT_IN_PROFILE")
         self.assertIn("rust", gap["message"])
+        self.assertIn("data analysis", gap["message"])  # "NA" is a placeholder, as in matching
         for covered in ("JavaScript", "docker", "kubernetes"):
             self.assertNotIn(covered, gap["message"])
         skills = next(f for f in grounding.facts if f["id"] == "profile.skills")["text"]

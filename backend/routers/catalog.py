@@ -103,6 +103,7 @@ def _job_card(job: models.Job) -> dict:
         "source": job.source,
         "source_label": info.label if info else job.source,
         "attribution": info.attribution if info else None,
+        "attribution_url": info.attribution_url if info else None,
         "url": job.url,
         "first_seen_at": job.created_at,
         "last_seen_at": job.last_seen_at,

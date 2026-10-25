@@ -56,6 +56,7 @@ def list_sources(current_admin: models.User = Depends(get_current_admin)):
             "docs_url": info.docs_url,
             "terms_url": info.terms_url,
             "attribution": info.attribution,
+            "attribution_url": info.attribution_url,
             "terms_checked": info.terms_checked,
             "auto_publish": info.auto_publish,
             "terms_note": info.terms_note,

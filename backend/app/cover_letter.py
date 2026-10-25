@@ -173,9 +173,11 @@ def build_grounding(db: Session, *, user_id: int, profile: models.CandidateProfi
     if job_analysis is not None:
         required = _skill_names(_json_list(job_analysis.required_skills_json))
         add("job.required_skills", "job", "Required skills (from the job analysis)", ", ".join(required))
-        # The same comparison the match uses, so the two never disagree.
-        from ..routers.matches import fuzzy_skill_match
+        # The same comparison the match uses, so the two never disagree,
+        # including its placeholder filter (skill_match_score).
+        from ..routers.matches import SKILL_PLACEHOLDERS, fuzzy_skill_match, normalize_skill
 
+        matching_skills = [skill for skill in matching_skills if normalize_skill(skill) not in SKILL_PLACEHOLDERS]
         missing = [
             skill for skill in required
             if not any(fuzzy_skill_match(candidate, skill) for candidate in matching_skills)

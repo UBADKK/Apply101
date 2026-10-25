@@ -22,6 +22,7 @@ const CARD = {
   source: 'greenhouse',
   source_label: 'Greenhouse Job Board',
   attribution: 'Job listing published on the company’s Greenhouse job board; apply on the original posting.',
+  attribution_url: null,
   first_seen_at: '2026-10-25T12:00:00',
   last_seen_at: '2026-10-25T12:00:00',
   source_created_at: null,

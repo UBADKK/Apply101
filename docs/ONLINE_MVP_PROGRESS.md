@@ -29,7 +29,7 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 | W7 | Account deletion removes CV files | todo | |
 | W8 | HTTPS, secrets, backups, log hygiene | todo | Depends on D2 |
 | W9 | Fix stale version list in `MATCHING_CONTRACT.md` | todo | Documentation only |
-| W10 | Phase 1: companies, multi-source connectors (Arbeitnow, Greenhouse, Lever, Ashby), bounded admin sync | in review | See "Scope extension task" below. No live GET was possible here (network policy 403); the 30 board ids are unverified candidates, disabled until a live check passes |
+| W10 | Phase 1: companies, multi-source connectors (Arbeitnow, Greenhouse, Lever, Ashby), bounded admin sync | in review | See "Scope extension task" below. Live check on 2026-10-25: 32 boards read, 29 with open jobs; see the log |
 | W11 | Phase 2: catalog browse and "Jobs for me" (backend and web client) | in review | `GET /catalog/jobs`, `GET /catalog/filters`, `GET /users/{id}/profiles/{id}/recommendations`; screens `/catalog`, `/for-you` |
 | W12 | Phase 2: URL import (ATS APIs, JobPosting JSON-LD, SSRF protections) | in review | `POST /jobs/import/preview`, plus the import box on `/jobs/new`. Not tried against live sites (network policy) |
 | W13 | Phase 3: motivation letters (TR/EN/DE, versions, quota, fake provider) | in review | `backend/routers/cover_letters.py`, `backend/app/cover_letter.py`, migration `phase10_cover_letters`, panel on the job page and `/letters`. Checked with the fake provider only, which is a template: the real model's writing quality is not checked |
@@ -105,7 +105,8 @@ from it.
 - **Next:**
   1. a reviewer pass on the final fix commit;
   2. live checks of the sources and boards where the network allows them.
-- **Environment limits found:**
+- **Environment limits found (first part of the session; network opened
+  later, see the log entry "Live check of sources"):**
   - The cloud network policy answers 403 to `boards-api.greenhouse.io`,
     `api.lever.co`, `api.ashbyhq.com` and `www.arbeitnow.com`. Live GETs
     are not possible from this session.
@@ -359,6 +360,66 @@ that an interrupted session can resume.
   second job within 60 seconds returns 429 with `Retry-After`.
 
 ## Log
+
+### 2026-10-25: live check of sources
+The project owner opened the network for the sources. Every check below was
+read-only or used a throwaway database; nothing touched `apply101.db`.
+
+- **Boards:** 33 candidates were read live with
+  `catalog_sync.check_board` (no database).
+  - 6 answered 404: Babbel (Greenhouse), Helsing (Ashby), Black Forest Labs
+    (Ashby), Getir, Insider (`useinsider`) and Papara (Lever).
+  - Probing other providers found these boards: Babbel on Ashby, Helsing on
+    Greenhouse, and Insider as `insiderone` on Lever.
+  - Added after a successful read: Trendyol, Picus and iyzico (Lever), and
+    commercetools and Staffbase (Greenhouse).
+  - `insider` on Greenhouse belongs to Business Insider and was not used.
+  - Getir, Papara and Black Forest Labs were removed; no board was found
+    for them.
+- **`backend/app/data/company_boards.json`:** 32 verified boards, each with
+  its live result.
+  - 29 list open jobs. Codeway, Deel and Mistral AI answered with no open
+    jobs.
+  - By focus: Germany 14, Turkey 8 (7 with jobs), remote 10.
+  - Active postings per board on the check date range from 5 (iyzico) to
+    402 (Elastic).
+  - Seeding still adds boards disabled and unverified in the database,
+    until a check run there.
+- **Live sync into a throwaway database:** all boards enabled, Arbeitnow
+  limited to 3 pages.
+  - 32 board runs completed. Arbeitnow was partial (page cap), so it closed
+    nothing.
+  - Active jobs by source: Greenhouse 2606, Arbeitnow 897, Lever 226,
+    Ashby 211; 454 companies; 15 exact copies linked.
+  - A second run created 0 new jobs (739 unchanged).
+- **Countries:** only Lever and Ashby send a country code.
+  - Structured country codes: TR 85, US 19, BR 17, DE 9, others below 10;
+    3734 jobs have none.
+  - Text hints in location or work mode: Germany 751, Turkey 85,
+    remote 766.
+  - Structured work mode: remote 218, hybrid 123, on-site 67, unknown 3532.
+- **Connector formats:** every live posting parsed, with 0 skipped.
+  - The Lever README confirms the fields used (`skip`, `limit`,
+    `mode=json`, `country`, `workplaceType`, `hostedUrl`) and the EU hosts.
+  - The Greenhouse and Ashby documentation pages could not be reached; their
+    APIs answered in the expected format.
+- **Terms:**
+  - Arbeitnow, checked (arbeitnow.com/terms, section 11): the API is
+    provided as is; using it requires a link back to Arbeitnow.com, now
+    shown with every Arbeitnow job; the permission is revocable.
+  - Arbeitnow section 2 limits copying the site's own materials to
+    personal, non-commercial viewing. The project owner should confirm
+    that showing API jobs fits.
+  - Lever: the README gives no reuse terms, and lever.co/terms could not be
+    reached.
+  - Greenhouse and Ashby: their terms pages could not be reached.
+  - These three stay "not checked", with no auto-publish.
+- **URL import live:**
+  - Real Greenhouse, Lever and Ashby posting links previewed correctly.
+  - LinkedIn was refused.
+  - The JSON-LD path could not be tried here. Its guarded fetch connects
+    straight to the checked address, and this environment only allows
+    traffic through its proxy; without a proxy it connects directly.
 
 ### 2026-10-25: two minor review notes on PR #26
 - **`outdatedParts`:** a direct regression test for `770cc3e`

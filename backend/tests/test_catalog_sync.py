@@ -548,6 +548,24 @@ class CatalogAdminRouteTests(CatalogSyncBase):
         runs = self.client.get("/admin/catalog/runs", headers=self.admin).json()
         self.assertEqual(runs[0]["status"], "completed")
 
+    def test_sources_report_terms_and_arbeitnow_link_back(self):
+        sources = {item["source"]: item for item in self.client.get("/admin/catalog/sources", headers=self.admin).json()}
+        self.assertTrue(sources["arbeitnow"]["terms_checked"])
+        self.assertEqual(sources["arbeitnow"]["attribution_url"], "https://www.arbeitnow.com")
+        self.assertIn("link back", sources["arbeitnow"]["terms_note"])
+        for source in ("greenhouse", "lever", "ashby"):
+            self.assertFalse(sources[source]["terms_checked"])
+            self.assertFalse(sources[source]["auto_publish"])
+
+    def test_company_board_list_holds_live_check_results(self):
+        import json as _json
+        doc = _json.loads(catalog_sync.COMPANY_BOARDS_FILE.read_text(encoding="utf-8"))
+        self.assertGreaterEqual(len(doc["boards"]), 30)
+        for entry in doc["boards"]:
+            self.assertIn(entry["verification"], ("verified", "failed"))
+            self.assertTrue(catalog_sync.valid_board_token(entry["board_token"]))
+            self.assertIn("active_postings", entry["live_check"])
+
     def test_sync_limits_are_validated(self):
         response = self.client.post("/admin/catalog/sync", headers=self.admin, json={"max_boards": 500})
         self.assertEqual(response.status_code, 422)
