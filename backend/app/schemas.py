@@ -719,3 +719,15 @@ class CatalogSyncRequest(BaseModel):
         if value < 1 or value > 50:
             raise ValueError("must be between 1 and 50.")
         return value
+
+
+class JobImportPreviewRequest(BaseModel):
+    url: str
+
+    @field_validator("url")
+    @classmethod
+    def _url(cls, value: str) -> str:
+        value = (value or "").strip()
+        if not value or len(value) > 2000:
+            raise ValueError("url must be 1-2000 characters.")
+        return value

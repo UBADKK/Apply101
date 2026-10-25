@@ -2,7 +2,8 @@ import { useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { isApiError } from '../api/client';
 import { api } from '../api/endpoints';
-import type { JobInput } from '../api/types';
+import type { ImportPreview, JobInput } from '../api/types';
+import { Alert } from '../components/Alert';
 import { ErrorAlert } from '../components/ErrorAlert';
 import { TextAreaField, TextField } from '../components/fields';
 import { PageHeader } from '../components/PageHeader';
@@ -44,6 +45,27 @@ export function NewJobPage() {
   const [url, setUrl] = useState('');
   const [description, setDescription] = useState('');
   const [errors, setErrors] = useState<Errors>({});
+  const [importUrl, setImportUrl] = useState('');
+  const [imported, setImported] = useState<ImportPreview | null>(null);
+
+  const preview = useAction(async (link: string) => {
+    const result = await api.importPreview(link);
+    // Only what the source states is filled in; the user checks and corrects it.
+    setTitle(result.fields.title ?? '');
+    setCompany(result.fields.company_name ?? '');
+    setLocation(result.fields.location ?? '');
+    setUrl(result.url);
+    setDescription(result.fields.description_text ?? '');
+    setErrors({});
+    setImported(result);
+    return result;
+  });
+
+  const handleImport = (event: FormEvent) => {
+    event.preventDefault();
+    setImported(null);
+    if (importUrl.trim()) void preview.run(importUrl.trim());
+  };
 
   const create = useAction(async (input: JobInput) => {
     const job = await api.createJob(input);
@@ -74,6 +96,40 @@ export function NewJobPage() {
   return (
     <>
       <PageHeader title="Add a job" description="Copy the posting from the company's site. The link is stored for reference; the text you paste is what gets analyzed." />
+      <section className="card" aria-labelledby="import-heading">
+        <h2 id="import-heading" className="section-heading">
+          Import from a link (optional)
+        </h2>
+        <p className="muted small">
+          Works for Greenhouse, Lever and Ashby job links, and for career pages that publish structured job data. Nothing is saved until you check
+          the fields below and save. LinkedIn and similar sites cannot be imported: paste the text instead.
+        </p>
+        <form onSubmit={handleImport} noValidate className="import-row" aria-busy={preview.pending}>
+          <div className="field">
+            <label htmlFor="import-url">Job link</label>
+            <input id="import-url" name="import_url" type="url" value={importUrl} placeholder="https://" maxLength={2000} onChange={(event) => setImportUrl(event.target.value)} />
+          </div>
+          <button type="submit" className="button button-secondary" disabled={preview.pending || !importUrl.trim()}>
+            {preview.pending ? 'Reading…' : 'Read posting'}
+          </button>
+        </form>
+        {preview.error !== null && (
+          <>
+            <ErrorAlert error={preview.error} cooldownSeconds={preview.cooldownSeconds} />
+            <p className="small">Paste the job title, link and text in the form below instead.</p>
+          </>
+        )}
+        {imported && (
+          <Alert tone="success" title="Posting read: check the fields below">
+            <p>Correct anything that is wrong, then save.{imported.missing.length > 0 && ` Not stated in the posting: ${imported.missing.map((name) => name.replace('_name', '').replace('_text', '')).join(', ')}.`}</p>
+            {imported.notes.map((note) => (
+              <p key={note} className="small">
+                {note}
+              </p>
+            ))}
+          </Alert>
+        )}
+      </section>
       <section className="card">
         {serverError !== null && !duplicateUrl && <ErrorAlert error={serverError} cooldownSeconds={create.cooldownSeconds} />}
         <form onSubmit={handleSubmit} noValidate aria-busy={create.pending}>

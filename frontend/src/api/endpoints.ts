@@ -3,6 +3,9 @@ import type {
   AnalyzedJob,
   AnalyzedProfileEntry,
   AnalyzeResponse,
+  CatalogFilterOptions,
+  CatalogPage,
+  CatalogQuery,
   CurrentUser,
   Job,
   JobInput,
@@ -10,11 +13,17 @@ import type {
   MatchList,
   MatchResponse,
   Meta,
+  ImportPreview,
   Profile,
   ProfileAnalysisPayload,
   ProfileInput,
+  RecommendationPage,
   TokenResponse,
 } from './types';
+
+function cleanQuery(query: Record<string, string | number | boolean | undefined>) {
+  return Object.fromEntries(Object.entries(query).filter(([, value]) => value !== undefined && value !== ''));
+}
 
 export const api = {
   meta: () => apiRequest<Meta>('/meta', { auth: false }),
@@ -54,6 +63,12 @@ export const api = {
       method: 'POST',
       query: forceRematch ? { force_rematch: true } : undefined,
     }),
+  catalogJobs: (query: CatalogQuery) => apiRequest<CatalogPage>('/catalog/jobs', { query: cleanQuery({ ...query }) }),
+  catalogFilters: () => apiRequest<CatalogFilterOptions>('/catalog/filters'),
+  recommendations: (userId: number, profileId: number, query: CatalogQuery & { include_ineligible?: boolean }) =>
+    apiRequest<RecommendationPage>(`/users/${userId}/profiles/${profileId}/recommendations`, { query: cleanQuery({ ...query }) }),
+  importPreview: (url: string) => apiRequest<ImportPreview>('/jobs/import/preview', { method: 'POST', json: { url } }),
+
   listMatches: (userId: number, profileId: number) =>
     apiRequest<MatchList>(`/users/${userId}/profiles/${profileId}/matches`, { query: { limit: 500 } }),
 };

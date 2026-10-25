@@ -30,8 +30,8 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 | W8 | HTTPS, secrets, backups, log hygiene | todo | Depends on D2 |
 | W9 | Fix stale version list in `MATCHING_CONTRACT.md` | todo | Documentation only |
 | W10 | Phase 1: companies, multi-source connectors (Arbeitnow, Greenhouse, Lever, Ashby), bounded admin sync | in review | See "Scope extension task" below. No live GET was possible here (network policy 403); the 30 board ids are unverified candidates, disabled until a live check passes |
-| W11 | Phase 2: catalog browse and "Jobs for me" (backend and web client) | todo | |
-| W12 | Phase 2: URL import (ATS APIs, JobPosting JSON-LD, SSRF protections) | todo | |
+| W11 | Phase 2: catalog browse and "Jobs for me" (backend and web client) | in review | `GET /catalog/jobs`, `GET /catalog/filters`, `GET /users/{id}/profiles/{id}/recommendations`; screens `/catalog`, `/for-you` |
+| W12 | Phase 2: URL import (ATS APIs, JobPosting JSON-LD, SSRF protections) | in review | `POST /jobs/import/preview`, plus the import box on `/jobs/new`. Not tried against live sites (network policy) |
 | W13 | Phase 3: motivation letters (TR/EN/DE, versions, quota, fake provider) | todo | |
 
 ## Acceptance criteria
@@ -73,11 +73,16 @@ from it.
     - CLI `backend/scripts/sync_catalog.py`;
     - 30 unverified candidate boards in `backend/app/data/company_boards.json`;
     - offline tests.
-- **Next:** reviewer on phase 1, then phase 2:
-  1. catalog browse;
-  2. recommendations;
-  3. URL import;
-  4. the web client screens.
+  - phase 1 review: changes requested, fixed in `87bc5d4`;
+  - **phase 2 code:**
+    - `backend/routers/catalog.py`;
+    - `backend/app/url_import.py`, and its route in `routers/jobs.py`;
+    - screens `/catalog`, `/for-you` and the import box;
+    - Vitest and e2e (`e2e/discovery.spec.ts`).
+- **Next:**
+  1. reviewer on phase 1 fixes and phase 2;
+  2. phase 3 (motivation letters);
+  3. the draft PR.
 - **Environment limits found:**
   - The cloud network policy answers 403 to `boards-api.greenhouse.io`,
     `api.lever.co`, `api.ashbyhq.com` and `www.arbeitnow.com`. Live GETs

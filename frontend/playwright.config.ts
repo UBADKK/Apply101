@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from '@playwright/test';
+import { sandboxDataEnv } from './e2e/sandbox';
 
 const frontendDir = dirname(fileURLToPath(import.meta.url));
 
@@ -40,15 +41,11 @@ const python =
 
 const backendEnv: Record<string, string> = {
   ...(process.env as Record<string, string>),
-  APPLY101_LOAD_DOTENV: '0',
-  APPLY101_DATABASE_URL: `sqlite:///${join(sandbox, 'e2e.db').replace(/\\/g, '/')}`,
-  APPLY101_UPLOAD_DIR: join(sandbox, 'uploads'),
-  APPLY101_ANALYSIS_PROVIDER: 'fake',
+  ...sandboxDataEnv(sandbox),
   APPLY101_CORS_ORIGINS: `http://localhost:${frontendPort}`,
   JWT_SECRET_KEY: randomBytes(48).toString('base64url'),
   // Short per-user cooldown so the 429 path is exercised without a long wait.
   JOB_ANALYSIS_USER_SUCCESS_COOLDOWN_SECONDS: '30',
-  OPENAI_API_KEY: '',
 };
 
 export default defineConfig({

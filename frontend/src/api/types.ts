@@ -239,3 +239,88 @@ export interface MatchList {
   returned_count: number;
   results: SavedMatch[];
 }
+
+export type WorkMode = 'remote' | 'hybrid' | 'onsite';
+
+export interface CatalogJob {
+  job_id: number;
+  title: string;
+  company_name: string | null;
+  company_id: number | null;
+  location: string | null;
+  country_code: string | null;
+  work_mode: WorkMode | null;
+  source: string | null;
+  source_label: string | null;
+  attribution: string | null;
+  url: string;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+  source_created_at: number | null;
+  remote_note: string | null;
+  has_current_analysis?: boolean;
+}
+
+export interface CatalogPage {
+  total: number;
+  page: number;
+  page_size: number;
+  items: CatalogJob[];
+}
+
+export interface CatalogFilterOptions {
+  sources: { source: string; label: string; count: number }[];
+  countries: { country_code: string; count: number }[];
+  work_modes: WorkMode[];
+}
+
+export interface CatalogQuery {
+  q?: string;
+  country?: string;
+  work_mode?: string;
+  source?: string;
+  page?: number;
+  page_size?: number;
+}
+
+export interface Recommendation extends CatalogJob {
+  eligibility_status: EligibilityStatus;
+  overall_score: number;
+  recommendation: string;
+  summary: string;
+  strengths: string[];
+  weaknesses: string[];
+  hard_fail_reasons: MatchReason[];
+  review_reasons: MatchReason[];
+  dealbreaker_warnings: string[];
+}
+
+export interface RecommendationCoverage {
+  active_jobs: number;
+  analyzed_jobs: number;
+  evaluated_jobs: number;
+  not_analyzed_jobs: number;
+  pool_limit: number;
+  capped: boolean;
+  status_counts: Record<EligibilityStatus, number>;
+}
+
+export interface RecommendationPage {
+  match_version: string;
+  coverage: RecommendationCoverage;
+  include_ineligible: boolean;
+  total: number;
+  page: number;
+  page_size: number;
+  items: Recommendation[];
+}
+
+export interface ImportPreview {
+  status: 'ok';
+  source: 'greenhouse' | 'lever' | 'ashby' | 'json_ld';
+  url: string;
+  fields: { title: string | null; company_name: string | null; location: string | null; description_text: string | null };
+  work_mode: WorkMode | null;
+  missing: string[];
+  notes: string[];
+}

@@ -5,7 +5,9 @@ import { DemoBanner } from './DemoBanner';
 const NAV_ITEMS = [
   { to: '/', label: 'Overview', end: true },
   { to: '/profile', label: 'Profile', end: false },
-  { to: '/jobs', label: 'Jobs', end: false },
+  { to: '/catalog', label: 'Job pool', end: false },
+  { to: '/for-you', label: 'For me', end: false },
+  { to: '/jobs', label: 'My jobs', end: false },
   { to: '/matches', label: 'Matches', end: false },
 ];
 

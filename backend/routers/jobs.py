@@ -35,6 +35,14 @@ from ..app.analysis_contract import (
 )
 from ..app.job_analysis_sanitizer import sanitize_job_analysis_requirements
 from ..app.catalog_sync import STATUS_CLOSED, job_content_hash
+from ..app import url_import
+from ..app.job_sources import HttpClient
+from ..app.rate_limiting import (
+    RateLimiter,
+    ReservationOutcome,
+    get_rate_limiter,
+    reserve_import_preview,
+)
 from ..app.openai_client import (
     ANALYSIS_SERVICE_NOT_CONFIGURED_DETAIL,
     create_openai_client_or_none,
@@ -300,6 +308,44 @@ def create_manual_job(
     db.refresh(new_job)
 
     return new_job
+
+
+def make_import_http_client() -> HttpClient:
+    """Replaced in tests; the real client reads the ATS public APIs."""
+    return HttpClient(timeout_seconds=10, max_retries=0)
+
+
+def _import_fetch(url: str, **kwargs):
+    """Replaced in tests; the real fetch is url_import.guarded_get."""
+    return url_import.guarded_get(url, **kwargs)
+
+
+@router.post("/import/preview")
+def preview_job_import(
+    payload: schemas.JobImportPreviewRequest,
+    current_user: models.User = Depends(get_current_user),
+    rate_limiter: RateLimiter = Depends(get_rate_limiter),
+):
+    """Reads a job from a supported ATS link or a page's JobPosting JSON-LD
+    and returns the fields for the user to correct. Saves nothing; the user
+    saves the corrected job with POST /jobs/manual. Every failure answers
+    with a stable error_code and the advice to paste the job text."""
+    reservation = reserve_import_preview(rate_limiter, user_id=current_user.user_id)
+    if reservation.outcome != ReservationOutcome.GRANTED:
+        retry_after = reservation.retry_after_seconds or 60
+        raise HTTPException(
+            status_code=429,
+            detail={"error_code": "ERR_IMPORT_RATE_LIMITED", "message": "Too many imports. Try again later."},
+            headers={"Retry-After": str(retry_after)},
+        )
+    try:
+        preview = url_import.preview_url(payload.url, http=make_import_http_client(), fetch=_import_fetch)
+    except url_import.ImportError_ as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"error_code": exc.code, "message": str(exc), "fallback": "paste_text"},
+        )
+    return {"status": "ok", **preview.as_dict()}
 
 
 @router.get("/analyzed")
