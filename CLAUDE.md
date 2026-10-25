@@ -449,6 +449,7 @@ python -m unittest discover backend/tests
 Plain `python -m unittest discover` from the root runs 0 tests because `backend/` has no `__init__.py`.
 
 On Windows, use the project venv: `.venv/Scripts/python.exe -m unittest ...`.
+On Linux, use `.venv/bin/python -m unittest ...` (setup in `frontend/README.md`).
 
 Tests must only use throwaway SQLite databases and temporary directories.
 They must never import `backend.app.main`, load `.env`, or call the real

@@ -14,13 +14,23 @@ const frontendDir = dirname(fileURLToPath(import.meta.url));
  *   analysis provider and no OpenAI key -- never the real apply101.db,
  *   .env or uploads/;
  * - the production build of the web client (vite preview).
- * Runs in the installed Microsoft Edge (no browser download). Override the
- * backend interpreter with APPLY101_PYTHON.
+ * Runs in the installed Microsoft Edge by default (no browser download).
+ * APPLY101_E2E_BROWSER=chromium runs in Chromium instead, and
+ * APPLY101_E2E_CHROMIUM_PATH points it at an installed Chromium binary.
+ * Override the backend interpreter with APPLY101_PYTHON.
  */
 const repoRoot = resolve(frontendDir, '..');
 // Created once: worker processes load this config again but inherit the env.
 const sandbox = process.env.APPLY101_E2E_SANDBOX ?? mkdtempSync(join(tmpdir(), 'apply101-e2e-'));
 process.env.APPLY101_E2E_SANDBOX = sandbox;
+const browser = process.env.APPLY101_E2E_BROWSER || 'msedge';
+if (browser !== 'msedge' && browser !== 'chromium') {
+  throw new Error(`APPLY101_E2E_BROWSER must be msedge or chromium, not ${browser}`);
+}
+const chromiumPath = process.env.APPLY101_E2E_CHROMIUM_PATH;
+if (chromiumPath && browser !== 'chromium') {
+  throw new Error('APPLY101_E2E_CHROMIUM_PATH needs APPLY101_E2E_BROWSER=chromium');
+}
 const backendPort = 8011;
 const frontendPort = 4173;
 const python =
@@ -49,7 +59,9 @@ export default defineConfig({
   reporter: [['list']],
   use: {
     baseURL: `http://localhost:${frontendPort}`,
-    channel: 'msedge',
+    browserName: 'chromium',
+    channel: browser === 'msedge' ? 'msedge' : undefined,
+    launchOptions: chromiumPath ? { executablePath: chromiumPath } : {},
     headless: true,
     viewport: { width: 1280, height: 900 },
     locale: 'en-GB',

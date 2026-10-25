@@ -15,8 +15,22 @@ Flow:
 
 ## Requirements
 
-- Node.js 20.19 or newer (tested with 24.22.1 LTS) and npm.
+- Node.js 20.19 or newer and npm. Tested with 24.22.1 LTS on Windows and
+  22.22.0 on Linux.
 - The backend from the repository root, with its Python venv in `.venv/`.
+
+### Linux setup
+
+From the repository root:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+(cd frontend && npm ci)
+```
+
+`npm ci` installs exactly what `package-lock.json` lists. The venv and
+`node_modules/` are gitignored.
 
 ## Settings
 
@@ -82,7 +96,7 @@ web client never re-sends an analysis by itself.
 | `npm run build` | Typecheck, then a production build into `dist/` |
 | `npm run preview` | Serves `dist/` on port 4173 |
 | `npm test` | Unit and flow tests (Vitest, Testing Library, jsdom) |
-| `npm run e2e` | End-to-end tests in the installed Microsoft Edge (Playwright, no browser download) |
+| `npm run e2e` | End-to-end tests in the installed Microsoft Edge by default (Playwright, no browser download) |
 
 `npm run e2e` starts its own servers on ports 8011 and 4173:
 - an isolated backend: a new temp directory, `.env` off, a random JWT
@@ -94,6 +108,27 @@ It then runs the whole flow with two users, desktop and mobile viewports,
 and the error states. Screenshots are written to `e2e/screenshots/`
 (gitignored). Set `APPLY101_PYTHON` to use another Python interpreter for
 the backend.
+
+The browser is chosen with two variables:
+
+| Variable | Values | Default |
+|---|---|---|
+| `APPLY101_E2E_BROWSER` | `msedge` (installed Microsoft Edge) or `chromium` | `msedge` |
+| `APPLY101_E2E_CHROMIUM_PATH` | path to an installed Chromium binary; only with `chromium` | Playwright's own Chromium |
+
+Without `APPLY101_E2E_CHROMIUM_PATH`, `chromium` needs the browser build
+that matches `@playwright/test` (`npx playwright install chromium`). On a
+machine with a preinstalled Chromium, point at it instead, for example in a
+Claude Code cloud session:
+
+```bash
+APPLY101_E2E_BROWSER=chromium \
+APPLY101_E2E_CHROMIUM_PATH=/opt/pw-browsers/chromium \
+npm run e2e
+```
+
+That Chromium (153) is older than the build `@playwright/test` 1.64.1
+expects (156), and all e2e tests passed with it on 2026-10-25.
 
 ## Notes
 

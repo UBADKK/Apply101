@@ -23,7 +23,7 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 | W1 | Configurable database URL and upload directory, explicit `.env` loading | done | `APPLY101_DATABASE_URL`, `APPLY101_UPLOAD_DIR`, `APPLY101_LOAD_DOTENV`; defaults unchanged |
 | W2 | Fake analysis provider for development and end-to-end tests | done | `APPLY101_ANALYSIS_PROVIDER=fake`, only with a non-default database and upload directory; no fallback |
 | W3 | Per-user limit for profile analysis | todo | Depends on D3 |
-| W4 | Web client and CORS | in review | Draft PR [UBADKK/Apply101#26](https://github.com/UBADKK/Apply101/pull/26) from `feat/online-mvp-web-client`; verified locally (Vitest, Playwright in Edge); reviewer approved; see "W4 task" below |
+| W4 | Web client and CORS | in review | Draft PR [UBADKK/Apply101#26](https://github.com/UBADKK/Apply101/pull/26) from `feat/online-mvp-web-client`; verified locally (Vitest, Playwright in Edge) and in a Linux cloud session (Playwright in Chromium); reviewer approved; see "W4 task" below |
 | W5 | Hosting and database setup | todo | Depends on D2 |
 | W6 | Portable stored CV paths | todo | Existing rows store OS-specific relative paths; a configured upload dir on Windows stores mixed separators (`C:/.../uploads\user_1_profile_1_cv.pdf`) |
 | W7 | Account deletion removes CV files | todo | |
@@ -113,8 +113,10 @@ that an interrupted session can resume.
   in Git Bash (no system PATH change).
 - **npm:** npm 11 skips package install scripts. esbuild still works,
   because its `@esbuild/win32-x64` binary comes as an optional dependency.
-- **Playwright** runs against the installed Edge (`channel: 'msedge'`), with
-  no browser download. It starts its own isolated backend on port 8011 and
+- **Playwright** runs against the installed Edge by default, with no
+  browser download. `APPLY101_E2E_BROWSER=chromium` and
+  `APPLY101_E2E_CHROMIUM_PATH` select Chromium instead (see
+  `frontend/README.md`). It starts its own isolated backend on port 8011 and
   `vite preview` on port 4173; screenshots go to `frontend/e2e/screenshots/`,
   which is gitignored.
 - **API facts:**
@@ -130,6 +132,24 @@ that an interrupted session can resume.
   them imports `backend.app.main`.
   - Backend: `.venv/Scripts/python.exe -m unittest discover backend/tests`
   - Hook: `.venv/Scripts/python.exe -m unittest discover -s .claude/hooks -p "test_*.py"`
+  - On Linux, use `.venv/bin/python` in both commands.
+- **Linux setup** (for example a Claude Code cloud session), from the
+  repository root:
+
+  ```bash
+  python3 -m venv .venv
+  .venv/bin/python -m pip install -r requirements.txt
+  (cd frontend && npm ci)
+  ```
+
+  End-to-end tests in a cloud session use its preinstalled Chromium:
+
+  ```bash
+  cd frontend
+  APPLY101_E2E_BROWSER=chromium \
+  APPLY101_E2E_CHROMIUM_PATH=/opt/pw-browsers/chromium \
+  npm run e2e
+  ```
 - Runtime configuration (`backend/app/config.py`, `backend/app/openai_client.py`).
   Every default is the previous behaviour.
 
@@ -148,7 +168,8 @@ that an interrupted session can resume.
   - analyses come from the fake provider, so no OpenAI call is made.
 
   It was verified on 2026-10-22 with Git Bash. On Linux or macOS, drop the
-  `cygpath -m` call and use `.venv/bin/python`.
+  `cygpath -m` call and use `.venv/bin/python`; that variant started and
+  answered `GET /meta` with the fake provider on Linux on 2026-10-25.
 
   ```bash
   SANDBOX="$(cygpath -m "$(mktemp -d)")"
@@ -174,6 +195,38 @@ that an interrupted session can resume.
   second job within 60 seconds returns 429 with `Retry-After`.
 
 ## Log
+
+### 2026-10-25: W4 checked in a Linux cloud session
+- **Code:** branch `feat/online-mvp-web-client` at `e5ada5c` (PR #26 head).
+  W4 was not changed.
+- **Setup:**
+  - Python 3.13.17 venv with `requirements.txt`;
+  - Node 22.22.0 with npm 10.9.4, and `npm ci` from the lockfile. No
+    incompatibility came up, so Node was not changed.
+  - No dependency or lockfile changed.
+- **Change:** `frontend/playwright.config.ts` takes the browser from
+  `APPLY101_E2E_BROWSER` (`msedge` by default, or `chromium`) and an
+  optional `APPLY101_E2E_CHROMIUM_PATH`. Empty values count as unset, and
+  invalid values stop the run with an error. Without them the run still asks
+  for Edge.
+- **Review:** project-reviewer approved with no blocking findings. Its
+  minor note on an empty `APPLY101_E2E_BROWSER` was fixed afterwards (it now
+  means the default), and e2e passed again.
+- **Checks in the cloud session:**
+  - backend 833 OK; hook 25 OK;
+  - typecheck and build pass; Vitest 29 OK (6 files);
+  - Playwright 5 OK in the preinstalled Chromium 153
+    (`/opt/pw-browsers/chromium`), with the isolated backend: temp
+    database and uploads, `.env` off, fake provider, no OpenAI key.
+  - The Linux variant of the demo command started and `GET /meta` returned
+    `{"analysis_provider":"fake","demo":true}`.
+- **Known points:**
+  - `@playwright/test` 1.64.1 expects Chromium 156; the preinstalled one is
+    153. All tests passed with it, but the version gap remains.
+  - `npm audit` reports 3 advisories in dev dependencies (Vitest's
+    `tinypool` and `@vitest/mocker`). Their fix is a major Vitest upgrade, so
+    it is left for a separate change.
+  - The real `apply101.db`, `.env` and `uploads/` were not opened.
 
 ### 2026-10-23: W4 review rounds
 - **Round 1** (`9b46f2b`):
