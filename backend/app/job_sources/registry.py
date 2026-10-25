@@ -1,7 +1,8 @@
 """The job sources, their connectors and their reuse terms.
 
-terms_checked records whether the source's terms of use were checked
-against the official documentation. A source with auto_publish False is
+terms_checked records whether the source's published terms (and, where
+reachable, its API documentation) were read; it never means reuse is
+permitted. The terms_note says what was read and found. A source with auto_publish False is
 never synced into the shared catalog without an explicit acknowledgement:
 per-company sources when an admin enables a board with acknowledge_terms
 (routers/catalog_admin.py); Arbeitnow, which has no boards, on every sync
@@ -75,10 +76,10 @@ SOURCES: dict[str, SourceInfo] = {
         auto_publish=False,
         terms_note=(
             "Checked 2026-10-25: greenhouse.com/legal publishes only customer agreements "
-            "(Master subscription agreement, DPA) and policies; there are no published "
-            "terms that allow or forbid third parties to reuse postings from the public "
-            "Job Board API. developers.greenhouse.io (the API documentation) could not be "
-            "reached. Without an explicit permission, boards stay off until an admin "
+            "(Master subscription agreement, DPA) and policies, and contains no terms that "
+            "allow or forbid third parties to reuse postings from the public Job Board API. "
+            "developers.greenhouse.io (the API documentation) could not be reached, so its "
+            "own wording is not checked. Without an explicit permission, boards stay off until an admin "
             "acknowledges this (ideally with the company's consent)."
         ),
         fetch_board=greenhouse.fetch_board,

@@ -710,8 +710,8 @@ class CatalogBoardCreate(BaseModel):
 
 class CatalogBoardUpdate(BaseModel):
     is_enabled: bool
-    # Required to enable a board of a source whose terms were not checked
-    # (registry auto_publish False).
+    # Required to enable a board of a source that is not published
+    # automatically (registry auto_publish False; currently every source).
     acknowledge_terms: bool = False
 
 

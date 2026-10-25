@@ -389,9 +389,10 @@ that an interrupted session can resume.
 The project owner opened the terms hosts. Everything below was read-only.
 - **Greenhouse:** greenhouse.com/legal publishes only customer agreements
   (Master subscription agreement, DPA) and policies.
-  - There are no published terms that allow or forbid third parties to
-    reuse postings from the public Job Board API.
-  - developers.greenhouse.io, the API documentation, is still unreachable.
+  - It contains no terms that allow or forbid third parties to reuse
+    postings from the public Job Board API.
+  - developers.greenhouse.io, the API documentation, is still unreachable,
+    so its own wording is not checked.
 - **Lever:** lever.co/legal/terms-of-service governs Lever customers (Order
   Form) and says nothing about third parties reading public postings.
   - The postings API README describes the API as a way for a company to
@@ -404,6 +405,10 @@ The project owner opened the terms hosts. Everything below was read-only.
   - ashbyhq.com/terms is the customer agreement and says nothing about
     third parties.
 - **Result:** none of the three grants third-party reuse explicitly.
+  - "Checked" means the published terms were read, not that reuse is
+    permitted.
+  - The 409 code `ERR_SOURCE_TERMS_UNCHECKED` keeps its name for
+    compatibility and means "not published automatically".
   - They are recorded as checked, and none is published automatically: a
     board is enabled only with `acknowledge_terms`, ideally with the
     company's consent.

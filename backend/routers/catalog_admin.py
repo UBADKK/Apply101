@@ -140,6 +140,8 @@ def update_board(
         raise _error(404, "ERR_BOARD_NOT_FOUND", "Board not found.")
     info = source_info(board.source)
     if payload.is_enabled and info is not None and not info.auto_publish and not payload.acknowledge_terms:
+        # The code name is kept for client compatibility; it means "not
+        # published automatically", whether or not the terms were read.
         raise _error(
             409,
             "ERR_SOURCE_TERMS_UNCHECKED",
