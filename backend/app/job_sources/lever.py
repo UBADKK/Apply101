@@ -102,7 +102,8 @@ def _posting(board_token: str, item) -> NormalizedPosting | str:
 
 def _description(item: dict) -> str:
     parts = [clean_text(item.get("descriptionPlain")) if isinstance(item.get("descriptionPlain"), str) else html_to_text(item.get("description"))]
-    for entry in item.get("lists") or []:
+    lists = item.get("lists")
+    for entry in lists if isinstance(lists, list) else []:
         if isinstance(entry, dict):
             heading = clean_text(entry.get("text")) if isinstance(entry.get("text"), str) else ""
             body = html_to_text(entry.get("content"))

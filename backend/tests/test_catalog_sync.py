@@ -257,6 +257,91 @@ class ApplyPostingsTests(CatalogSyncBase):
         self.assertEqual(self.catalog_jobs()[0].job_status, "active")
 
 
+class ReviewFixTests(CatalogSyncBase):
+    def test_complete_arbeitnow_fetch_closes_unseen_legacy_jobs(self):
+        seen = arbeitnow_item("seen")
+        legacy_seen = models.Job(title=seen["title"], company_name=seen["company_name"], location="Berlin", url=seen["url"],
+                                 description_text="Python in Berlin.", source="arbeitnow")
+        legacy_gone = models.Job(title="Gone", url="https://www.arbeitnow.com/jobs/gone", description_text="x", source="arbeitnow")
+        manual = models.Job(title="Other source", url="https://example.test/legacy-other", description_text="x", source="greenhouse")
+        self.db.add_all([legacy_seen, legacy_gone, manual])
+        self.db.commit()
+        from backend.app.job_sources import arbeitnow
+
+        def fetch(complete_pages):
+            routes = {f"{ARBEITNOW}?page=1": FakeResponse(200, arbeitnow_page([seen]))}
+            if complete_pages:
+                routes[f"{ARBEITNOW}?page=2"] = FakeResponse(200, arbeitnow_page([]))
+            return arbeitnow.fetch_board(HttpClient(FakeSession(routes), sleep=lambda s: None), max_pages=2)
+
+        partial = catalog_sync.apply_postings(self.db, source="arbeitnow", board=None, fetch=fetch(False), now=NOW)
+        self.db.commit()
+        self.assertEqual(partial.closed, 0)
+        complete = catalog_sync.apply_postings(self.db, source="arbeitnow", board=None, fetch=fetch(True), now=NOW)
+        self.db.commit()
+        self.assertEqual(complete.closed, 1)
+        self.db.expire_all()
+        statuses = {job.title: job.job_status for job in self.catalog_jobs()}
+        self.assertEqual(statuses[seen["title"]], "active")
+        self.assertEqual(statuses["Gone"], "closed")
+        self.assertEqual(statuses["Other source"], "unknown")
+
+    def test_copy_becomes_primary_when_primary_disappears(self):
+        board = self.board()
+        self.apply([posting(1)], board=board)
+        self.apply([posting(1, source="lever", source_key="acme:x1")], board=None, source="lever", complete=False)
+        self.apply([], board=board)  # primary gone, copy still active
+        copy = self.db.query(models.JobSourceRecord).filter_by(source="lever").one()
+        self.assertTrue(copy.is_primary)
+        self.apply([posting(1, source="lever", source_key="acme:x1", description_text="Updated by the copy")], board=None, source="lever", complete=False)
+        self.assertEqual(self.catalog_jobs()[0].description_text, "Updated by the copy")
+
+    def test_disabling_a_board_closes_its_jobs(self):
+        board = self.board()
+        self.apply([posting(1), posting(2)], board=board)
+        closed = catalog_sync.close_board_jobs(self.db, board.board_id, NOW)
+        self.db.commit()
+        self.assertEqual(closed, 2)
+        self.assertTrue(all(job.job_status == "closed" for job in self.catalog_jobs()))
+
+    def test_board_token_with_newline_is_invalid(self):
+        self.assertFalse(catalog_sync.valid_board_token("acme\n"))
+        self.assertTrue(catalog_sync.valid_board_token("acme-1.eu_x"))
+
+    def test_lost_lease_stops_the_run(self):
+        self.board("b1")
+        self.board("b2")
+        db = self.db
+
+        def steal(seconds):
+            db.query(models.AnalysisGuard).update({models.AnalysisGuard.owner_token: "someone-else"})
+            db.commit()
+
+        with self.assertRaises(catalog_sync.SyncAlreadyRunning):
+            catalog_sync.run_sync(db, HttpClient(FakeSession({}), sleep=lambda s: None), include_arbeitnow=True,
+                                  sleep=steal, now_fn=lambda: NOW)
+
+    def test_time_budget_stops_starting_boards(self):
+        self.board("b1")
+        self.board("b2")
+        ticks = iter([0, 0, catalog_sync.SYNC_TIME_BUDGET_SECONDS + 1, 10**6])
+        result = catalog_sync.run_sync(self.db, HttpClient(FakeSession({}), sleep=lambda s: None), include_arbeitnow=False,
+                                       sleep=lambda s: None, now_fn=lambda: NOW, clock=lambda: next(ticks))
+        self.assertEqual((result["boards_synced"], result["stopped_reason"]), (1, "TIME_BUDGET_REACHED"))
+        self.assertIsNone(self.db.query(models.AnalysisGuard).one().owner_token)
+
+    def test_malformed_fields_are_skipped_not_fatal(self):
+        from backend.app.job_sources import greenhouse, lever
+
+        jobs = {"jobs": [{"id": 1, "title": "T", "absolute_url": "https://x.test/1", "content": 123},
+                         {"id": 2, "title": "Ok", "absolute_url": "https://x.test/2", "content": "&lt;p&gt;fine&lt;/p&gt;"}]}
+        fetch = greenhouse.fetch_board(HttpClient(FakeSession({GH_JOBS: FakeResponse(200, jobs)}), sleep=lambda s: None), "acme")
+        self.assertTrue(fetch.complete)
+        self.assertEqual([p.title for p in fetch.postings], ["Ok"])
+        item = {"id": "a", "text": "T", "hostedUrl": "https://x.test/a", "descriptionPlain": "text", "lists": 5, "categories": "bad", "workplaceType": 3}
+        self.assertEqual(lever._posting("x", item).description_text, "text")
+
+
 class SyncRunTests(CatalogSyncBase):
     def http(self, routes):
         return HttpClient(FakeSession(routes), sleep=lambda s: None)

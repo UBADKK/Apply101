@@ -2,7 +2,7 @@
 bounded syncs and their run records. Normal users never reach these routes
 (get_current_admin)."""
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -145,11 +145,20 @@ def update_board(
             f"The terms of {info.label} are not checked ({info.terms_url}). "
             "Check them, then enable the board with acknowledge_terms=true.",
         )
+    now = catalog_sync.utcnow()
+    closed_jobs = 0
+    if payload.is_enabled and not board.is_enabled and info is not None and not info.auto_publish:
+        note = f"Terms of {info.label} acknowledged by admin user_id={current_admin.user_id} at {now.isoformat()} when enabling."
+        board.notes = f"{board.notes}\n{note}" if board.notes else note
+    if not payload.is_enabled and board.is_enabled:
+        # Disabling unpublishes: the board's jobs close unless another
+        # source still lists them.
+        closed_jobs = catalog_sync.close_board_jobs(db, board.board_id, now)
     board.is_enabled = payload.is_enabled
-    board.updated_at = catalog_sync.utcnow()
+    board.updated_at = now
     db.commit()
     company = db.query(models.Company).filter(models.Company.company_id == board.company_id).first()
-    return _board_out(board, company)
+    return {**_board_out(board, company), "closed_jobs": closed_jobs}
 
 
 @router.post("/boards/{board_id}/check")
@@ -241,16 +250,23 @@ def catalog_summary(
 ):
     """Active catalog jobs per source and country, and boards per state."""
     catalog = models.Job.created_by_user_id.is_(None)
-    active = models.Job.job_status != catalog_sync.STATUS_CLOSED
+    active = models.Job.job_status == catalog_sync.STATUS_ACTIVE
     by_source = dict(
         db.query(models.Job.source, func.count(models.Job.job_id))
         .filter(catalog, active)
         .group_by(models.Job.source)
         .all()
     )
+    # Catalog jobs no sync has checked yet (legacy POST /jobs/fetch rows).
     legacy_unknown = (
         db.query(func.count(models.Job.job_id))
-        .filter(catalog, models.Job.job_status.is_(None))
+        .filter(
+            catalog,
+            or_(
+                models.Job.job_status.is_(None),
+                models.Job.job_status.notin_([catalog_sync.STATUS_ACTIVE, catalog_sync.STATUS_CLOSED]),
+            ),
+        )
         .scalar()
     )
     by_country = dict(
@@ -272,7 +288,7 @@ def catalog_summary(
     )
     return {
         "active_jobs_by_source": by_source,
-        "jobs_without_status": legacy_unknown,
+        "jobs_not_checked_by_a_sync": legacy_unknown,
         "active_jobs_by_country": by_country,
         "active_jobs_by_work_mode": by_work_mode,
         "boards": [

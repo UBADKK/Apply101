@@ -29,7 +29,7 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 | W7 | Account deletion removes CV files | todo | |
 | W8 | HTTPS, secrets, backups, log hygiene | todo | Depends on D2 |
 | W9 | Fix stale version list in `MATCHING_CONTRACT.md` | todo | Documentation only |
-| W10 | Phase 1: companies, multi-source connectors (Arbeitnow, Greenhouse, Lever, Ashby), bounded admin sync | in review | No live GET possible here (network policy 403); the 30 board ids are unverified candidates, disabled until a live check passes | Scope extension 2026-10-25, see "Scope extension task" below |
+| W10 | Phase 1: companies, multi-source connectors (Arbeitnow, Greenhouse, Lever, Ashby), bounded admin sync | in review | See "Scope extension task" below. No live GET was possible here (network policy 403); the 30 board ids are unverified candidates, disabled until a live check passes |
 | W11 | Phase 2: catalog browse and "Jobs for me" (backend and web client) | todo | |
 | W12 | Phase 2: URL import (ATS APIs, JobPosting JSON-LD, SSRF protections) | todo | |
 | W13 | Phase 3: motivation letters (TR/EN/DE, versions, quota, fake provider) | todo | |
@@ -87,6 +87,35 @@ from it.
   - Connectors follow the documented public response formats as known from
     the providers' documentation. Every board id is recorded as unverified
     and disabled until a live check succeeds (`--check` in the sync CLI).
+
+### Deploying phase 1 on an existing database
+
+1. Back up the database and stop the app.
+2. Run `python -m backend.migrations.phase9_catalog_sources --dry-run`, then
+   run it again without `--dry-run`.
+   - It adds the new columns. Without it, every job query fails with
+     "no such column jobs.company_id", because `create_all` adds new
+     tables but no new columns.
+3. Start the app, then seed the boards (`sync_catalog seed --yes` or
+   `POST /admin/catalog/boards/seed`).
+4. Check every board live (`check --unverified --yes`).
+5. Check each source's terms, and enable the verified boards. A source with
+   unchecked terms needs `acknowledge_terms`, and the acknowledgement is
+   written into the board's notes.
+6. Sync, for example `sync --max-boards 10 --yes`, or with
+   `--include-arbeitnow` to include Arbeitnow.
+
+**Legacy Arbeitnow jobs.** Jobs from the old `POST /jobs/fetch` keep
+`job_status = "unknown"`.
+- The shared pool and "Jobs for me" list only jobs a sync has seen open
+  (`active`).
+- A complete Arbeitnow sync adopts the legacy jobs it sees, and closes the
+  ones it no longer sees.
+
+**Arbeitnow exception, a decision for the project owner.** Arbeitnow keeps
+`auto_publish` although its terms were not checked in this session, because
+the project already used it before. It is synced only with
+`include_arbeitnow`.
 
 ### Design decisions
 

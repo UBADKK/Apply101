@@ -148,7 +148,9 @@ def _retry_after_seconds(value: str | None) -> float | None:
 def html_to_text(raw_html: str | None) -> str:
     """Plain text of an HTML fragment; markup, scripts and styles are
     dropped, never rendered."""
-    soup = BeautifulSoup(raw_html or "", "html.parser")
+    if not isinstance(raw_html, str):
+        return ""
+    soup = BeautifulSoup(raw_html, "html.parser")
     for tag in soup(["script", "style", "noscript", "iframe", "object", "embed"]):
         tag.decompose()
     text = soup.get_text(separator="\n", strip=True)
@@ -157,14 +159,18 @@ def html_to_text(raw_html: str | None) -> str:
 
 def unescaped_html_to_text(escaped_html: str | None) -> str:
     """For sources that send HTML entity-escaped markup (Greenhouse)."""
-    return html_to_text(html.unescape(escaped_html or ""))
+    if not isinstance(escaped_html, str):
+        return ""
+    return html_to_text(html.unescape(escaped_html))
 
 
 _CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 def clean_text(value: str | None) -> str:
-    return _CONTROL_CHARS.sub("", value or "").strip()
+    if not isinstance(value, str):
+        return ""
+    return _CONTROL_CHARS.sub("", value).strip()
 
 
 def clean_optional(value: Any, max_chars: int = 300) -> str | None:

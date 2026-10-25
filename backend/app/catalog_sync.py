@@ -40,7 +40,10 @@ from .job_sources import BoardFetch, HttpClient, NormalizedPosting, source_info
 
 SYNC_LOCK_OPERATION_TYPE = "catalog_sync"
 SYNC_LOCK_RESOURCE_ID = 0
-SYNC_LOCK_LEASE_SECONDS = 30 * 60
+SYNC_LOCK_LEASE_SECONDS = 10 * 60
+# A run starts no new board after this many seconds; the lease is renewed
+# before every board, so it never expires while a run is still going.
+SYNC_TIME_BUDGET_SECONDS = 15 * 60
 
 DEFAULT_MAX_BOARDS = 10
 MAX_BOARDS_LIMIT = 50
@@ -66,7 +69,7 @@ def utcnow() -> datetime:
 
 
 def valid_board_token(token: str) -> bool:
-    return isinstance(token, str) and bool(_TOKEN_PATTERN.match(token))
+    return isinstance(token, str) and bool(_TOKEN_PATTERN.fullmatch(token))
 
 
 def normalize_company_name(name: str) -> str:
@@ -335,7 +338,33 @@ def apply_postings(
 
     if fetch.complete:
         counts.closed = _close_unseen(db, source=source, board_id=board_id, seen_record_ids=seen_record_ids, now=now)
+        if source == "arbeitnow" and board_id is None:
+            counts.closed += _close_unseen_legacy_arbeitnow(db, now)
     return counts
+
+
+def _close_unseen_legacy_arbeitnow(db: Session, now: datetime) -> int:
+    """After a complete Arbeitnow fetch (the whole feed was read), legacy
+    Arbeitnow catalog jobs from the old POST /jobs/fetch that were not seen
+    -- seen ones were adopted and now have a record -- are no longer listed:
+    close them."""
+    has_record = db.query(models.JobSourceRecord.record_id).filter(
+        models.JobSourceRecord.job_id == models.Job.job_id
+    ).exists()
+    jobs = (
+        db.query(models.Job)
+        .filter(
+            models.Job.created_by_user_id.is_(None),
+            models.Job.source == "arbeitnow",
+            or_(models.Job.job_status.is_(None), models.Job.job_status != STATUS_CLOSED),
+            ~has_record,
+        )
+        .all()
+    )
+    for job in jobs:
+        job.job_status = STATUS_CLOSED
+        job.closed_at = now
+    return len(jobs)
 
 
 def _close_unseen(db: Session, *, source: str, board_id: int | None, seen_record_ids: set[int], now: datetime) -> int:
@@ -355,17 +384,31 @@ def _close_unseen(db: Session, *, source: str, board_id: int | None, seen_record
         affected_job_ids.add(record.job_id)
     db.flush()
 
+    return _close_jobs_without_active_records(db, affected_job_ids, now)
+
+
+def _close_jobs_without_active_records(db: Session, job_ids: Iterable[int], now: datetime) -> int:
+    """Closes each job with no active record left. A job that keeps an
+    active copy but lost its primary record gets that copy as its new
+    primary, so its content stays updated."""
     closed = 0
-    for job_id in affected_job_ids:
-        still_active = (
-            db.query(models.JobSourceRecord.record_id)
+    for job_id in job_ids:
+        active_records = (
+            db.query(models.JobSourceRecord)
             .filter(
                 models.JobSourceRecord.job_id == job_id,
                 models.JobSourceRecord.is_active == True,  # noqa: E712
             )
-            .first()
+            .order_by(models.JobSourceRecord.record_id.asc())
+            .all()
         )
-        if still_active is not None:
+        if active_records:
+            if not any(record.is_primary for record in active_records):
+                db.query(models.JobSourceRecord).filter(
+                    models.JobSourceRecord.job_id == job_id,
+                    models.JobSourceRecord.is_primary == True,  # noqa: E712
+                ).update({models.JobSourceRecord.is_primary: False}, synchronize_session=False)
+                active_records[0].is_primary = True
             continue
         job = (
             db.query(models.Job)
@@ -429,7 +472,25 @@ def acquire_sync_lock(db: Session, now_epoch: float | None = None) -> str:
     return token
 
 
+def renew_sync_lock(db: Session, token: str, now_epoch: float | None = None) -> None:
+    """Extends the lease; raises SyncAlreadyRunning when it was lost."""
+    now_epoch = time.time() if now_epoch is None else now_epoch
+    updated = (
+        db.query(models.AnalysisGuard)
+        .filter(
+            models.AnalysisGuard.operation_type == SYNC_LOCK_OPERATION_TYPE,
+            models.AnalysisGuard.resource_id == SYNC_LOCK_RESOURCE_ID,
+            models.AnalysisGuard.owner_token == token,
+        )
+        .update({models.AnalysisGuard.lock_expires_at: now_epoch + SYNC_LOCK_LEASE_SECONDS}, synchronize_session=False)
+    )
+    db.commit()
+    if updated != 1:
+        raise SyncAlreadyRunning("The catalog sync lease was lost.")
+
+
 def release_sync_lock(db: Session, token: str) -> None:
+    db.rollback()
     db.query(models.AnalysisGuard).filter(
         models.AnalysisGuard.operation_type == SYNC_LOCK_OPERATION_TYPE,
         models.AnalysisGuard.resource_id == SYNC_LOCK_RESOURCE_ID,
@@ -620,22 +681,34 @@ def run_sync(
     pause_seconds: float = 1.0,
     sleep: Callable[[float], None] = time.sleep,
     now_fn: Callable[[], datetime] = utcnow,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict:
     max_boards = max(1, min(int(max_boards), MAX_BOARDS_LIMIT))
     max_pages = max(1, min(int(max_pages), MAX_PAGES_LIMIT))
     token = acquire_sync_lock(db)
+    started = clock()
     results = []
+    stopped_reason = None
     try:
         if include_arbeitnow:
             results.append(sync_one(db, http, source="arbeitnow", board=None, max_pages=max_pages, now_fn=now_fn))
         boards = select_boards(db, board_ids=board_ids, sources=sources, max_boards=max_boards)
-        for index, board in enumerate(boards):
+        board_ids_to_sync = [board.board_id for board in boards]
+        for index, board_id in enumerate(board_ids_to_sync):
+            if clock() - started > SYNC_TIME_BUDGET_SECONDS:
+                stopped_reason = "TIME_BUDGET_REACHED"
+                break
             if index or include_arbeitnow:
                 sleep(pause_seconds)
+            renew_sync_lock(db, token)
+            board = db.query(models.JobSourceBoard).filter(models.JobSourceBoard.board_id == board_id).first()
+            if board is None or not board.is_enabled:
+                continue
             results.append(sync_one(db, http, source=board.source, board=board, max_pages=max_pages, now_fn=now_fn))
     finally:
         release_sync_lock(db, token)
     return {
+        "stopped_reason": stopped_reason,
         "boards_synced": len(results),
         "max_boards": max_boards,
         "max_pages": max_pages,
@@ -723,3 +796,24 @@ def seed_boards(db: Session, now: datetime, path=None) -> dict:
         )
         created += int(was_created)
     return {"boards_in_file": len(entries), "created": created}
+
+
+
+def close_board_jobs(db: Session, board_id: int, now: datetime) -> int:
+    """When an admin disables a board: its records become inactive and its
+    jobs close unless another source still lists them (no commit)."""
+    records = (
+        db.query(models.JobSourceRecord)
+        .filter(
+            models.JobSourceRecord.board_id == board_id,
+            models.JobSourceRecord.is_active == True,  # noqa: E712
+        )
+        .all()
+    )
+    job_ids = set()
+    for record in records:
+        record.is_active = False
+        record.closed_at = now
+        job_ids.add(record.job_id)
+    db.flush()
+    return _close_jobs_without_active_records(db, job_ids, now)
