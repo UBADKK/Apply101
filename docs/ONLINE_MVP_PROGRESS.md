@@ -29,6 +29,10 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 | W7 | Account deletion removes CV files | todo | |
 | W8 | HTTPS, secrets, backups, log hygiene | todo | Depends on D2 |
 | W9 | Fix stale version list in `MATCHING_CONTRACT.md` | todo | Documentation only |
+| W10 | Phase 1: companies, multi-source connectors (Arbeitnow, Greenhouse, Lever, Ashby), bounded admin sync | in progress | Scope extension 2026-10-25, see "Scope extension task" below |
+| W11 | Phase 2: catalog browse and "Jobs for me" (backend and web client) | todo | |
+| W12 | Phase 2: URL import (ATS APIs, JobPosting JSON-LD, SSRF protections) | todo | |
+| W13 | Phase 3: motivation letters (TR/EN/DE, versions, quota, fake provider) | todo | |
 
 ## Acceptance criteria
 
@@ -40,6 +44,91 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 | AC4 | Analysis | in progress | Web client analyses with the fake provider, 429 countdown without retry, and mocked 503 verified locally; profile analysis limit open (W3); real provider not exercised |
 | AC5 | Reasoned match result | in progress | Web client shows `eligible` (74) and `ineligible` (20, `required_language_missing`) with reasons; saved results reopen and rematch work; `review_required` covered by a unit test only; staging open |
 | AC6 | End to end and operations | todo | Needs W1-W8 |
+
+## Scope extension task (phases 1-3)
+
+The full scope is in [ONLINE_MVP_PLAN.md](ONLINE_MVP_PLAN.md), under "Scope
+extension (2026-10-25)". It was given on 2026-10-25, with a budget of about
+6 active hours.
+
+- **Branch:** `feat/online-mvp-web-client-qf43gs`. It was restarted from
+  `main` at `7056e01`, after PR #26 was merged.
+- **Delivery:** one commit per phase, a draft PR and a reviewer approval of
+  the last head. No merge or deploy.
+
+### Continuation note
+
+Update this note after every step, so that an interrupted session can resume
+from it.
+
+- **Done:**
+  - plan and scope recorded;
+  - code audit of the catalog fetch, analysis currency, matching purity,
+    guards and visibility.
+- **Next:** phase 1, in this order:
+  1. models and migration `phase9_catalog_sources`;
+  2. connectors in `backend/app/job_sources/`;
+  3. the sync service `backend/app/catalog_sync.py`;
+  4. admin routes and the CLI `backend/scripts/sync_catalog.py`;
+  5. the company board list `backend/app/data/company_boards.json`;
+  6. tests with fixtures.
+- **Environment limits found:**
+  - The cloud network policy answers 403 to `boards-api.greenhouse.io`,
+    `api.lever.co`, `api.ashbyhq.com` and `www.arbeitnow.com`. Live GETs
+    are not possible from this session.
+  - The project owner declined WebFetch. Official documentation and the
+    board ids therefore could not be checked online here.
+  - Connectors follow the documented public response formats as known from
+    the providers' documentation. Every board id is recorded as unverified
+    and disabled until a live check succeeds (`--check` in the sync CLI).
+
+### Design decisions
+
+- **Companies and sources:**
+  - `companies`: one row per company.
+  - `job_source_boards`: company, source, board token, region (Lever
+    `global`/`eu`), enabled flag, and verification status and time.
+  - `job_source_records`: one row per source posting
+    (`source` + `source_key` unique). It points at the catalog job it
+    belongs to.
+  - Exact copies are linked to the existing job through a second record. An
+    exact copy means the same public URL, or the same company with the same
+    normalized title, location and content hash. Similar titles are never
+    merged.
+- **Jobs:** new nullable columns `company_id`, `work_mode`, `country_code`,
+  `content_hash` and `closed_at`. `job_status` becomes `active` or `closed`
+  for synced jobs.
+  - Personal (manual and imported) jobs never get a company, and never
+    reach companies or records.
+- **Closing:** only a complete board scan closes jobs. A job is closed when
+  none of its active records were seen. Failed, partial and capped runs
+  close nothing.
+- **Content updates:**
+  - Only the job's primary record updates its content.
+  - A changed content hash marks the job's analyses and matches
+    `is_current = false`, so matching and the saved-match screens no longer
+    treat them as current.
+  - An analysis that runs while the content changes is not written; it
+    returns 409.
+- **Sources and terms:** a registry in code holds each source's
+  attribution, terms URL and whether it may be published automatically.
+  Boards of a source with unclear terms stay disabled until an admin enables
+  them.
+- **Recommendations:**
+  - They call the pure `calculate_backend_match` with the same inputs as the
+    match route, without writes and without analysis calls, over active
+    catalog jobs that have a current analysis.
+  - The response reports coverage (active, analyzed, evaluated, capped).
+    The ranking is eligible, then review_required, then ineligible, then
+    the score.
+  - Matching rules and `MATCH_VERSION` are unchanged.
+- **Letters:**
+  - `cover_letters`, plus `cover_letter_versions` (generated or edited)
+    that hold the grounding facts and gaps.
+  - The version constant is `COVER_LETTER_PROMPT_VERSION` in
+    `analysis_contract.py`.
+  - Per-user rolling quota and an in-flight guard; the fake provider writes
+    a deterministic template.
 
 ## W4 task (web client)
 

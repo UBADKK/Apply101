@@ -51,10 +51,16 @@ no web client and no deployment configuration. W4 adds the web client in
 
 ## Out of scope for the first release
 
-- Fetching or scraping job text from the URL (the user pastes the text).
-- Catalog / job-board fetching for normal users (`/jobs/fetch*` stays
-  admin-only).
-- Batch matching UI (`match-analyzed`), recommendations across the catalog.
+The scope extension below (2026-10-25) replaces three earlier lines of this
+list. They read: "Fetching or scraping job text from the URL", "Catalog /
+job-board fetching for normal users" and "Batch matching UI, recommendations
+across the catalog".
+
+- General scraping. URL import is limited to supported ATS APIs and to
+  JobPosting JSON-LD on pages that robots.txt allows. No login or CAPTCHA
+  bypass, and no scraper for LinkedIn or similar sites.
+- Catalog sync for normal users. Syncing stays admin-only. Normal users only
+  browse the synced catalog.
 - Changes to analysis prompts, eligibility rules, scoring or contract
   versions.
 - Payments, mobile apps, multi-language UI.
@@ -149,6 +155,86 @@ a recorded check on staging does.
   versions" list still says `job_analysis_v8` / `backend_match_v3`, while
   `analysis_contract.py` and the same document further down say
   `job_analysis_v13` / `backend_match_v6`.
+
+## Scope extension (2026-10-25)
+
+Given by the project owner. It widens the manual-only MVP above, and the
+remaining release work (W3, W5-W9, AC6, D2-D6) stays. Hosting and deployment
+are not part of it.
+
+### Phase 1: job and company pool
+- **Connectors:** keep Arbeitnow, and add Greenhouse Job Board, Lever
+  Postings (global and EU) and Ashby public job postings behind one
+  interface.
+  - Check the official documentation and terms of use.
+  - Company board ids are configurable. No API that lists companies
+    globally is assumed.
+- **Company list:** verified companies with a focus on Turkey, Germany and
+  remote work.
+  - The target is 30 boards; missing ones are not made up.
+  - Report counts per source, country and active jobs.
+  - Record source, attribution and reuse terms. Unclear sources are not
+    published automatically.
+- **Sync:** an admin-only, bounded sync command with run records.
+  - It handles pagination, timeouts and 429 with backoff, creates no
+    duplicates when run again, and applies content updates.
+  - A failed or partial run never closes jobs.
+  - A content change that affects analysis means old results are no longer
+    shown as current.
+  - Exact copies across sources are linked; similar titles are not merged
+    blindly.
+- **Companies:** a separate record, with jobs and sources linked to it, so
+  it can later feed company research. CVs, user notes and personal jobs
+  never reach the shared company pool.
+
+### Phase 2: discovery and easy adding
+- **Screens:** a shared pool and a "Jobs for me" screen.
+  - Search, plus filters for country or location, remote or hybrid, and
+    source.
+  - Pagination, the source link and how recent each job is.
+- **Ranking:** analyzed, active jobs are ranked with reasons under the
+  existing matching rules.
+  - The coverage that was computed is shown, and the first page is never
+    presented as the best of the whole pool.
+  - Unknown information is no reason to reject. Remote does not mean every
+    country can work there.
+  - Opening the pool starts no paid analysis. Admins can start catalog
+    analysis in bounded batches with the existing cache and guards.
+- **URL import:**
+  - Sources: supported ATS links, and JobPosting JSON-LD on pages that allow
+    access.
+  - Flow: preview, correction and confirmation, then the job is saved as the
+    user's personal job.
+  - Unsupported, blocked or incomplete pages fall back to pasting the text;
+    nothing is made up.
+  - Protections against SSRF, DNS and redirect tricks, size and time
+    limits, and harmful HTML.
+
+### Phase 3: motivation letter
+- **Flow:** a TR, EN or DE draft from the user's own profile and CV, the job
+  and sourced company information. The user can edit, save, copy and
+  download it as TXT.
+- **Grounding:** missing experience, achievements or company facts are never
+  made up. The facts used and the gaps are shown to the user.
+- **Versions:** regenerating never overwrites an edited draft.
+- **Rules:** user isolation, version records, a quota and error handling.
+- **Providers:** an implementation for the real analysis provider and its
+  deterministic fake. No paid call is made. A fake-provider check is never
+  reported as a check of the real model's writing quality.
+
+### Delivery
+- **Data and tests:**
+  - Temporary databases and upload directories, and the fake AI provider.
+  - Automated tests use fixtures and run without internet.
+  - Migrations are tried on synthetic databases.
+  - Limited live GETs against public sources only where the environment
+    allows them.
+- **Process:** an auditor, developer, reviewer loop, with one commit per
+  phase.
+- **Checks:** backend, hook, frontend typecheck, build and Vitest, and
+  Chromium E2E.
+- **Delivery:** a normal push and a draft PR. No merge, deploy, force push
+  or branch deletion.
 
 ## Open decisions (owner: project owner)
 
