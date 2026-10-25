@@ -31,7 +31,7 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 | W9 | Fix stale version list in `MATCHING_CONTRACT.md` | todo | Documentation only |
 | W10 | Phase 1: companies, multi-source connectors (Arbeitnow, Greenhouse, Lever, Ashby), bounded admin sync | in review | See "Scope extension task" below. Live check on 2026-10-25: 32 boards read, 29 with open jobs; see the log |
 | W11 | Phase 2: catalog browse and "Jobs for me" (backend and web client) | in review | `GET /catalog/jobs`, `GET /catalog/filters`, `GET /users/{id}/profiles/{id}/recommendations`; screens `/catalog`, `/for-you` |
-| W12 | Phase 2: URL import (ATS APIs, JobPosting JSON-LD, SSRF protections) | in review | `POST /jobs/import/preview`, plus the import box on `/jobs/new`. Not tried against live sites (network policy) |
+| W12 | Phase 2: URL import (ATS APIs, JobPosting JSON-LD, SSRF protections) | in review | `POST /jobs/import/preview`, plus the import box on `/jobs/new`. Live: Greenhouse, Lever and Ashby links previewed; the JSON-LD path not tried live (proxy-only environment) |
 | W13 | Phase 3: motivation letters (TR/EN/DE, versions, quota, fake provider) | in review | `backend/routers/cover_letters.py`, `backend/app/cover_letter.py`, migration `phase10_cover_letters`, panel on the job page and `/letters`. Checked with the fake provider only, which is a template: the real model's writing quality is not checked |
 
 ## Acceptance criteria
@@ -102,9 +102,13 @@ from it.
     - the visibility and "made up" wording corrected;
     - the list omits the facts;
     - the Turkish template fixed.
+  - live check of sources and boards done; see the log entry "Live check
+    of sources".
 - **Next:**
-  1. a reviewer pass on the final fix commit;
-  2. live checks of the sources and boards where the network allows them.
+  1. the project owner's review of PR #27;
+  2. the terms of Greenhouse, Lever and Ashby, which could not be reached
+     from here;
+  3. a live JSON-LD import check in an environment without a proxy.
 - **Environment limits found (first part of the session; network opened
   later, see the log entry "Live check of sources"):**
   - The cloud network policy answers 403 to `boards-api.greenhouse.io`,
@@ -153,10 +157,13 @@ disabled, or until a later fetch lists other jobs.
 - Recommendations are computed on every request, with no paid call and up
   to 1000 jobs. Caching or a rate limit is a follow-up.
 
-**Arbeitnow exception, a decision for the project owner.** Arbeitnow keeps
-`auto_publish` although its terms were not checked in this session, because
-the project already used it before. It is synced only with
-`include_arbeitnow`.
+**Arbeitnow, a decision for the project owner.** Arbeitnow keeps
+`auto_publish`.
+- Its API terms were checked on 2026-10-25: a link back to Arbeitnow.com is
+  required, and it is shown on the pool, "Jobs for me" and the job page.
+- Section 2 of its site terms (personal, non-commercial viewing of the
+  site's own materials) still needs the owner's confirmation.
+- It is synced only with `include_arbeitnow`.
 
 ### Design decisions
 
@@ -392,7 +399,9 @@ read-only or used a throwaway database; nothing touched `apply101.db`.
   - Active jobs by source: Greenhouse 2606, Arbeitnow 897, Lever 226,
     Ashby 211; 454 companies; 15 exact copies linked.
   - A second run created 0 new jobs (739 unchanged).
-- **Countries:** only Lever and Ashby send a country code.
+- **Countries:** the connectors read a country code from Lever and Ashby.
+  In the live data only Lever sent one; every Ashby board answered with
+  none.
   - Structured country codes: TR 85, US 19, BR 17, DE 9, others below 10;
     3734 jobs have none.
   - Text hints in location or work mode: Germany 751, Turkey 85,
@@ -406,7 +415,8 @@ read-only or used a throwaway database; nothing touched `apply101.db`.
 - **Terms:**
   - Arbeitnow, checked (arbeitnow.com/terms, section 11): the API is
     provided as is; using it requires a link back to Arbeitnow.com, now
-    shown with every Arbeitnow job; the permission is revocable.
+    shown on the pool, "Jobs for me" and the job page; the permission is
+    revocable.
   - Arbeitnow section 2 limits copying the site's own materials to
     personal, non-commercial viewing. The project owner should confirm
     that showing API jobs fits.

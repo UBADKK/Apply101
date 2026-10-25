@@ -55,7 +55,8 @@ SOURCES: dict[str, SourceInfo] = {
         terms_note=(
             "Checked 2026-10-25 (arbeitnow.com/terms, section 11 API): the API is "
             "provided as is, using it requires a link back to Arbeitnow.com on the "
-            "platform (shown with every Arbeitnow job), and the permission can be "
+            "platform (shown with every Arbeitnow job in the pool, Jobs for me and "
+            "the job page), and the permission can be "
             "revoked at any time. Section 2 limits copying the website's own "
             "materials to personal, non-commercial viewing; the project owner should "
             "confirm that showing API jobs in Apply101 fits."

@@ -128,6 +128,10 @@ export interface Job {
   location: string | null;
   url: string;
   description_text: string | null;
+  /** GET /jobs/{id} only, for catalog jobs: the source and its attribution. */
+  source_label?: string | null;
+  attribution?: string | null;
+  attribution_url?: string | null;
 }
 
 export interface JobInput {

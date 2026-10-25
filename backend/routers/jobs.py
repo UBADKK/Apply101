@@ -36,7 +36,7 @@ from ..app.analysis_contract import (
 from ..app.job_analysis_sanitizer import sanitize_job_analysis_requirements
 from ..app.catalog_sync import STATUS_CLOSED, job_content_hash
 from ..app import url_import
-from ..app.job_sources import HttpClient
+from ..app.job_sources import HttpClient, source_info
 from ..app.rate_limiting import (
     RateLimiter,
     ReservationOutcome,
@@ -2065,10 +2065,17 @@ Rules:
 # Declared last so the static GET paths above (/analyzed, /analyzed/{job_id},
 # /fetch-runs) are matched before this one. Another user's job gets the same
 # 404 as a nonexistent job_id.
-@router.get("/{job_id}", response_model=schemas.JobResponse)
+@router.get("/{job_id}", response_model=schemas.JobDetailResponse)
 def get_job(
     job_id: int,
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return get_visible_job_or_404(db, job_id, current_user)
+    job = get_visible_job_or_404(db, job_id, current_user)
+    response = schemas.JobDetailResponse.model_validate(job)
+    info = source_info(job.source or "") if job.created_by_user_id is None else None
+    if info is not None:
+        response.source_label = info.label
+        response.attribution = info.attribution
+        response.attribution_url = info.attribution_url
+    return response

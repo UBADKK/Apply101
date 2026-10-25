@@ -200,6 +200,22 @@ class CatalogRecommendationTests(unittest.TestCase):
         self.assertNotIn("Backend Developer", [item["title"] for item in body["items"]])
         self.assertEqual(body["coverage"]["analyzed_jobs"], 1)
 
+    def test_arbeitnow_jobs_link_back_in_list_and_detail(self):
+        db = self.Session()
+        job = models.Job(title="Werkstudent Python", company_name="Beta AG", location="Berlin", url="https://www.arbeitnow.com/jobs/companies/beta/x",
+                         description_text="Python in Berlin.", source="arbeitnow", job_status="active")
+        db.add(job)
+        db.commit()
+        job_id = job.job_id
+        db.close()
+        card = self.client.get("/catalog/jobs?source=arbeitnow", headers=self.user).json()["items"][0]
+        self.assertEqual(card["attribution_url"], "https://www.arbeitnow.com")
+        detail = self.client.get(f"/jobs/{job_id}", headers=self.user).json()
+        self.assertEqual((detail["source_label"], detail["attribution_url"]), ("Arbeitnow", "https://www.arbeitnow.com"))
+        greenhouse = self.client.get(f"/jobs/{self.job_ids['Backend Developer']}", headers=self.user).json()
+        self.assertIsNone(greenhouse["attribution_url"])
+        self.assertEqual(greenhouse["source_label"], "Greenhouse Job Board")
+
     def test_other_users_cannot_read_my_recommendations(self):
         self._analyze_profile()
         response = self.client.get(f"/users/{self.user_id}/profiles/{self.profile_id}/recommendations", headers=self.other)

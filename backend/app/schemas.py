@@ -426,6 +426,15 @@ class JobResponse(BaseModel):
         from_attributes = True
 
 
+class JobDetailResponse(JobResponse):
+    """GET /jobs/{job_id}: a job plus, for catalog jobs, its source and
+    the attribution the source asks for (e.g. Arbeitnow's link back)."""
+
+    source_label: str | None = None
+    attribution: str | None = None
+    attribution_url: str | None = None
+
+
 class MatchResult(BaseModel):
     score: int
     summary: str

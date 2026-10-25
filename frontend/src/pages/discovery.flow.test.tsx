@@ -47,7 +47,10 @@ describe('job pool', () => {
             total: 1,
             page: 1,
             page_size: 20,
-            items: [{ ...CARD, job_id: 5, title: 'Backend Developer', url: 'https://job-boards.greenhouse.io/acme/jobs/1', work_mode: 'remote', remote_note: 'Remote does not say from which countries you may work.', has_current_analysis: false }],
+            items: [
+              { ...CARD, job_id: 5, title: 'Backend Developer', url: 'https://job-boards.greenhouse.io/acme/jobs/1', work_mode: 'remote', remote_note: 'Remote does not say from which countries you may work.', has_current_analysis: false },
+              { ...CARD, job_id: 6, title: 'Werkstudent Python', source: 'arbeitnow', source_label: 'Arbeitnow', url: 'https://www.arbeitnow.com/jobs/x', attribution: 'Job listing from Arbeitnow (arbeitnow.com); apply on the original posting.', attribution_url: 'https://www.arbeitnow.com', work_mode: null, remote_note: null, has_current_analysis: true },
+            ],
           },
         };
       },
@@ -55,7 +58,8 @@ describe('job pool', () => {
     const user = userEvent.setup();
     renderApp('/catalog');
     expect(await screen.findByRole('link', { name: 'Backend Developer' })).toHaveAttribute('href', '/jobs/5');
-    const original = screen.getByRole('link', { name: /Original posting/ });
+    expect(screen.getByRole('link', { name: /Job listing from Arbeitnow/ })).toHaveAttribute('href', 'https://www.arbeitnow.com');
+    const original = screen.getAllByRole('link', { name: /Original posting/ })[0];
     expect(original).toHaveAttribute('href', 'https://job-boards.greenhouse.io/acme/jobs/1');
     expect(original).toHaveAttribute('rel', expect.stringContaining('noopener'));
     expect(screen.getByText(/from which countries/)).toBeInTheDocument();
