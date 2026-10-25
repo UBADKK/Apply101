@@ -1,7 +1,8 @@
 """Motivation letters: generate a draft (TR/EN/DE) from the user's own
 profile and CV, the job and sourced company information; edit, save and
-regenerate as new versions. Letters are private to their user; another
-user (or a missing letter) gets the same 404.
+regenerate as new versions. A letter is visible to its user and, like
+profiles and CVs, to admins (require_user_access); another user (or a
+missing letter) gets the same 404.
 
 The provider call goes through _create_cover_letter_response (the real
 OpenAI client, or the fake one with APPLY101_ANALYSIS_PROVIDER=fake). A
@@ -12,6 +13,7 @@ import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..app import cover_letter, models, schemas
@@ -73,6 +75,31 @@ def _version_out(version: models.CoverLetterVersion) -> dict:
     }
 
 
+def _commit_new_version(db: Session, letter: models.CoverLetter, version: models.CoverLetterVersion, base_version_id: int | None, now) -> None:
+    """Adds the version and moves the letter to it only if the letter still
+    points at base_version_id (one statement, so two concurrent saves
+    cannot both win); otherwise 409 and nothing is written."""
+    db.add(version)
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        raise _error(409, "ERR_COVER_LETTER_CHANGED", "This letter was changed in another window. Reload it before saving.")
+    updated = (
+        db.query(models.CoverLetter)
+        .filter(
+            models.CoverLetter.letter_id == letter.letter_id,
+            models.CoverLetter.current_version_id == base_version_id,
+        )
+        .update({models.CoverLetter.current_version_id: version.version_id, models.CoverLetter.updated_at: now}, synchronize_session=False)
+    )
+    if updated != 1:
+        db.rollback()
+        raise _error(409, "ERR_COVER_LETTER_CHANGED", "This letter was changed in another window. Reload it before saving.")
+    db.commit()
+    db.refresh(letter)
+
+
 def _letter_out(db: Session, letter: models.CoverLetter, with_versions: bool) -> dict:
     versions = (
         db.query(models.CoverLetterVersion)
@@ -90,7 +117,9 @@ def _letter_out(db: Session, letter: models.CoverLetter, with_versions: bool) ->
         "company_name": letter.company_name,
         "created_at": letter.created_at,
         "updated_at": letter.updated_at,
-        "current_version": _version_out(current) if current else None,
+        "current_version": (
+            _version_out(current) if with_versions else {**_version_out(current), "grounding": None}
+        ) if current else None,
         "version_count": len(versions),
     }
     if with_versions:
@@ -199,7 +228,11 @@ def create_letter(
         job_title=job_title, company_name=job_company, created_at=now, updated_at=now,
     )
     db.add(letter)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        raise _error(409, "ERR_COVER_LETTER_EXISTS", "You already have a letter for this job in this language. Open it to edit or regenerate.")
     version = models.CoverLetterVersion(
         letter_id=letter.letter_id, version_no=1, kind="generated", body_text=text,
         grounding_json=json.dumps(grounding, ensure_ascii=False), model=COVER_LETTER_MODEL,
@@ -241,11 +274,7 @@ def save_letter(
         letter_id=letter.letter_id, version_no=cover_letter.next_version_no(db, letter.letter_id), kind="edited",
         body_text=payload.body_text, user_id=user_id, created_at=now,
     )
-    db.add(version)
-    db.flush()
-    letter.current_version_id = version.version_id
-    letter.updated_at = now
-    db.commit()
+    _commit_new_version(db, letter, version, payload.base_version_id, now)
     return _letter_out(db, letter, with_versions=True)
 
 
@@ -282,11 +311,9 @@ def regenerate_letter(
         body_text=text, grounding_json=json.dumps(grounding, ensure_ascii=False), model=COVER_LETTER_MODEL,
         prompt_version=COVER_LETTER_PROMPT_VERSION, user_id=user_id, created_at=now,
     )
-    db.add(version)
-    db.flush()
-    letter.current_version_id = version.version_id
-    letter.updated_at = now
-    db.commit()
+    # Whatever version is current now (an edit saved meanwhile stays a
+    # version of its own and is not overwritten).
+    _commit_new_version(db, letter, version, letter.current_version_id, now)
     return _letter_out(db, letter, with_versions=True)
 
 

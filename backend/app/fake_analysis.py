@@ -249,7 +249,7 @@ _LETTER_TEMPLATES = {
     },
     "tr": {
         "greeting": "Sayın işe alım ekibi,",
-        "opening": "{title} pozisyonu için{at_company} başvuruyorum.",
+        "opening": "{at_company}{title} pozisyonu için başvuruyorum.",
         "role": "{role} olarak çalışabileceğim bir pozisyon arıyorum.",
         "experience": "{years} yıllık profesyonel deneyimim var.",
         "skills": "Çalışmalarımda {skills} kullanıyorum.",
@@ -289,7 +289,7 @@ def fake_cover_letter(prompt: str) -> dict:
     company = take("company.name") or take("job.company")
     at_company = ""
     if company:
-        at_company = {"en": f" at {company}", "de": f" bei {company}", "tr": f" {company} bünyesindeki"}.get(language, f" at {company}")
+        at_company = {"en": f" at {company}", "de": f" bei {company}", "tr": f"{company} bünyesindeki "}.get(language, f" at {company}")
     lines = [template["greeting"], "", template["opening"].format(title=title, at_company=at_company)]
     role = take("profile.target_role")
     if role:

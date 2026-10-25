@@ -132,9 +132,16 @@ def build_grounding(db: Session, *, user_id: int, profile: models.CandidateProfi
         .first()
     )
     candidate_skills: list[str] = []
+    # Every skill the matching counts (calculate_skills_score: strong,
+    # moderate, weak and tools); the letter only names strong, moderate and
+    # tools, never weak ones.
+    matching_skills: list[str] = []
     if analysis is not None:
-        candidate_skills = _skill_names(_json_list(analysis.strong_skills_json) + _json_list(analysis.moderate_skills_json))
-        add("profile.skills", "profile", "Skills (from the profile analysis)", ", ".join(candidate_skills))
+        candidate_skills = _skill_names(
+            _json_list(analysis.strong_skills_json) + _json_list(analysis.moderate_skills_json) + _json_list(analysis.tools_json)
+        )
+        matching_skills = candidate_skills + _skill_names(_json_list(analysis.weak_or_basic_skills_json))
+        add("profile.skills", "profile", "Skills and tools (from the profile analysis)", ", ".join(candidate_skills))
     else:
         gaps.append({"code": "NO_PROFILE_ANALYSIS", "message": "Your profile has no current analysis, so your skills are only taken from what you wrote."})
 
@@ -166,9 +173,14 @@ def build_grounding(db: Session, *, user_id: int, profile: models.CandidateProfi
     if job_analysis is not None:
         required = _skill_names(_json_list(job_analysis.required_skills_json))
         add("job.required_skills", "job", "Required skills (from the job analysis)", ", ".join(required))
-        known = {skill.lower() for skill in candidate_skills}
-        missing = [skill for skill in required if skill.lower() not in known]
-        if candidate_skills and missing:
+        # The same comparison the match uses, so the two never disagree.
+        from ..routers.matches import fuzzy_skill_match
+
+        missing = [
+            skill for skill in required
+            if not any(fuzzy_skill_match(candidate, skill) for candidate in matching_skills)
+        ]
+        if matching_skills and missing:
             gaps.append({
                 "code": "SKILLS_NOT_IN_PROFILE",
                 "message": f"Required by the job but not in your profile: {', '.join(missing)}. The draft does not claim them.",

@@ -14,7 +14,7 @@ export function LettersPage() {
   const letters = useResource(() => api.listLetters(user.user_id), [user.user_id]);
   return (
     <>
-      <PageHeader title="Motivation letters" description="Your drafts. Only you can see them. Open the job to edit, copy or download a letter." />
+      <PageHeader title="Motivation letters" description="Your drafts. They are visible to you and to the site administrators, never to other users. Open the job to edit, copy or download a letter." />
       {letters.loading && !letters.data && <LoadingState label="Loading your letters" />}
       {letters.error !== null && <ErrorAlert error={letters.error} />}
       {letters.data && letters.data.length === 0 && (

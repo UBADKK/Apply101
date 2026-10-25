@@ -231,6 +231,54 @@ class CoverLetterTests(unittest.TestCase):
             db.close()
         self.assertEqual(self.create().status_code, 201)
 
+    def test_skill_gaps_agree_with_matching(self):
+        db = self.Session()
+        db.add(models.ProfileAnalysis(
+            profile_id=self.profile_id, analysis_status="completed", analysis_model="gpt-4.1-mini",
+            analysis_prompt_version="profile_analysis_v5", is_current=True,
+            strong_skills_json='["js"]', moderate_skills_json="[]", weak_or_basic_skills_json='["kubernetes"]', tools_json='["docker"]',
+        ))
+        db.add(models.JobAnalysis(
+            job_id=self.catalog_job, analysis_status="completed", analysis_model="gpt-4.1-mini",
+            analysis_prompt_version="job_analysis_v13", is_current=True,
+            required_skills_json='["JavaScript", "docker", "kubernetes", "rust"]',
+        ))
+        db.commit()
+        profile = db.get(models.CandidateProfile, self.profile_id)
+        job = db.get(models.Job, self.catalog_job)
+        grounding = cover_letter.build_grounding(db, user_id=self.user_id, profile=profile, job=job)
+        db.close()
+        gap = next(g for g in grounding.gaps if g["code"] == "SKILLS_NOT_IN_PROFILE")
+        self.assertIn("rust", gap["message"])
+        for covered in ("JavaScript", "docker", "kubernetes"):
+            self.assertNotIn(covered, gap["message"])
+        skills = next(f for f in grounding.facts if f["id"] == "profile.skills")["text"]
+        self.assertIn("docker", skills)
+        self.assertNotIn("kubernetes", skills)  # weak skills are never claimed
+
+    def test_save_from_a_stale_base_writes_nothing(self):
+        from backend.routers.cover_letters import _commit_new_version
+
+        letter_id = self.create().json()["letter_id"]
+        db = self.Session()
+        letter = db.get(models.CoverLetter, letter_id)
+        version = models.CoverLetterVersion(letter_id=letter_id, version_no=2, kind="edited", body_text="x", user_id=self.user_id)
+        with self.assertRaises(Exception) as ctx:
+            _commit_new_version(db, letter, version, base_version_id=999, now=NOW)
+        self.assertEqual(ctx.exception.status_code, 409)
+        duplicate_no = models.CoverLetterVersion(letter_id=letter_id, version_no=1, kind="edited", body_text="x", user_id=self.user_id)
+        letter = db.get(models.CoverLetter, letter_id)
+        with self.assertRaises(Exception) as ctx:
+            _commit_new_version(db, letter, duplicate_no, base_version_id=letter.current_version_id, now=NOW)
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertEqual(db.query(models.CoverLetterVersion).filter_by(letter_id=letter_id).count(), 1)
+        db.close()
+
+    def test_list_omits_grounding(self):
+        self.create()
+        listed = self.client.get(f"/users/{self.user_id}/cover-letters", headers=self.user).json()
+        self.assertIsNone(listed[0]["current_version"]["grounding"])
+
     def test_injected_instructions_stay_inside_the_facts(self):
         db = self.Session()
         profile = db.get(models.CandidateProfile, self.profile_id)

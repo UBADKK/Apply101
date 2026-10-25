@@ -184,8 +184,8 @@ export function CoverLetterPanel({ userId, profileId, jobId }: { userId: number;
         Motivation letter
       </h2>
       <p className="muted small">
-        A first draft from your profile, CV, this posting and sourced company information only. Nothing is made up: missing details become
-        [placeholders] for you to fill in.
+        A first draft written only from your profile, CV, this posting and sourced company information. The writer is told to use only these
+        facts and to leave [placeholders] for anything missing; still, check every sentence before you send it.
       </p>
       {letters.error !== null && <ErrorAlert error={letters.error} />}
       {profileId === null ? (

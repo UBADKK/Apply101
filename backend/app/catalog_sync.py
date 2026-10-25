@@ -353,6 +353,7 @@ def _follow_primary_link(db: Session, job: models.Job, record: models.JobSourceR
     if job.url == record.url and job.source == record.source:
         return
     if job.url != record.url:
+        db.flush()  # earlier URL moves of this batch must be visible
         taken = (
             db.query(models.Job.job_id)
             .filter(models.Job.url == record.url, models.Job.created_by_user_id.is_(None), models.Job.job_id != job.job_id)
@@ -362,6 +363,7 @@ def _follow_primary_link(db: Session, job: models.Job, record: models.JobSourceR
             return
         job.url = record.url
     job.source = record.source
+    job.source_job_id = record.source_key[:500]
 
 
 def _close_unseen_legacy_arbeitnow(db: Session, now: datetime) -> int:
@@ -672,7 +674,7 @@ def sync_one(
             run.finished_at = now_fn()
             run.status = "failed"
             run.complete = False
-            run.stopped_reason = "WRITE_ERROR"
+            run.stopped_reason = "LEASE_LOST" if isinstance(exc, SyncAlreadyRunning) else "WRITE_ERROR"
             run.error_message = type(exc).__name__
             db.commit()
         raise

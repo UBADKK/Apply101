@@ -94,10 +94,17 @@ from it.
       provider template;
     - the letter panel on the job page and the `/letters` page;
     - tests and e2e.
+  - draft PR [UBADKK/Apply101#27](https://github.com/UBADKK/Apply101/pull/27);
+  - phase 3 review: changes requested, fixed in the final fix commit:
+    - the letter's skill gaps use the matching's own skills and
+      comparison;
+    - saving is atomic, with one letter per job and language;
+    - the visibility and "made up" wording corrected;
+    - the list omits the facts;
+    - the Turkish template fixed.
 - **Next:**
-  1. fix the phase 2 review findings;
-  2. reviewer on phase 3 and the fixes;
-  3. the draft PR.
+  1. a reviewer pass on the final fix commit;
+  2. live checks of the sources and boards where the network allows them.
 - **Environment limits found:**
   - The cloud network policy answers 403 to `boards-api.greenhouse.io`,
     `api.lever.co`, `api.ashbyhq.com` and `www.arbeitnow.com`. Live GETs

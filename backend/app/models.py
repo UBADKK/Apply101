@@ -455,13 +455,17 @@ class AnalysisQuotaReservation(Base):
 
 
 class CoverLetter(Base):
-    """A user's motivation letter for one job in one language. Private to
-    its user (never shared, never part of the catalog). The job title and
+    """A user's motivation letter for one job in one language. Visible to
+    its user and, like profiles and CVs, to admins; never shared and never
+    part of the catalog. The job title and
     company are kept as written at creation, so the letter stays readable
     if the job changes or is deleted. Created by
     backend/migrations/phase10_cover_letters.py or create_all."""
 
     __tablename__ = "cover_letters"
+    __table_args__ = (
+        UniqueConstraint("user_id", "job_id", "language", name="uq_cover_letters_user_job_language"),
+    )
 
     letter_id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.user_id"), nullable=False, index=True)
