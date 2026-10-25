@@ -331,6 +331,11 @@ def preview_job_import(
     saves the corrected job with POST /jobs/manual. Every failure answers
     with a stable error_code and the advice to paste the job text."""
     reservation = reserve_import_preview(rate_limiter, user_id=current_user.user_id)
+    if reservation.outcome == ReservationOutcome.CAPACITY_UNAVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail={"error_code": "ERR_IMPORT_UNAVAILABLE", "message": "Importing is busy. Try again in a minute."},
+        )
     if reservation.outcome != ReservationOutcome.GRANTED:
         retry_after = reservation.retry_after_seconds or 60
         raise HTTPException(

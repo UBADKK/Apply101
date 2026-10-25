@@ -66,18 +66,20 @@ UNSUPPORTED_HOST_SUFFIXES = (
     "secretcv.com", "yenibiris.com",
 )
 
+# EU-hosted Greenhouse boards (job-boards.eu.greenhouse.io) are not mapped:
+# their API host could not be verified, so such links go the JSON-LD way.
 _GREENHOUSE_HOSTS = {
     "boards.greenhouse.io": "https://boards-api.greenhouse.io/v1/boards",
     "job-boards.greenhouse.io": "https://boards-api.greenhouse.io/v1/boards",
-    "job-boards.eu.greenhouse.io": "https://boards-api.eu.greenhouse.io/v1/boards",
 }
 _LEVER_HOSTS = {
     "jobs.lever.co": "https://api.lever.co/v0/postings",
     "jobs.eu.lever.co": "https://api.eu.lever.co/v0/postings",
 }
 _ASHBY_HOST = "jobs.ashbyhq.com"
-_SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,99}$")
-_ID = re.compile(r"^[A-Za-z0-9-]{1,100}$")
+_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}")
+_ID = re.compile(r"[A-Za-z0-9-]{1,100}")
+_DIGITS = re.compile(r"[0-9]{1,20}")
 
 
 class ImportError_(Exception):
@@ -209,8 +211,13 @@ def guarded_get(
     resolver: Callable = socket.getaddrinfo,
     opener: Callable = _open,
     clock: Callable[[], float] = time.monotonic,
+    deadline: float | None = None,
 ) -> FetchedPage:
-    deadline = clock() + DEADLINE_SECONDS
+    """deadline: a clock() value shared by several fetches of one preview.
+    Every socket read waits at most the read timeout and reads only what
+    has arrived (read1), and the deadline is checked after each, so a server
+    that sends a byte now and then cannot hold the request open."""
+    deadline = clock() + DEADLINE_SECONDS if deadline is None else deadline
     current = url
     for _ in range(MAX_REDIRECTS + 1):
         scheme, host, port = check_url(current)
@@ -237,19 +244,24 @@ def guarded_get(
                 current = urljoin(current, location)
                 continue
             body = bytearray()
-            for chunk in response.stream(64 * 1024):
+            while True:
+                if clock() > deadline:
+                    raise ImportError_("ERR_IMPORT_TIMEOUT", "The site took too long to answer.")
+                chunk = response.read1(64 * 1024)
+                if not chunk:
+                    break
                 body.extend(chunk)
                 if len(body) > max_bytes:
                     raise ImportError_("ERR_IMPORT_TOO_LARGE", "The page is too large to import.")
-                if clock() > deadline:
-                    raise ImportError_("ERR_IMPORT_TIMEOUT", "The site took too long to answer.")
             return FetchedPage(
                 url=current,
                 status=status,
                 content_type=(response.headers.get("Content-Type") or "").split(";")[0].strip().lower(),
                 body=bytes(body),
             )
-        except urllib3.exceptions.HTTPError:
+        except urllib3.exceptions.TimeoutError:
+            raise ImportError_("ERR_IMPORT_TIMEOUT", "The site took too long to answer.")
+        except (urllib3.exceptions.HTTPError, OSError):
             raise ImportError_("ERR_IMPORT_FETCH_FAILED", "The page could not be loaded.")
         finally:
             response.release_conn()
@@ -343,7 +355,7 @@ def parse_job_posting_json_ld(html_text: str, page_url: str) -> ImportPreview:
             continue
         try:
             data = json.loads(raw)
-        except ValueError:
+        except (ValueError, RecursionError):
             continue
         postings.extend(_walk(data))
     if not postings:
@@ -387,15 +399,15 @@ def _ats_target(host: str, path: str) -> tuple[str, str, str, str] | None:
     segments = [segment for segment in path.split("/") if segment]
     if host in _GREENHOUSE_HOSTS and len(segments) >= 3 and segments[1] == "jobs":
         token, job_id = segments[0], segments[2]
-        if _SEGMENT.match(token) and job_id.isdigit():
+        if _SEGMENT.fullmatch(token) and _DIGITS.fullmatch(job_id):
             return "greenhouse", _GREENHOUSE_HOSTS[host], token, job_id
     if host in _LEVER_HOSTS and len(segments) >= 2:
         site, posting_id = segments[0], segments[1]
-        if _SEGMENT.match(site) and _ID.match(posting_id):
+        if _SEGMENT.fullmatch(site) and _ID.fullmatch(posting_id):
             return "lever", _LEVER_HOSTS[host], site, posting_id
     if host == _ASHBY_HOST and len(segments) >= 2:
         board, posting_id = segments[0], segments[1]
-        if _SEGMENT.match(board) and _ID.match(posting_id):
+        if _SEGMENT.fullmatch(board) and _ID.fullmatch(posting_id):
             return "ashby", ashby.API_BASE, board, posting_id
     return None
 
@@ -430,7 +442,9 @@ def _preview_from_ats(url: str, target: tuple[str, str, str, str], http: HttpCli
         else:
             data = http.get_json(f"{base}/{token}")
             jobs = data.get("jobs") if isinstance(data, dict) else None
-            match = next((job for job in jobs or [] if isinstance(job, dict) and job.get("id") == posting_id), None)
+            if not isinstance(jobs, list):
+                jobs = []
+            match = next((job for job in jobs if isinstance(job, dict) and job.get("id") == posting_id), None)
             if match is None:
                 raise ImportError_("ERR_IMPORT_NOT_FOUND", "The posting was not found; it may be closed.")
             posting = ashby.posting_from_item(token, match)
@@ -465,9 +479,15 @@ def preview_url(
     if target is not None:
         return _preview_from_ats(url, target, http or HttpClient(timeout_seconds=10, max_retries=0))
 
-    if not robots_allows(url, fetch):
+    deadline = time.monotonic() + DEADLINE_SECONDS
+    fetch_once = lambda target, **kwargs: fetch(target, deadline=deadline, **kwargs)  # noqa: E731
+    if not robots_allows(url, fetch_once):
         raise ImportError_("ERR_IMPORT_BLOCKED", "This site does not allow automated reading of the page. Paste the job text instead.")
-    page = fetch(url, max_bytes=MAX_PAGE_BYTES)
+    page = fetch_once(url, max_bytes=MAX_PAGE_BYTES)
+    if urlsplit(page.url).hostname != urlsplit(url).hostname and not robots_allows(page.url, fetch_once):
+        # robots.txt rules are per host: a redirect to another host needs
+        # that host's permission too.
+        raise ImportError_("ERR_IMPORT_BLOCKED", "This site does not allow automated reading of the page. Paste the job text instead.")
     if page.status in (401, 403):
         raise ImportError_("ERR_IMPORT_BLOCKED", "The page needs a login or blocks automated access. Paste the job text instead.")
     if page.status == 404 or page.status == 410:

@@ -156,9 +156,9 @@ class ApplyPostingsTests(CatalogSyncBase):
         other = self.board("other")
         self.apply([posting(1)], board=acme)
         self.apply([posting(9, source_key="other:9")], board=other)
-        self.apply([], board=acme)  # complete and empty: acme's job closes
+        self.apply([posting(2)], board=acme)  # complete: acme's job 1 closes
         statuses = {job.title: job.job_status for job in self.catalog_jobs()}
-        self.assertEqual(statuses, {"Engineer 1": "closed", "Engineer 9": "active"})
+        self.assertEqual(statuses, {"Engineer 1": "closed", "Engineer 9": "active", "Engineer 2": "active"})
 
     def test_same_url_from_another_source_is_linked_not_duplicated(self):
         board = self.board()
@@ -209,7 +209,7 @@ class ApplyPostingsTests(CatalogSyncBase):
         )
         self.assertEqual(self.catalog_jobs()[0].description_text, "Description 1")
         # The primary disappears but the copy is still active: not closed.
-        self.apply([], board=board)
+        self.apply([posting(5)], board=board)
         self.assertEqual(self.catalog_jobs()[0].job_status, "active")
 
     def test_personal_job_with_same_url_is_untouched(self):
@@ -290,11 +290,69 @@ class ReviewFixTests(CatalogSyncBase):
         board = self.board()
         self.apply([posting(1)], board=board)
         self.apply([posting(1, source="lever", source_key="acme:x1")], board=None, source="lever", complete=False)
-        self.apply([], board=board)  # primary gone, copy still active
+        self.apply([posting(5)], board=board)  # primary gone, copy still active
         copy = self.db.query(models.JobSourceRecord).filter_by(source="lever").one()
         self.assertTrue(copy.is_primary)
         self.apply([posting(1, source="lever", source_key="acme:x1", description_text="Updated by the copy")], board=None, source="lever", complete=False)
         self.assertEqual(self.catalog_jobs()[0].description_text, "Updated by the copy")
+
+    def test_empty_complete_feed_closes_nothing(self):
+        board = self.board()
+        self.apply([posting(1), posting(2)], board=board)
+        counts = self.apply([], board=board)
+        self.assertEqual(counts.closed, 0)
+        self.assertTrue(all(job.job_status == "active" for job in self.catalog_jobs()))
+
+    def test_link_and_source_follow_the_primary_record(self):
+        board = self.board()
+        self.apply([posting(1)], board=board)
+        copy = posting(1, source="lever", source_key="acme:x1", url="https://jobs.lever.co/acme/x1")
+        catalog_sync.apply_postings(self.db, source="lever", board=None, fetch=BoardFetch(postings=[copy], complete=False), now=NOW,
+                                    board_company=self.db.get(models.Company, board.company_id))
+        self.db.commit()
+        self.apply([posting(5)], board=board)  # primary gone: the Lever copy is primary now
+        job = next(job for job in self.catalog_jobs() if job.title == "Engineer 1")
+        self.assertEqual((job.url, job.source), ("https://jobs.lever.co/acme/x1", "lever"))
+        # A primary record whose URL changes moves the job's link too.
+        self.apply([posting(5, url="https://example.test/jobs/5-moved")], board=board)
+        moved = next(job for job in self.catalog_jobs() if job.title == "Engineer 5")
+        self.assertEqual(moved.url, "https://example.test/jobs/5-moved")
+
+    def test_board_disabled_during_fetch_writes_nothing(self):
+        board = self.board()
+        Session = self.Session
+
+        class DisablingSession(FakeSession):
+            def get(inner, url, **kwargs):
+                db = Session()
+                try:
+                    db.get(models.JobSourceBoard, board.board_id).is_enabled = False
+                    db.commit()
+                finally:
+                    db.close()
+                return super().get(url, **kwargs)
+
+        http = HttpClient(DisablingSession({GH_JOBS: FakeResponse(200, greenhouse_jobs()), GH_BOARD: FakeResponse(200, greenhouse_board())}), sleep=lambda s: None)
+        result = catalog_sync.run_sync(self.db, http, include_arbeitnow=False, sleep=lambda s: None, now_fn=lambda: NOW)
+        self.assertEqual(result["results"][0]["status"], "skipped")
+        self.assertEqual(self.catalog_jobs(), [])
+        self.assertEqual(self.db.query(models.JobSourceRecord).count(), 0)
+
+    def test_lease_is_renewed_during_a_long_fetch(self):
+        self.board()
+        ticks = iter(range(0, 10_000, 70))
+        renewals = []
+        original = catalog_sync.renew_sync_lock
+
+        def counting(db, token, now_epoch=None):
+            renewals.append(token)
+            return original(db, token, now_epoch)
+
+        with patch.object(catalog_sync, "renew_sync_lock", counting):
+            catalog_sync.run_sync(self.db, HttpClient(FakeSession({GH_JOBS: FakeResponse(200, greenhouse_jobs()), GH_BOARD: FakeResponse(200, greenhouse_board())}), sleep=lambda s: None),
+                                  include_arbeitnow=False, sleep=lambda s: None, now_fn=lambda: NOW, clock=lambda: next(ticks))
+        # Once before the board, and before each of its two requests.
+        self.assertGreaterEqual(len(renewals), 3)
 
     def test_disabling_a_board_closes_its_jobs(self):
         board = self.board()
@@ -324,9 +382,11 @@ class ReviewFixTests(CatalogSyncBase):
     def test_time_budget_stops_starting_boards(self):
         self.board("b1")
         self.board("b2")
-        ticks = iter([0, 0, catalog_sync.SYNC_TIME_BUDGET_SECONDS + 1, 10**6])
+        db = self.db
+        # Time runs out once the first board's run is recorded.
+        clock = lambda: 0 if db.query(models.JobFetchRun).count() == 0 else catalog_sync.SYNC_TIME_BUDGET_SECONDS + 1  # noqa: E731
         result = catalog_sync.run_sync(self.db, HttpClient(FakeSession({}), sleep=lambda s: None), include_arbeitnow=False,
-                                       sleep=lambda s: None, now_fn=lambda: NOW, clock=lambda: next(ticks))
+                                       sleep=lambda s: None, now_fn=lambda: NOW, clock=clock)
         self.assertEqual((result["boards_synced"], result["stopped_reason"]), (1, "TIME_BUDGET_REACHED"))
         self.assertIsNone(self.db.query(models.AnalysisGuard).one().owner_token)
 

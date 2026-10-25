@@ -63,8 +63,11 @@ export function NewJobPage() {
 
   const handleImport = (event: FormEvent) => {
     event.preventDefault();
+    if (!importUrl.trim()) return;
+    const typed = [title, company, location, url, description].some((value) => value.trim());
+    if (typed && !window.confirm('Reading the posting replaces what you typed in the form below. Continue?')) return;
     setImported(null);
-    if (importUrl.trim()) void preview.run(importUrl.trim());
+    void preview.run(importUrl.trim());
   };
 
   const create = useAction(async (input: JobInput) => {

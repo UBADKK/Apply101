@@ -94,10 +94,14 @@ class HttpClient:
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
         self.sleep = sleep
+        # Called before every request (e.g. to renew the catalog sync lease).
+        self.before_request: Callable[[], None] | None = None
 
     def get_json(self, url: str, params: dict | None = None) -> Any:
         attempt = 0
         while True:
+            if self.before_request is not None:
+                self.before_request()
             try:
                 response = self.session.get(
                     url,

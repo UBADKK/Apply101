@@ -43,7 +43,7 @@ export function CatalogPage() {
           </button>
         </>
       )}
-      {jobs.data && (
+      {jobs.data && jobs.error === null && (
         <>
           <p className="muted" aria-live="polite">
             {jobs.data.total.toLocaleString('en-GB')} open {jobs.data.total === 1 ? 'job' : 'jobs'}

@@ -316,6 +316,7 @@ def apply_postings(
             job.job_status = STATUS_ACTIVE
 
         if record.is_primary:
+            _follow_primary_link(db, job, record)
             if job.content_hash != content_hash:
                 legacy_same_text = job.content_hash is None and job_content_hash(
                     job.title, job.company_name, job.location, job.description_text
@@ -336,11 +337,31 @@ def apply_postings(
         else:
             counts.unchanged += 1
 
-    if fetch.complete:
+    # An empty feed is more likely a source hiccup than every job closing at
+    # once: it closes nothing (a board that really has no jobs left keeps
+    # them open until a disable or a non-empty fetch).
+    if fetch.complete and counts.seen > 0:
         counts.closed = _close_unseen(db, source=source, board_id=board_id, seen_record_ids=seen_record_ids, now=now)
         if source == "arbeitnow" and board_id is None:
             counts.closed += _close_unseen_legacy_arbeitnow(db, now)
     return counts
+
+
+def _follow_primary_link(db: Session, job: models.Job, record: models.JobSourceRecord) -> None:
+    """The job's link and source follow its primary record, unless another
+    catalog job already holds that URL (uq_jobs_catalog_url)."""
+    if job.url == record.url and job.source == record.source:
+        return
+    if job.url != record.url:
+        taken = (
+            db.query(models.Job.job_id)
+            .filter(models.Job.url == record.url, models.Job.created_by_user_id.is_(None), models.Job.job_id != job.job_id)
+            .first()
+        )
+        if taken is not None:
+            return
+        job.url = record.url
+    job.source = record.source
 
 
 def _close_unseen_legacy_arbeitnow(db: Session, now: datetime) -> int:
@@ -409,6 +430,13 @@ def _close_jobs_without_active_records(db: Session, job_ids: Iterable[int], now:
                     models.JobSourceRecord.is_primary == True,  # noqa: E712
                 ).update({models.JobSourceRecord.is_primary: False}, synchronize_session=False)
                 active_records[0].is_primary = True
+                job = (
+                    db.query(models.Job)
+                    .filter(models.Job.job_id == job_id, models.Job.created_by_user_id.is_(None))
+                    .first()
+                )
+                if job is not None:
+                    _follow_primary_link(db, job, active_records[0])
             continue
         job = (
             db.query(models.Job)
@@ -579,7 +607,27 @@ def sync_one(
         now = now_fn()
         board_company = None
         if board is not None:
-            board = db.query(models.JobSourceBoard).filter(models.JobSourceBoard.board_id == board_id).first()
+            # Take SQLite's write lock first (an UPDATE of our own run row),
+            # then re-read the board: an admin who disabled it during the
+            # fetch has committed by now, and nothing of it is written.
+            db.query(models.JobFetchRun).filter(models.JobFetchRun.run_id == run_id).update(
+                {models.JobFetchRun.pages_checked: fetch.pages_checked}, synchronize_session=False
+            )
+            db.flush()
+            board = db.query(models.JobSourceBoard).filter(models.JobSourceBoard.board_id == board_id).populate_existing().first()
+            if board is None or not board.is_enabled:
+                run = db.query(models.JobFetchRun).filter(models.JobFetchRun.run_id == run_id).first()
+                run.finished_at = now
+                run.status = "skipped"
+                run.complete = False
+                run.stopped_reason = "BOARD_DISABLED_DURING_SYNC"
+                db.commit()
+                return {
+                    "run_id": run_id, "source": source, "board_id": board_id, "board_token": board_token,
+                    "status": "skipped", "complete": False, "stopped_reason": "BOARD_DISABLED_DURING_SYNC",
+                    "pages_checked": fetch.pages_checked, "seen": 0, "new": 0, "updated": 0, "unchanged": 0,
+                    "linked_duplicates": 0, "reopened": 0, "closed": 0, "skipped": 0,
+                }
             board_company = db.query(models.Company).filter(models.Company.company_id == board.company_id).first()
             if board_company is not None and fetch.company_about and not board_company.about_text:
                 board_company.about_text = fetch.company_about
@@ -687,6 +735,17 @@ def run_sync(
     max_pages = max(1, min(int(max_pages), MAX_PAGES_LIMIT))
     token = acquire_sync_lock(db)
     started = clock()
+    last_renewal = [clock()]
+
+    def renew_during_fetch():
+        # Every request may wait for timeouts and backoff; keep the lease
+        # (at most one renewal a minute).
+        if clock() - last_renewal[0] >= 60:
+            renew_sync_lock(db, token)
+            last_renewal[0] = clock()
+
+    previous_hook = http.before_request
+    http.before_request = renew_during_fetch
     results = []
     stopped_reason = None
     try:
@@ -706,6 +765,7 @@ def run_sync(
                 continue
             results.append(sync_one(db, http, source=board.source, board=board, max_pages=max_pages, now_fn=now_fn))
     finally:
+        http.before_request = previous_hook
         release_sync_lock(db, token)
     return {
         "stopped_reason": stopped_reason,

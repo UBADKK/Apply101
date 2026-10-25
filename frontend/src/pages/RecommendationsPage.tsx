@@ -18,8 +18,10 @@ function CoverageNote({ coverage }: { coverage: RecommendationCoverage }) {
     <Alert tone="info" title="What this list covers">
       <p>
         Ranked {coverage.evaluated_jobs.toLocaleString('en-GB')} of {coverage.active_jobs.toLocaleString('en-GB')} open jobs in the pool that
-        match the filters. {coverage.not_analyzed_jobs.toLocaleString('en-GB')} are not analyzed yet and are not ranked, so this is not the best
-        of the whole pool.
+        match the filters.
+        {coverage.not_analyzed_jobs > 0 || coverage.capped
+          ? ` ${coverage.not_analyzed_jobs.toLocaleString('en-GB')} are not analyzed yet and are not ranked, so this is not the best of the whole pool.`
+          : ' Every open job that matches the filters was ranked.'}
         {coverage.capped && ` Only the newest ${coverage.pool_limit.toLocaleString('en-GB')} analyzed jobs were ranked.`}
       </p>
       <p className="small">
@@ -90,7 +92,7 @@ export function RecommendationsPage() {
               </button>
             </>
           )}
-          {results.data && (
+          {results.data && results.error === null && (
             <>
               <CoverageNote coverage={results.data.coverage} />
               {results.data.items.length === 0 ? (

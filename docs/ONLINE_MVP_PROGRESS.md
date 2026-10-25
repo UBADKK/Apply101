@@ -79,8 +79,16 @@ from it.
     - `backend/app/url_import.py`, and its route in `routers/jobs.py`;
     - screens `/catalog`, `/for-you` and the import box;
     - Vitest and e2e (`e2e/discovery.spec.ts`).
-  - phase 2 review: changes requested (findings listed in the next phase 2
-    fix commit);
+  - phase 2 review: changes requested, fixed after phase 3:
+    - a board disabled during a sync is not written;
+    - the lease is renewed during long fetches;
+    - empty feeds close nothing;
+    - the link and source follow the primary record;
+    - the import deadline covers slow reads and the robots.txt check;
+    - robots.txt is checked for a redirect target on another host;
+    - parsing hardened;
+    - coverage wording fixed;
+    - import asks before replacing typed fields;
   - **phase 3 code:**
     - letters backend, migration `phase10_cover_letters` and the fake
       provider template;
@@ -123,6 +131,19 @@ from it.
   (`active`).
 - A complete Arbeitnow sync adopts the legacy jobs it sees, and closes the
   ones it no longer sees.
+
+**Empty feeds.** A complete fetch that returns no posting at all closes
+nothing. It is treated as a source hiccup, not as every job closing at
+once. A board that really has no jobs left keeps them open until it is
+disabled, or until a later fetch lists other jobs.
+
+**URL import limits.**
+- Links to EU-hosted Greenhouse boards (`job-boards.eu.greenhouse.io`) are
+  read as JSON-LD pages, because their API host could not be verified.
+- DNS resolution time is not inside the import deadline; socket reads and
+  redirects are.
+- Recommendations are computed on every request, with no paid call and up
+  to 1000 jobs. Caching or a rate limit is a follow-up.
 
 **Arbeitnow exception, a decision for the project owner.** Arbeitnow keeps
 `auto_publish` although its terms were not checked in this session, because

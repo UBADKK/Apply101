@@ -9,6 +9,7 @@ import shutil
 import socket
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -170,6 +171,33 @@ class PreviewTests(unittest.TestCase):
             url_import.preview_url("https://careers.example.com/jobs/1", fetch=fetch)
         self.assertEqual(ctx.exception.code, "ERR_IMPORT_NO_JOB_DATA")
 
+    def test_redirect_to_another_host_needs_its_robots_permission(self):
+        fetch = FakeFetch({
+            "https://careers.example.com/robots.txt": page("User-agent: *\nAllow: /\n", content_type="text/plain"),
+            "https://careers.example.com/jobs/1": page(JSON_LD_PAGE, url="https://jobs.other.example/1"),
+            "https://jobs.other.example/robots.txt": page("User-agent: *\nDisallow: /\n", content_type="text/plain"),
+        })
+        with self.assertRaises(url_import.ImportError_) as ctx:
+            url_import.preview_url("https://careers.example.com/jobs/1", fetch=fetch)
+        self.assertEqual(ctx.exception.code, "ERR_IMPORT_BLOCKED")
+
+    def test_deeply_nested_json_ld_is_ignored_not_fatal(self):
+        html = '<script type="application/ld+json">' + "[" * 50000 + "</script>"
+        fetch = FakeFetch({"https://careers.example.com/jobs/1": page(html)})
+        with self.assertRaises(url_import.ImportError_) as ctx:
+            url_import.preview_url("https://careers.example.com/jobs/1", fetch=fetch)
+        self.assertEqual(ctx.exception.code, "ERR_IMPORT_NO_JOB_DATA")
+
+    def test_eu_greenhouse_links_and_odd_ashby_answers(self):
+        fetch = FakeFetch({"https://job-boards.eu.greenhouse.io/acme/jobs/1": page(JSON_LD_PAGE, url="https://job-boards.eu.greenhouse.io/acme/jobs/1")})
+        self.assertEqual(url_import.preview_url("https://job-boards.eu.greenhouse.io/acme/jobs/1", fetch=fetch).source, "json_ld")
+        http = self.http({"https://api.ashbyhq.com/posting-api/job-board/ashbyco": FakeResponse(200, {"jobs": 5})})
+        with self.assertRaises(url_import.ImportError_) as ctx:
+            url_import.preview_url("https://jobs.ashbyhq.com/ashbyco/1111-2222", http=http, fetch=FakeFetch({}))
+        self.assertEqual(ctx.exception.code, "ERR_IMPORT_NOT_FOUND")
+        # Non-ASCII digits are not a Greenhouse job id.
+        self.assertIsNone(url_import._ats_target("boards.greenhouse.io", "/acme/jobs/\u0661\u0662"))
+
     def test_unsupported_sites_are_never_fetched(self):
         fetch = FakeFetch({})
         for url in ["https://www.linkedin.com/jobs/view/123", "https://de.indeed.com/viewjob?jk=1", "https://www.kariyer.net/is-ilani/x"]:
@@ -183,6 +211,19 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     routes = {}
 
     def do_GET(self):  # noqa: N802
+        if self.path == "/drip":
+            # Sends a byte now and then, forever: never fills a read buffer.
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            try:
+                for _ in range(100):
+                    self.wfile.write(b"x")
+                    self.wfile.flush()
+                    time.sleep(0.2)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            return
         status, headers, body = self.routes.get(self.path, (404, {}, b""))
         self.send_response(status)
         for key, value in headers.items():
@@ -250,6 +291,14 @@ class GuardedGetTests(unittest.TestCase):
         with self.assertRaises(url_import.ImportError_) as ctx:
             self.get("http://site.test/r")
         self.assertEqual(ctx.exception.code, "ERR_IMPORT_URL_BLOCKED")
+
+    def test_slow_drip_hits_the_deadline(self):
+        with patch.object(url_import, "DEADLINE_SECONDS", 1), patch.object(url_import, "READ_TIMEOUT_SECONDS", 0.5):
+            started = time.monotonic()
+            with self.assertRaises(url_import.ImportError_) as ctx:
+                self.get("http://site.test/drip", max_bytes=10_000)
+        self.assertEqual(ctx.exception.code, "ERR_IMPORT_TIMEOUT")
+        self.assertLess(time.monotonic() - started, 4)
 
     def test_redirect_to_unsupported_site_and_loops(self):
         _Handler.routes = {"/r": (301, {"Location": "https://www.linkedin.com/jobs/1"}, b"")}
