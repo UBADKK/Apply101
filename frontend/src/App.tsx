@@ -6,6 +6,7 @@ import { CatalogPage } from './pages/CatalogPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { JobDetailPage } from './pages/JobDetailPage';
 import { JobsPage } from './pages/JobsPage';
+import { LettersPage } from './pages/LettersPage';
 import { LoginPage } from './pages/LoginPage';
 import { MatchDetailPage } from './pages/MatchDetailPage';
 import { MatchesPage } from './pages/MatchesPage';
@@ -49,6 +50,7 @@ export function AppRoutes() {
         <Route path="/jobs/new" element={<NewJobPage />} />
         <Route path="/jobs/:jobId" element={<JobDetailRoute />} />
         <Route path="/matches" element={<MatchesPage />} />
+        <Route path="/letters" element={<LettersPage />} />
         <Route path="/matches/:matchId" element={<MatchDetailPage />} />
         <Route path="*" element={<NotFoundPage />} />
       </Route>

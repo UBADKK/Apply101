@@ -9,6 +9,7 @@ const NAV_ITEMS = [
   { to: '/for-you', label: 'For me', end: false },
   { to: '/jobs', label: 'My jobs', end: false },
   { to: '/matches', label: 'Matches', end: false },
+  { to: '/letters', label: 'Letters', end: false },
 ];
 
 export function Layout() {

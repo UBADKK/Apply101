@@ -220,9 +220,101 @@ def fake_job_analysis(prompt: str) -> dict:
     }
 
 
+LETTER_DATA_MARKER = "Cover letter data:"
+
+_LETTER_TEMPLATES = {
+    "en": {
+        "greeting": "Dear hiring team,",
+        "opening": "I am applying for the position of {title}{at_company}.",
+        "role": "I am looking for a role as {role}.",
+        "experience": "I have {years} years of professional experience.",
+        "skills": "In my work I use {skills}.",
+        "languages": "Languages: {languages}.",
+        "achievement": "[Describe a concrete project or achievement that fits this job]",
+        "company": "[Explain in your own words why you want to work for this company]",
+        "closing": "I would be glad to talk about how I can contribute.",
+        "signoff": "Kind regards,",
+    },
+    "de": {
+        "greeting": "Sehr geehrte Damen und Herren,",
+        "opening": "hiermit bewerbe ich mich auf die Stelle als {title}{at_company}.",
+        "role": "Ich suche eine Position als {role}.",
+        "experience": "Ich habe {years} Jahre Berufserfahrung.",
+        "skills": "In meiner Arbeit nutze ich {skills}.",
+        "languages": "Sprachen: {languages}.",
+        "achievement": "[Beschreiben Sie ein konkretes Projekt oder einen Erfolg, der zu dieser Stelle passt]",
+        "company": "[Erklären Sie mit eigenen Worten, warum Sie bei diesem Unternehmen arbeiten möchten]",
+        "closing": "Über ein persönliches Gespräch freue ich mich.",
+        "signoff": "Mit freundlichen Grüßen",
+    },
+    "tr": {
+        "greeting": "Sayın işe alım ekibi,",
+        "opening": "{title} pozisyonu için{at_company} başvuruyorum.",
+        "role": "{role} olarak çalışabileceğim bir pozisyon arıyorum.",
+        "experience": "{years} yıllık profesyonel deneyimim var.",
+        "skills": "Çalışmalarımda {skills} kullanıyorum.",
+        "languages": "Diller: {languages}.",
+        "achievement": "[Bu işe uyan somut bir proje veya başarınızı yazın]",
+        "company": "[Bu şirkette neden çalışmak istediğinizi kendi cümlelerinizle yazın]",
+        "closing": "Katkı sağlayabileceğim konuları görüşmekten memnuniyet duyarım.",
+        "signoff": "Saygılarımla,",
+    },
+}
+
+
+def fake_cover_letter(prompt: str) -> dict:
+    """A CoverLetterStructured payload for a backend/app/cover_letter.py
+    prompt: a fixed template per language filled only with the given facts,
+    with [placeholders] for everything else."""
+    data = _data_section(prompt, LETTER_DATA_MARKER)
+    language_match = re.search(r"^Language: (\w+)$", data, re.MULTILINE)
+    language = language_match.group(1) if language_match else "en"
+    template = _LETTER_TEMPLATES.get(language, _LETTER_TEMPLATES["en"])
+    facts_start = data.find("Facts JSON:")
+    gaps_start = data.find("Known gaps JSON:")
+    try:
+        facts = json.loads(data[facts_start + len("Facts JSON:"):gaps_start].strip()) if facts_start >= 0 else []
+    except ValueError:
+        facts = []
+    by_id = {fact.get("id"): fact.get("text", "") for fact in facts if isinstance(fact, dict)}
+    used = []
+
+    def take(fact_id):
+        value = by_id.get(fact_id)
+        if value:
+            used.append(fact_id)
+        return value
+
+    title = take("job.title") or "[job title]"
+    company = take("company.name") or take("job.company")
+    at_company = ""
+    if company:
+        at_company = {"en": f" at {company}", "de": f" bei {company}", "tr": f" {company} bünyesindeki"}.get(language, f" at {company}")
+    lines = [template["greeting"], "", template["opening"].format(title=title, at_company=at_company)]
+    role = take("profile.target_role")
+    if role:
+        lines.append(template["role"].format(role=role))
+    years = take("profile.experience")
+    if years:
+        lines.append(template["experience"].format(years=years))
+    skills = take("profile.skills")
+    if skills:
+        lines.append(template["skills"].format(skills=", ".join(skills.split(", ")[:6])))
+    languages = take("profile.languages")
+    if languages:
+        lines.append(template["languages"].format(languages=languages))
+    lines += ["", template["achievement"], template["company"], "", template["closing"], "", template["signoff"], "[Your name]"]
+    return {
+        "letter_text": "\n".join(lines),
+        "used_fact_ids": used,
+        "missing_information": [FAKE_ANALYSIS_NOTE + ": fake demo draft, not written by a language model."],
+    }
+
+
 _FAKE_PAYLOADS = {
     "profile_analysis": fake_profile_analysis,
     "job_analysis": fake_job_analysis,
+    "cover_letter": fake_cover_letter,
 }
 
 
@@ -238,7 +330,7 @@ class _FakeResponses:
         if build is None:
             raise FakeAnalysisUnsupported(
                 "The fake analysis provider only produces the structured "
-                "profile_analysis and job_analysis outputs."
+                "profile_analysis, job_analysis and cover_letter outputs."
             )
         return _FakeResponse(json.dumps(build(input), ensure_ascii=False))
 

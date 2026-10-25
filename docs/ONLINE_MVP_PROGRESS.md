@@ -32,7 +32,7 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 | W10 | Phase 1: companies, multi-source connectors (Arbeitnow, Greenhouse, Lever, Ashby), bounded admin sync | in review | See "Scope extension task" below. No live GET was possible here (network policy 403); the 30 board ids are unverified candidates, disabled until a live check passes |
 | W11 | Phase 2: catalog browse and "Jobs for me" (backend and web client) | in review | `GET /catalog/jobs`, `GET /catalog/filters`, `GET /users/{id}/profiles/{id}/recommendations`; screens `/catalog`, `/for-you` |
 | W12 | Phase 2: URL import (ATS APIs, JobPosting JSON-LD, SSRF protections) | in review | `POST /jobs/import/preview`, plus the import box on `/jobs/new`. Not tried against live sites (network policy) |
-| W13 | Phase 3: motivation letters (TR/EN/DE, versions, quota, fake provider) | todo | |
+| W13 | Phase 3: motivation letters (TR/EN/DE, versions, quota, fake provider) | in review | `backend/routers/cover_letters.py`, `backend/app/cover_letter.py`, migration `phase10_cover_letters`, panel on the job page and `/letters`. Checked with the fake provider only, which is a template: the real model's writing quality is not checked |
 
 ## Acceptance criteria
 
@@ -79,9 +79,16 @@ from it.
     - `backend/app/url_import.py`, and its route in `routers/jobs.py`;
     - screens `/catalog`, `/for-you` and the import box;
     - Vitest and e2e (`e2e/discovery.spec.ts`).
+  - phase 2 review: changes requested (findings listed in the next phase 2
+    fix commit);
+  - **phase 3 code:**
+    - letters backend, migration `phase10_cover_letters` and the fake
+      provider template;
+    - the letter panel on the job page and the `/letters` page;
+    - tests and e2e.
 - **Next:**
-  1. reviewer on phase 1 fixes and phase 2;
-  2. phase 3 (motivation letters);
+  1. fix the phase 2 review findings;
+  2. reviewer on phase 3 and the fixes;
   3. the draft PR.
 - **Environment limits found:**
   - The cloud network policy answers 403 to `boards-api.greenhouse.io`,

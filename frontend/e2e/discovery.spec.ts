@@ -99,6 +99,28 @@ test.describe.serial('Shared pool and jobs for me', () => {
     await expect(page.getByLabel('Job title')).toHaveValue('');
   });
 
+  test('a motivation letter is drafted from sourced facts, edited, saved and downloaded', async ({ page }) => {
+    await login(page);
+    await page.goto('/catalog');
+    await page.getByRole('link', { name: 'Pool Backend Developer' }).click();
+    await expect(page.getByRole('heading', { name: 'Motivation letter' })).toBeVisible();
+    await page.getByLabel('Language').selectOption('de');
+    await page.getByRole('button', { name: 'Write a draft' }).click();
+    await expect(page.getByText('Demo draft')).toBeVisible();
+    const editor = page.getByLabel(/Letter \(German/);
+    await expect(editor).toHaveValue(/Sehr geehrte Damen und Herren/);
+    await expect(editor).toHaveValue(/\[Beschreiben Sie/);
+    await expect(page.getByText(/No CV text/)).toBeVisible();
+    await editor.fill('Sehr geehrte Damen und Herren,\n\nmein eigener Text.');
+    await page.getByRole('button', { name: 'Save as new version' }).click();
+    await expect(page.getByText('This version is your own edit.')).toBeVisible();
+    const download = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Download .txt' }).click();
+    expect((await download).suggestedFilename()).toBe('motivation-letter-pool-backend-developer-de.txt');
+    await page.getByRole('link', { name: 'Letters' }).click();
+    await expect(page.getByText(/German · 2 versions/)).toBeVisible();
+  });
+
   test('pool, jobs for me and import fit a phone screen', async ({ browser }) => {
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
     const page = await context.newPage();

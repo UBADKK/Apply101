@@ -731,3 +731,40 @@ class JobImportPreviewRequest(BaseModel):
         if not value or len(value) > 2000:
             raise ValueError("url must be 1-2000 characters.")
         return value
+
+
+
+# --- Motivation letters ---------------------------------------------------------
+
+COVER_LETTER_MAX_CHARS = 8000
+
+
+class CoverLetterStructured(BaseModel):
+    """Structured output of the letter prompt (backend/app/cover_letter.py)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    letter_text: str
+    used_fact_ids: list[str]
+    missing_information: list[str]
+
+
+class CoverLetterCreate(BaseModel):
+    language: Literal["tr", "en", "de"]
+
+
+class CoverLetterEdit(BaseModel):
+    body_text: str
+    # The version the edit started from; a newer version means someone
+    # (another tab) saved meanwhile, and the edit is refused with 409.
+    base_version_id: int
+
+    @field_validator("body_text")
+    @classmethod
+    def _body(cls, value: str) -> str:
+        value = (value or "").strip()
+        if not value:
+            raise ValueError("The letter is empty.")
+        if len(value) > COVER_LETTER_MAX_CHARS:
+            raise ValueError(f"Use at most {COVER_LETTER_MAX_CHARS} characters.")
+        return value

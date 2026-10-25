@@ -452,3 +452,49 @@ class AnalysisQuotaReservation(Base):
     user_id = Column(Integer, nullable=False)
     job_id = Column(Integer, nullable=True)
     reserved_at = Column(Float, nullable=False)
+
+
+class CoverLetter(Base):
+    """A user's motivation letter for one job in one language. Private to
+    its user (never shared, never part of the catalog). The job title and
+    company are kept as written at creation, so the letter stays readable
+    if the job changes or is deleted. Created by
+    backend/migrations/phase10_cover_letters.py or create_all."""
+
+    __tablename__ = "cover_letters"
+
+    letter_id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.user_id"), nullable=False, index=True)
+    profile_id = Column(Integer, ForeignKey("candidate_profiles.profile_id"), nullable=True)
+    job_id = Column(Integer, ForeignKey("jobs.job_id"), nullable=True, index=True)
+    language = Column(String, nullable=False)
+    job_title = Column(String, nullable=True)
+    company_name = Column(String, nullable=True)
+    current_version_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, nullable=True)
+
+
+class CoverLetterVersion(Base):
+    """One saved text of a letter. Versions are never changed or replaced:
+    a regeneration or an edit adds a new one, so an edited draft is never
+    overwritten. kind is "generated" or "edited"."""
+
+    __tablename__ = "cover_letter_versions"
+    __table_args__ = (
+        UniqueConstraint("letter_id", "version_no", name="uq_cover_letter_versions_letter_version"),
+    )
+
+    version_id = Column(Integer, primary_key=True, index=True)
+    letter_id = Column(Integer, ForeignKey("cover_letters.letter_id"), nullable=False, index=True)
+    version_no = Column(Integer, nullable=False)
+    kind = Column(String, nullable=False)
+    body_text = Column(Text, nullable=False)
+    # Generated versions: the facts given to the model (with their source),
+    # the facts it says it used, and what was missing.
+    grounding_json = Column(Text, nullable=True)
+    model = Column(String, nullable=True)
+    prompt_version = Column(String, nullable=True)
+    # Owner of the letter, for the rolling per-user generation quota.
+    user_id = Column(Integer, nullable=False, index=True)
+    created_at = Column(DateTime, nullable=True)

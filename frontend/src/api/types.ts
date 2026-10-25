@@ -324,3 +324,38 @@ export interface ImportPreview {
   missing: string[];
   notes: string[];
 }
+
+export type LetterLanguage = 'tr' | 'en' | 'de';
+
+export interface LetterFact {
+  id: string;
+  source: 'profile' | 'cv' | 'job' | 'company';
+  label: string;
+  text: string;
+  source_url?: string;
+}
+
+export interface LetterVersion {
+  version_id: number;
+  version_no: number;
+  kind: 'generated' | 'edited';
+  body_text: string;
+  grounding: { facts: LetterFact[]; gaps: { code: string; message: string }[]; used_fact_ids: string[]; missing_information: string[] } | null;
+  model: string | null;
+  prompt_version: string | null;
+  created_at: string | null;
+}
+
+export interface CoverLetter {
+  letter_id: number;
+  job_id: number | null;
+  profile_id: number | null;
+  language: LetterLanguage;
+  job_title: string | null;
+  company_name: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  current_version: LetterVersion | null;
+  version_count: number;
+  versions?: LetterVersion[];
+}

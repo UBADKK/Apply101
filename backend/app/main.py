@@ -15,6 +15,7 @@ from ..routers import auth
 from ..routers import meta
 from ..routers import catalog_admin
 from ..routers import catalog
+from ..routers import cover_letters
 
 
 
@@ -28,6 +29,7 @@ app.include_router(auth.router)
 app.include_router(meta.router)
 app.include_router(catalog_admin.router)
 app.include_router(catalog.router)
+app.include_router(cover_letters.router)
 
 Base.metadata.create_all(bind=engine)
 

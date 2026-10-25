@@ -11,6 +11,7 @@ from ..app.analysis_guard import (
     USER_OPERATION_TYPE,
 )
 from ..app.auth_dependencies import get_current_admin, require_user_access
+from ..app.cover_letter import OPERATION_TYPE as COVER_LETTER_OPERATION_TYPE
 
 
 router = APIRouter(
@@ -140,6 +141,22 @@ def delete_user(
 
     db.query(models.AnalysisQuotaReservation).filter(
         models.AnalysisQuotaReservation.user_id == user_id
+    ).delete(synchronize_session=False)
+
+    # The user's motivation letters (with every version) and their letter
+    # generation lease; nobody else's letters are touched.
+    letter_ids = select(models.CoverLetter.letter_id).where(
+        models.CoverLetter.user_id == user_id
+    )
+    db.query(models.CoverLetterVersion).filter(
+        models.CoverLetterVersion.letter_id.in_(letter_ids)
+    ).delete(synchronize_session=False)
+    db.query(models.CoverLetter).filter(
+        models.CoverLetter.user_id == user_id
+    ).delete(synchronize_session=False)
+    db.query(models.AnalysisGuard).filter(
+        models.AnalysisGuard.operation_type == COVER_LETTER_OPERATION_TYPE,
+        models.AnalysisGuard.resource_id == user_id
     ).delete(synchronize_session=False)
 
     # Jobs this user created, plus everything depending on them, children

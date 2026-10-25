@@ -6,6 +6,7 @@ import type {
   CatalogFilterOptions,
   CatalogPage,
   CatalogQuery,
+  CoverLetter,
   CurrentUser,
   Job,
   JobInput,
@@ -14,6 +15,7 @@ import type {
   MatchResponse,
   Meta,
   ImportPreview,
+  LetterLanguage,
   Profile,
   ProfileAnalysisPayload,
   ProfileInput,
@@ -68,6 +70,16 @@ export const api = {
   recommendations: (userId: number, profileId: number, query: CatalogQuery & { include_ineligible?: boolean }) =>
     apiRequest<RecommendationPage>(`/users/${userId}/profiles/${profileId}/recommendations`, { query: cleanQuery({ ...query }) }),
   importPreview: (url: string) => apiRequest<ImportPreview>('/jobs/import/preview', { method: 'POST', json: { url } }),
+
+  listLetters: (userId: number) => apiRequest<CoverLetter[]>(`/users/${userId}/cover-letters`),
+  getLetter: (userId: number, letterId: number) => apiRequest<CoverLetter>(`/users/${userId}/cover-letters/${letterId}`),
+  createLetter: (userId: number, profileId: number, jobId: number, language: LetterLanguage) =>
+    apiRequest<CoverLetter>(`/users/${userId}/profiles/${profileId}/jobs/${jobId}/cover-letters`, { method: 'POST', json: { language } }),
+  saveLetter: (userId: number, letterId: number, bodyText: string, baseVersionId: number) =>
+    apiRequest<CoverLetter>(`/users/${userId}/cover-letters/${letterId}/versions`, { method: 'POST', json: { body_text: bodyText, base_version_id: baseVersionId } }),
+  regenerateLetter: (userId: number, letterId: number) =>
+    apiRequest<CoverLetter>(`/users/${userId}/cover-letters/${letterId}/regenerate`, { method: 'POST' }),
+  deleteLetter: (userId: number, letterId: number) => apiRequest<null>(`/users/${userId}/cover-letters/${letterId}`, { method: 'DELETE' }),
 
   listMatches: (userId: number, profileId: number) =>
     apiRequest<MatchList>(`/users/${userId}/profiles/${profileId}/matches`, { query: { limit: 500 } }),

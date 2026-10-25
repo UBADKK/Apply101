@@ -5,6 +5,7 @@ import { api } from '../api/endpoints';
 import type { AnalyzedJob, MatchData } from '../api/types';
 import { useCurrentUser } from '../auth/AuthContext';
 import { Alert } from '../components/Alert';
+import { CoverLetterPanel } from '../components/CoverLetterPanel';
 import { EmptyState } from '../components/EmptyState';
 import { ErrorAlert } from '../components/ErrorAlert';
 import { formatDateTime, titleCase } from '../components/labels';
@@ -296,6 +297,7 @@ export function JobDetailPage() {
           </div>
         )}
       </section>
+      <CoverLetterPanel userId={user.user_id} profileId={profile?.profile_id ?? null} jobId={jobId} />
     </>
   );
 }

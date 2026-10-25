@@ -19,7 +19,15 @@ Flow:
    pool that was ranked;
 9. import a job from a link (Greenhouse, Lever, Ashby, or a page with
    JobPosting JSON-LD), check the fields and save it as a personal job.
-   Unsupported pages fall back to pasting the text.
+   Unsupported pages fall back to pasting the text;
+10. write a motivation letter draft (English, German or Turkish) on a job
+    page.
+    - The draft comes from the user's profile, CV, the posting and sourced
+      company information.
+    - The page shows the facts used and what is missing.
+    - The user can edit, save new versions, copy, download a .txt file and
+      regenerate; an edited version is never overwritten.
+    - With the fake provider the draft is a fixed template.
 
 ## Requirements
 

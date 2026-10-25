@@ -12,3 +12,8 @@ JOB_ANALYSIS_PROMPT_VERSION = "job_analysis_v13"
 
 MATCH_MODEL = "backend_rule_based"
 MATCH_VERSION = "backend_match_v6"
+
+# Motivation letter drafts (backend/app/cover_letter.py). Stored with every
+# generated version; bump when the prompt or its output schema changes.
+COVER_LETTER_MODEL = "gpt-4.1-mini"
+COVER_LETTER_PROMPT_VERSION = "cover_letter_v1"
