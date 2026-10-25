@@ -196,6 +196,18 @@ that an interrupted session can resume.
 
 ## Log
 
+### 2026-10-25: two minor review notes on PR #26
+- **`outdatedParts`:** a direct regression test for `770cc3e`
+  (`frontend/src/components/StaleMatchNotice.test.ts`). With no current
+  analysis, both parts count as missing, whatever analysis id the result
+  stored. The test fails on the code before `770cc3e`.
+- **E2E sandbox:** an empty `APPLY101_E2E_SANDBOX` now counts as unset, so a
+  new temp sandbox is used. Before, the database became `./e2e.db` and the
+  upload dir the repository's `uploads/`, and the backend refused to start.
+- **Checks (Linux cloud session):** Vitest 32 OK (7 files); typecheck and
+  build pass; Playwright 5 OK in Chromium 153 with
+  `APPLY101_E2E_SANDBOX=` (empty). The backend is unchanged.
+
 ### 2026-10-25: W4 checked in a Linux cloud session
 - **Code:** branch `feat/online-mvp-web-client` at `e5ada5c` (PR #26 head).
   W4 was not changed.

@@ -21,7 +21,8 @@ const frontendDir = dirname(fileURLToPath(import.meta.url));
  */
 const repoRoot = resolve(frontendDir, '..');
 // Created once: worker processes load this config again but inherit the env.
-const sandbox = process.env.APPLY101_E2E_SANDBOX ?? mkdtempSync(join(tmpdir(), 'apply101-e2e-'));
+// An empty value counts as unset, so it never resolves to the working directory.
+const sandbox = process.env.APPLY101_E2E_SANDBOX || mkdtempSync(join(tmpdir(), 'apply101-e2e-'));
 process.env.APPLY101_E2E_SANDBOX = sandbox;
 const browser = process.env.APPLY101_E2E_BROWSER || 'msedge';
 if (browser !== 'msedge' && browser !== 'chromium') {
