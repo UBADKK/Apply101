@@ -106,6 +106,27 @@ def get_user_profiles(
     return profiles
 
 
+# Get the user's languages (written by profile create/PATCH); primary first.
+@router.get("/{user_id}/languages", response_model=list[schemas.UserLanguageResponse])
+def get_user_languages(
+    user_id: int,
+    current_user: models.User = Depends(require_user_access),
+    db: Session = Depends(get_db),
+):
+    user = db.query(models.User).filter(models.User.user_id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return db.query(models.UserLanguage).filter(
+        models.UserLanguage.user_id == user_id
+    ).order_by(
+        models.UserLanguage.is_primary.desc(),
+        models.UserLanguage.language_name,
+        models.UserLanguage.user_language_id,
+    ).all()
+
+
 #Add new profile to a user
 @router.post("/{user_id}/profiles", response_model=schemas.CandidateProfileResponse)
 def create_candidate_profile(

@@ -33,8 +33,9 @@ smoke run of `backend.app.main` in a throwaway sandbox with fake data,
 | 4 | `POST /users/{user_id}/profiles/{profile_id}/analyze` (in-flight guard and cooldown); `POST /jobs/{job_id}/analyze` (own manual jobs only, per-user guard, 10 analyses per rolling 24 h, provider spend/credit limit mapped to 503) | 503 "Analysis service is not configured." without a key |
 | 5 | `POST /users/{user_id}/profiles/{profile_id}/jobs/{job_id}/match`, `GET /users/{user_id}/profiles/{profile_id}/matches`; result carries `eligibility_status` (`eligible` / `ineligible` / `review_required`), scores and reason codes | 400 `ERR_PROFILE_ANALYSIS_OUTDATED_OR_MISSING` until analyzed |
 
-The backend already covers steps 1-5. There is no web client in the
-repository, and there is no deployment configuration either.
+The backend already covers steps 1-5. At this baseline the repository had
+no web client and no deployment configuration. W4 adds the web client in
+`frontend/`; see the progress file.
 
 ## In scope
 
@@ -151,8 +152,8 @@ a recorded check on staging does.
 
 ## Open decisions (owner: project owner)
 
-- **D1** Web client approach, for example server-rendered pages or a
-  separate single-page app.
+- **D1** Web client approach. Decided 2026-10-22: a React + TypeScript +
+  Vite single-page app in `frontend/`, using the existing FastAPI backend.
 - **D2** Hosting provider and database engine for the first release.
 - **D3** OpenAI budget: the model, and the per-user limits for profile and
   job analysis.
