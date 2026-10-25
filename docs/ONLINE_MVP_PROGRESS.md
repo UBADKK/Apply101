@@ -31,7 +31,7 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 | W9 | Fix stale version list in `MATCHING_CONTRACT.md` | todo | Documentation only |
 | W10 | Phase 1: companies, multi-source connectors (Arbeitnow, Greenhouse, Lever, Ashby), bounded admin sync | in review | See "Scope extension task" below. Live check on 2026-10-25: 32 boards read, 29 with open jobs; see the log |
 | W11 | Phase 2: catalog browse and "Jobs for me" (backend and web client) | in review | `GET /catalog/jobs`, `GET /catalog/filters`, `GET /users/{id}/profiles/{id}/recommendations`; screens `/catalog`, `/for-you` |
-| W12 | Phase 2: URL import (ATS APIs, JobPosting JSON-LD, SSRF protections) | in review | `POST /jobs/import/preview`, plus the import box on `/jobs/new`. Live: Greenhouse, Lever and Ashby links previewed; the JSON-LD path not tried live (proxy-only environment) |
+| W12 | Phase 2: URL import (ATS APIs, JobPosting JSON-LD, SSRF protections) | in review | `POST /jobs/import/preview`, plus the import box on `/jobs/new`. Live: Greenhouse, Lever and Ashby links and the JSON-LD parsing of real Arbeitnow pages; the pinned fetch itself needs an environment without a proxy |
 | W13 | Phase 3: motivation letters (TR/EN/DE, versions, quota, fake provider) | in review | `backend/routers/cover_letters.py`, `backend/app/cover_letter.py`, migration `phase10_cover_letters`, panel on the job page and `/letters`. Checked with the fake provider only, which is a template: the real model's writing quality is not checked |
 
 ## Acceptance criteria
@@ -108,7 +108,9 @@ from it.
   1. the project owner's review of PR #27;
   2. the terms of Greenhouse, Lever and Ashby, which could not be reached
      from here;
-  3. a live JSON-LD import check in an environment without a proxy.
+  3. a live check of the pinned page fetch (`guarded_get`) in an
+     environment without a proxy; the JSON-LD parsing itself was checked
+     live.
 - **Environment limits found (first part of the session; network opened
   later, see the log entry "Live check of sources"):**
   - The cloud network policy answers 403 to `boards-api.greenhouse.io`,
@@ -427,9 +429,16 @@ read-only or used a throwaway database; nothing touched `apply101.db`.
 - **URL import live:**
   - Real Greenhouse, Lever and Ashby posting links previewed correctly.
   - LinkedIn was refused.
-  - The JSON-LD path could not be tried here. Its guarded fetch connects
-    straight to the checked address, and this environment only allows
-    traffic through its proxy; without a proxy it connects directly.
+  - The JSON-LD path, live on three real Arbeitnow job pages: robots.txt
+    allowed them, and each preview had title, company, location and the
+    full text; the titles equal the API's.
+    - The pages were fetched through this environment's proxy and then
+      handed to the same `url_import` functions (robots check, JSON-LD
+      parser, required fields).
+  - The pinned `guarded_get` connection itself could not be tried live. It
+    connects straight to the checked address, and this environment only
+    allows traffic through its proxy. Its tests run against a local
+    server.
 
 ### 2026-10-25: two minor review notes on PR #26
 - **`outdatedParts`:** a direct regression test for `770cc3e`
