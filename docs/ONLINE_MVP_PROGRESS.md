@@ -106,8 +106,9 @@ from it.
     of sources".
 - **Next:**
   1. the project owner's review of PR #27;
-  2. the terms of Greenhouse, Lever and Ashby, which could not be reached
-     from here;
+  2. a decision on enabling Greenhouse, Lever and Ashby boards (their terms
+     were checked; none grants third-party reuse explicitly), and an
+     Ashby partner feed request;
   3. a live check of the pinned page fetch (`guarded_get`) in an
      environment without a proxy; the JSON-LD parsing itself was checked
      live.
@@ -133,9 +134,10 @@ from it.
 3. Start the app, then seed the boards (`sync_catalog seed --yes` or
    `POST /admin/catalog/boards/seed`).
 4. Check every board live (`check --unverified --yes`).
-5. Check each source's terms, and enable the verified boards. A source with
-   unchecked terms needs `acknowledge_terms`, and the acknowledgement is
-   written into the board's notes.
+5. Read each source's terms note (`GET /admin/catalog/sources`), then
+   enable the verified boards. No source is published automatically, so
+   enabling needs `acknowledge_terms`; the acknowledgement is written into
+   the board's notes.
 6. Sync, for example `sync --max-boards 10 --yes`. To include Arbeitnow,
    add `--include-arbeitnow --acknowledge-arbeitnow-terms` (in the API:
    `include_arbeitnow` with `acknowledge_arbeitnow_terms`).
@@ -383,6 +385,33 @@ that an interrupted session can resume.
 
 ## Log
 
+### 2026-10-25: terms of Greenhouse, Lever and Ashby
+The project owner opened the terms hosts. Everything below was read-only.
+- **Greenhouse:** greenhouse.com/legal publishes only customer agreements
+  (Master subscription agreement, DPA) and policies.
+  - There are no published terms that allow or forbid third parties to
+    reuse postings from the public Job Board API.
+  - developers.greenhouse.io, the API documentation, is still unreachable.
+- **Lever:** lever.co/legal/terms-of-service governs Lever customers (Order
+  Form) and says nothing about third parties reading public postings.
+  - The postings API README describes the API as a way for a company to
+    build its own job site.
+- **Ashby:** the Job Postings API documentation describes the API as data
+  for an organization's own careers page.
+  - For partners that ingest postings, Ashby documents "Dedicated Partner
+    Job Feeds": customers opt in, and partners contact
+    integrations@ashbyhq.com.
+  - ashbyhq.com/terms is the customer agreement and says nothing about
+    third parties.
+- **Result:** none of the three grants third-party reuse explicitly.
+  - They are recorded as checked, and none is published automatically: a
+    board is enabled only with `acknowledge_terms`, ideally with the
+    company's consent.
+  - For Ashby, a dedicated partner feed is the documented way and the
+    recommended next step.
+- **EU Greenhouse API host:** `boards-api.eu.greenhouse.io` is still
+  unreachable from this environment.
+
 ### 2026-10-25: live check of sources
 The project owner opened the network for the sources. Every check below was
 read-only or used a throwaway database; nothing touched `apply101.db`.
@@ -425,8 +454,9 @@ read-only or used a throwaway database; nothing touched `apply101.db`.
 - **Connector formats:** every live posting parsed, with 0 skipped.
   - The Lever README confirms the fields used (`skip`, `limit`,
     `mode=json`, `country`, `workplaceType`, `hostedUrl`) and the EU hosts.
-  - The Greenhouse and Ashby documentation pages could not be reached; their
-    APIs answered in the expected format.
+  - The Ashby documentation (read later) matches the fields used. The
+    Greenhouse documentation is still unreachable; its API answered in the
+    expected format.
 - **Terms:**
   - Arbeitnow, checked (arbeitnow.com/terms, section 11): the API is
     provided as is; using it requires a link back to Arbeitnow.com, now
@@ -436,10 +466,9 @@ read-only or used a throwaway database; nothing touched `apply101.db`.
     personal, non-commercial viewing. Because of it the project owner
     turned automatic publishing of Arbeitnow off; a sync needs an explicit
     acknowledgement to include it.
-  - Lever: the README gives no reuse terms, and lever.co/terms could not be
-    reached.
-  - Greenhouse and Ashby: their terms pages could not be reached.
-  - These three stay "not checked", with no auto-publish.
+  - Greenhouse, Lever and Ashby: checked later, see the entry "Terms of
+    Greenhouse, Lever and Ashby". None grants third-party reuse
+    explicitly, and none is published automatically.
 - **URL import live:**
   - Real Greenhouse, Lever and Ashby posting links previewed correctly.
   - LinkedIn was refused.

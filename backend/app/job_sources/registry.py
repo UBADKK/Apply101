@@ -34,11 +34,6 @@ class SourceInfo:
     fetch_board: Callable
 
 
-_UNCHECKED_NOTE = (
-    "Terms not checked: the provider's documentation and terms pages could not "
-    "be reached from the session that added this connector (2026-10-25). "
-    "Check them before enabling a board."
-)
 
 SOURCES: dict[str, SourceInfo] = {
     "arbeitnow": SourceInfo(
@@ -76,9 +71,16 @@ SOURCES: dict[str, SourceInfo] = {
         terms_url="https://www.greenhouse.com/legal",
         attribution="Job listing published on the company's Greenhouse job board; apply on the original posting.",
         attribution_url=None,
-        terms_checked=False,
+        terms_checked=True,
         auto_publish=False,
-        terms_note=_UNCHECKED_NOTE,
+        terms_note=(
+            "Checked 2026-10-25: greenhouse.com/legal publishes only customer agreements "
+            "(Master subscription agreement, DPA) and policies; there are no published "
+            "terms that allow or forbid third parties to reuse postings from the public "
+            "Job Board API. developers.greenhouse.io (the API documentation) could not be "
+            "reached. Without an explicit permission, boards stay off until an admin "
+            "acknowledges this (ideally with the company's consent)."
+        ),
         fetch_board=greenhouse.fetch_board,
     ),
     "lever": SourceInfo(
@@ -87,16 +89,18 @@ SOURCES: dict[str, SourceInfo] = {
         per_company=True,
         regions=("global", "eu"),
         docs_url="https://github.com/lever/postings-api",
-        terms_url="https://www.lever.co/terms",
+        terms_url="https://www.lever.co/legal/terms-of-service",
         attribution="Job listing published on the company's Lever job site; apply on the original posting.",
         attribution_url=None,
-        terms_checked=False,
+        terms_checked=True,
         auto_publish=False,
         terms_note=(
-            "Documentation read 2026-10-25 (github.com/lever/postings-api README): it "
-            "describes the API as a way to build a job site and states no reuse or "
-            "attribution terms. lever.co/terms could not be reached. Check them "
-            "before enabling a board."
+            "Checked 2026-10-25: the postings API README describes the API as a way "
+            "for a company to build its own job site and states no reuse or "
+            "attribution terms; lever.co/legal/terms-of-service governs Lever customers "
+            "(Order Form) and says nothing about third parties reading public postings. "
+            "Without an explicit permission, boards stay off until an admin acknowledges "
+            "this (ideally with the company's consent)."
         ),
         fetch_board=lever.fetch_board,
     ),
@@ -109,9 +113,16 @@ SOURCES: dict[str, SourceInfo] = {
         terms_url="https://www.ashbyhq.com/terms",
         attribution="Job listing published on the company's Ashby job board; apply on the original posting.",
         attribution_url=None,
-        terms_checked=False,
+        terms_checked=True,
         auto_publish=False,
-        terms_note=_UNCHECKED_NOTE,
+        terms_note=(
+            "Checked 2026-10-25: the Job Postings API documentation describes it as data "
+            "for an organization's own careers page; for partners that ingest postings, "
+            "Ashby documents Dedicated Partner Job Feeds (customers opt in; contact "
+            "integrations@ashbyhq.com). ashbyhq.com/terms is the customer agreement and "
+            "says nothing about third parties. Prefer a partner feed; enable a board "
+            "only with acknowledgement (ideally with the company's consent)."
+        ),
         fetch_board=ashby.fetch_board,
     ),
 }

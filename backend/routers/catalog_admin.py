@@ -143,8 +143,8 @@ def update_board(
         raise _error(
             409,
             "ERR_SOURCE_TERMS_UNCHECKED",
-            f"The terms of {info.label} are not checked ({info.terms_url}). "
-            "Check them, then enable the board with acknowledge_terms=true.",
+            f"{info.label} is not published automatically ({info.terms_url}): {info.terms_note} "
+            "To enable the board anyway, repeat with acknowledge_terms=true.",
         )
     now = catalog_sync.utcnow()
     closed_jobs = 0

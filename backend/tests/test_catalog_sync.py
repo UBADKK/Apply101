@@ -565,9 +565,12 @@ class CatalogAdminRouteTests(CatalogSyncBase):
         self.assertFalse(sources["arbeitnow"]["auto_publish"])
         self.assertEqual(sources["arbeitnow"]["attribution_url"], "https://www.arbeitnow.com")
         self.assertIn("link back", sources["arbeitnow"]["terms_note"])
+        # Checked, but no source grants third-party reuse: none is
+        # published automatically.
         for source in ("greenhouse", "lever", "ashby"):
-            self.assertFalse(sources[source]["terms_checked"])
+            self.assertTrue(sources[source]["terms_checked"])
             self.assertFalse(sources[source]["auto_publish"])
+        self.assertIn("Dedicated Partner Job Feeds", sources["ashby"]["terms_note"])
 
     def test_company_board_list_holds_live_check_results(self):
         import json as _json
