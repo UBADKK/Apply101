@@ -144,8 +144,17 @@ from it.
 `job_status = "unknown"`.
 - The shared pool and "Jobs for me" list only jobs a sync has seen open
   (`active`).
+- The older routes still show every catalog job to signed-in users,
+  whatever its status: `GET /jobs/`, `GET /jobs/{id}`,
+  `GET /jobs/analyzed` and `match-analyzed`. They existed before the pool,
+  and the web client uses them only for the user's own jobs and the job
+  page. Legacy Arbeitnow rows already in a database therefore stay
+  reachable there.
 - A complete Arbeitnow sync adopts the legacy jobs it sees, and closes the
   ones it no longer sees.
+- The legacy `POST /jobs/fetch` and `/jobs/fetch-pages` now need
+  `acknowledge_arbeitnow_terms=true` too (409 otherwise, before any
+  request to Arbeitnow).
 
 **Empty feeds.** A complete fetch that returns no posting at all closes
 nothing. It is treated as a source hiccup, not as every job closing at
@@ -164,8 +173,10 @@ disabled, or until a later fetch lists other jobs.
 publishing is off (`auto_publish = False`).
 - Reason: section 2 of its site terms limits the site's own materials to
   personal, non-commercial viewing.
-- A sync includes Arbeitnow only with an explicit acknowledgement; without
-  it the request is refused (409) before anything is fetched.
+- A sync includes Arbeitnow only with an explicit acknowledgement: the new
+  sync (API and CLI) and the legacy fetch routes alike. Without it the
+  request is refused (409) before anything is fetched. The
+  acknowledgement is recorded in the run's parameters.
 - Its API terms (section 11) were checked: a link back to Arbeitnow.com is
   required, and it is shown on the pool, "Jobs for me" and the job page.
 

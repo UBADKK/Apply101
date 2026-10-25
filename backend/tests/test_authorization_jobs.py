@@ -505,7 +505,7 @@ class AdminSuccessAuthPassTests(_BaseJobsAuthorizationTestCase):
             "backend.routers.jobs.requests.get", return_value=mock_response
         ) as mock_get:
             response = self.client.post(
-                "/jobs/fetch", headers=self._auth_headers(admin_id)
+                "/jobs/fetch?acknowledge_arbeitnow_terms=true", headers=self._auth_headers(admin_id)
             )
 
         self.assertEqual(response.status_code, 200)
@@ -523,7 +523,7 @@ class AdminSuccessAuthPassTests(_BaseJobsAuthorizationTestCase):
             "backend.routers.jobs.requests.get", return_value=mock_response
         ) as mock_get, patch("backend.routers.jobs.time.sleep") as mock_sleep:
             response = self.client.post(
-                "/jobs/fetch-pages?alljobs=false&maxpage=1",
+                "/jobs/fetch-pages?alljobs=false&maxpage=1&acknowledge_arbeitnow_terms=true",
                 headers=self._auth_headers(admin_id),
             )
 

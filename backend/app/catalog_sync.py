@@ -582,6 +582,7 @@ def sync_one(
     board: models.JobSourceBoard | None,
     max_pages: int,
     now_fn: Callable[[], datetime] = utcnow,
+    terms_acknowledged: bool = False,
 ) -> dict:
     info = source_info(source)
     if info is None:
@@ -596,6 +597,9 @@ def sync_one(
             "board_token": board.board_token if board is not None else None,
             "region": board.region if board is not None else "global",
             "max_pages": max_pages,
+            # An explicit acknowledgement of a source that is not published
+            # automatically (recorded with the run).
+            "terms_acknowledged": terms_acknowledged,
         },
         started_at=started_at,
     )
@@ -760,7 +764,8 @@ def run_sync(
     stopped_reason = None
     try:
         if include_arbeitnow:
-            results.append(sync_one(db, http, source="arbeitnow", board=None, max_pages=max_pages, now_fn=now_fn))
+            results.append(sync_one(db, http, source="arbeitnow", board=None, max_pages=max_pages, now_fn=now_fn,
+                                    terms_acknowledged=acknowledge_arbeitnow_terms))
         boards = select_boards(db, board_ids=board_ids, sources=sources, max_boards=max_boards)
         board_ids_to_sync = [board.board_id for board in boards]
         for index, board_id in enumerate(board_ids_to_sync):

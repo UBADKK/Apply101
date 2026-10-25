@@ -45,6 +45,18 @@ class SyncCatalogCliTests(unittest.TestCase):
         self.assertEqual(session.query(models.JobSourceBoard).count(), 0)
         session.close()
 
+    def test_arbeitnow_needs_acknowledgement(self):
+        code, out = self.run_cli(["sync", "--include-arbeitnow", "--yes"])
+        self.assertEqual(code, 1)
+        self.assertIn("acknowledge_arbeitnow_terms", out)
+        routes = {"https://www.arbeitnow.com/api/job-board-api?page=1": FakeResponse(200, {"data": []})}
+        code, out = self.run_cli(["sync", "--include-arbeitnow", "--acknowledge-arbeitnow-terms", "--yes"], routes=routes)
+        self.assertEqual(code, 0)
+        session = sessionmaker(bind=self.engine)()
+        run = session.query(models.JobFetchRun).one()
+        self.assertTrue(json.loads(run.params_json)["terms_acknowledged"])
+        session.close()
+
     def test_refuses_missing_database_file(self):
         missing = create_engine(f"sqlite:///{os.path.join(self.tmp_dir, 'missing.db')}")
         code, out = self.run_cli(["summary"], engine=missing)

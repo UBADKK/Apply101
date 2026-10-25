@@ -4,7 +4,7 @@ needs server/shell access, like set_admin).
     python -m backend.scripts.sync_catalog seed
     python -m backend.scripts.sync_catalog check --board-id 3
     python -m backend.scripts.sync_catalog check --unverified --max-boards 10
-    python -m backend.scripts.sync_catalog sync --max-boards 5 --max-pages 5 [--include-arbeitnow]
+    python -m backend.scripts.sync_catalog sync --max-boards 5 --max-pages 5 [--include-arbeitnow --acknowledge-arbeitnow-terms]
     python -m backend.scripts.sync_catalog summary
 
 It works on APPLY101_DATABASE_URL (process environment only, never .env),

@@ -2,9 +2,11 @@
 
 terms_checked records whether the source's terms of use were checked
 against the official documentation. A source with auto_publish False is
-never synced into the shared catalog until an admin enables a board of it
-explicitly with acknowledge_terms (see routers/catalog_admin.py), after
-checking the terms named here.
+never synced into the shared catalog without an explicit acknowledgement:
+per-company sources when an admin enables a board with acknowledge_terms
+(routers/catalog_admin.py); Arbeitnow, which has no boards, on every sync
+with acknowledge_arbeitnow_terms (catalog_sync.run_sync) and on the legacy
+POST /jobs/fetch and /jobs/fetch-pages routes.
 """
 from __future__ import annotations
 

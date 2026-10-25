@@ -443,12 +443,33 @@ def get_job_fetch_runs(
 
     return fetch_runs
 
+def _require_arbeitnow_acknowledgement(acknowledged: bool) -> None:
+    """Arbeitnow is not published automatically (registry auto_publish
+    False, decided by the project owner): the legacy fetch routes need the
+    same explicit acknowledgement as POST /admin/catalog/sync, checked
+    before any request to Arbeitnow."""
+    info = source_info("arbeitnow")
+    if not info.auto_publish and not acknowledged:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error_code": "ERR_SOURCE_TERMS_UNCHECKED",
+                "message": (
+                    f"{info.label} is not published automatically ({info.terms_url}); "
+                    "repeat the request with acknowledge_arbeitnow_terms=true after checking its terms."
+                ),
+            },
+        )
+
+
 # Fetch first page of jobs from Arbeitnow
 @router.post("/fetch")
 def fetch_jobs(
+    acknowledge_arbeitnow_terms: bool = Query(False),
     current_admin: models.User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
+    _require_arbeitnow_acknowledgement(acknowledge_arbeitnow_terms)
     url = "https://www.arbeitnow.com/api/job-board-api"
 
     headers = {
@@ -546,9 +567,11 @@ def fetch_jobs_by_pages(
     alljobs: bool = Query(..., description="True ise tüm sayfaları çeker. False ise maxpage veya thispage kullanılır."),
     maxpage: int | None = Query(None, ge=1, description="İlk kaç sayfanın çekileceğini belirler."),
     thispage: int | None = Query(None, ge=1, description="Sadece belirli bir sayfayı çeker."),
+    acknowledge_arbeitnow_terms: bool = Query(False),
     current_admin: models.User = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
+    _require_arbeitnow_acknowledgement(acknowledge_arbeitnow_terms)
     base_url = "https://www.arbeitnow.com/api/job-board-api"
 
     headers = {

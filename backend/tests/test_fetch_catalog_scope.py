@@ -122,6 +122,21 @@ class FetchCatalogScopeTests(unittest.TestCase):
         self.engine.dispose()
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
+    def test_legacy_fetch_needs_arbeitnow_acknowledgement(self):
+        # Arbeitnow is not published automatically: without the
+        # acknowledgement nothing is fetched and nothing is written.
+        with patch.object(jobs.requests, "get") as get:
+            for path in ("/jobs/fetch", "/jobs/fetch-pages?alljobs=false&thispage=1"):
+                response = self.client.post(path, headers=self._auth_headers(self.admin_id))
+                self.assertEqual(response.status_code, 409, path)
+                self.assertEqual(response.json()["detail"]["error_code"], "ERR_SOURCE_TERMS_UNCHECKED")
+        get.assert_not_called()
+        session = self.session_factory()
+        try:
+            self.assertEqual(session.query(models.Job).filter(models.Job.created_by_user_id.is_(None)).count(), 0)
+        finally:
+            session.close()
+
     # ---- helpers ---------------------------------------------------------
 
     def _create_user(self, mail, is_admin=False):
@@ -228,7 +243,7 @@ class FetchCatalogScopeTests(unittest.TestCase):
             "backend.routers.jobs.requests.get", return_value=mock_response
         ) as mock_get:
             response = self.client.post(
-                "/jobs/fetch", headers=self._auth_headers(self.admin_id)
+                "/jobs/fetch?acknowledge_arbeitnow_terms=true", headers=self._auth_headers(self.admin_id)
             )
 
         mock_get.assert_called_once()
@@ -243,7 +258,7 @@ class FetchCatalogScopeTests(unittest.TestCase):
             "backend.routers.jobs.requests.get", return_value=mock_response
         ) as mock_get, patch("backend.routers.jobs.time.sleep") as mock_sleep:
             response = self.client.post(
-                "/jobs/fetch-pages?alljobs=false&thispage=1",
+                "/jobs/fetch-pages?alljobs=false&thispage=1&acknowledge_arbeitnow_terms=true",
                 headers=self._auth_headers(self.admin_id),
             )
 
