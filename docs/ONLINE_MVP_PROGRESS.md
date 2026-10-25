@@ -136,8 +136,9 @@ from it.
 5. Check each source's terms, and enable the verified boards. A source with
    unchecked terms needs `acknowledge_terms`, and the acknowledgement is
    written into the board's notes.
-6. Sync, for example `sync --max-boards 10 --yes`, or with
-   `--include-arbeitnow` to include Arbeitnow.
+6. Sync, for example `sync --max-boards 10 --yes`. To include Arbeitnow,
+   add `--include-arbeitnow --acknowledge-arbeitnow-terms` (in the API:
+   `include_arbeitnow` with `acknowledge_arbeitnow_terms`).
 
 **Legacy Arbeitnow jobs.** Jobs from the old `POST /jobs/fetch` keep
 `job_status = "unknown"`.
@@ -159,13 +160,14 @@ disabled, or until a later fetch lists other jobs.
 - Recommendations are computed on every request, with no paid call and up
   to 1000 jobs. Caching or a rate limit is a follow-up.
 
-**Arbeitnow, a decision for the project owner.** Arbeitnow keeps
-`auto_publish`.
-- Its API terms were checked on 2026-10-25: a link back to Arbeitnow.com is
+**Arbeitnow, decided by the project owner (2026-10-25).** Automatic
+publishing is off (`auto_publish = False`).
+- Reason: section 2 of its site terms limits the site's own materials to
+  personal, non-commercial viewing.
+- A sync includes Arbeitnow only with an explicit acknowledgement; without
+  it the request is refused (409) before anything is fetched.
+- Its API terms (section 11) were checked: a link back to Arbeitnow.com is
   required, and it is shown on the pool, "Jobs for me" and the job page.
-- Section 2 of its site terms (personal, non-commercial viewing of the
-  site's own materials) still needs the owner's confirmation.
-- It is synced only with `include_arbeitnow`.
 
 ### Design decisions
 
@@ -420,8 +422,9 @@ read-only or used a throwaway database; nothing touched `apply101.db`.
     shown on the pool, "Jobs for me" and the job page; the permission is
     revocable.
   - Arbeitnow section 2 limits copying the site's own materials to
-    personal, non-commercial viewing. The project owner should confirm
-    that showing API jobs fits.
+    personal, non-commercial viewing. Because of it the project owner
+    turned automatic publishing of Arbeitnow off; a sync needs an explicit
+    acknowledgement to include it.
   - Lever: the README gives no reuse terms, and lever.co/terms could not be
     reached.
   - Greenhouse and Ashby: their terms pages could not be reached.

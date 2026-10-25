@@ -198,11 +198,14 @@ def sync_catalog(
             db,
             make_http_client(),
             include_arbeitnow=payload.include_arbeitnow,
+            acknowledge_arbeitnow_terms=payload.acknowledge_arbeitnow_terms,
             board_ids=payload.board_ids,
             sources=payload.sources,
             max_boards=payload.max_boards,
             max_pages=payload.max_pages,
         )
+    except catalog_sync.BoardNotSyncable as exc:
+        raise _error(409, "ERR_SOURCE_TERMS_UNCHECKED", str(exc))
     except catalog_sync.SyncAlreadyRunning:
         raise _error(409, "ERR_CATALOG_SYNC_RUNNING", "Another catalog sync is running.")
 

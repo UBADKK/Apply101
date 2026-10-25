@@ -376,7 +376,7 @@ class ReviewFixTests(CatalogSyncBase):
             db.commit()
 
         with self.assertRaises(catalog_sync.SyncAlreadyRunning):
-            catalog_sync.run_sync(db, HttpClient(FakeSession({}), sleep=lambda s: None), include_arbeitnow=True,
+            catalog_sync.run_sync(db, HttpClient(FakeSession({}), sleep=lambda s: None), include_arbeitnow=True, acknowledge_arbeitnow_terms=True,
                                   sleep=steal, now_fn=lambda: NOW)
 
     def test_time_budget_stops_starting_boards(self):
@@ -548,9 +548,21 @@ class CatalogAdminRouteTests(CatalogSyncBase):
         runs = self.client.get("/admin/catalog/runs", headers=self.admin).json()
         self.assertEqual(runs[0]["status"], "completed")
 
+    def test_arbeitnow_sync_needs_acknowledgement(self):
+        session = FakeSession({})
+        with patch.object(catalog_admin, "make_http_client", lambda: HttpClient(session, sleep=lambda s: None)):
+            refused = self.client.post("/admin/catalog/sync", headers=self.admin, json={"include_arbeitnow": True})
+            self.assertEqual(refused.status_code, 409)
+            self.assertEqual(refused.json()["detail"]["error_code"], "ERR_SOURCE_TERMS_UNCHECKED")
+            self.assertEqual(session.calls, [])  # nothing fetched
+            accepted = self.client.post("/admin/catalog/sync", headers=self.admin, json={"include_arbeitnow": True, "acknowledge_arbeitnow_terms": True})
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+        self.assertEqual(accepted.json()["results"][0]["source"], "arbeitnow")
+
     def test_sources_report_terms_and_arbeitnow_link_back(self):
         sources = {item["source"]: item for item in self.client.get("/admin/catalog/sources", headers=self.admin).json()}
         self.assertTrue(sources["arbeitnow"]["terms_checked"])
+        self.assertFalse(sources["arbeitnow"]["auto_publish"])
         self.assertEqual(sources["arbeitnow"]["attribution_url"], "https://www.arbeitnow.com")
         self.assertIn("link back", sources["arbeitnow"]["terms_note"])
         for source in ("greenhouse", "lever", "ashby"):

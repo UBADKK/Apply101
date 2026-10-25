@@ -54,6 +54,8 @@ def main(argv=None, engine=default_engine, http_factory=HttpClient) -> int:
     sync.add_argument("--board-id", type=int, action="append")
     sync.add_argument("--source", choices=["greenhouse", "lever", "ashby"], action="append")
     sync.add_argument("--include-arbeitnow", action="store_true")
+    sync.add_argument("--acknowledge-arbeitnow-terms", action="store_true",
+                      help="Required with --include-arbeitnow: Arbeitnow is not published automatically.")
     sync.add_argument("--max-boards", type=int, default=catalog_sync.DEFAULT_MAX_BOARDS)
     sync.add_argument("--max-pages", type=int, default=catalog_sync.DEFAULT_MAX_PAGES)
     sync.add_argument("--yes", action="store_true")
@@ -101,6 +103,7 @@ def main(argv=None, engine=default_engine, http_factory=HttpClient) -> int:
                 db,
                 http_factory(),
                 include_arbeitnow=args.include_arbeitnow,
+                acknowledge_arbeitnow_terms=args.acknowledge_arbeitnow_terms,
                 board_ids=args.board_id,
                 sources=args.source,
                 max_boards=args.max_boards,
@@ -130,7 +133,7 @@ def main(argv=None, engine=default_engine, http_factory=HttpClient) -> int:
                     .all()
                 ),
             }
-    except catalog_sync.SyncAlreadyRunning as exc:
+    except (catalog_sync.SyncAlreadyRunning, catalog_sync.BoardNotSyncable) as exc:
         print(f"Refusing to continue: {exc}")
         return EXIT_FAILURE
     finally:

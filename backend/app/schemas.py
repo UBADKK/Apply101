@@ -717,6 +717,9 @@ class CatalogBoardUpdate(BaseModel):
 
 class CatalogSyncRequest(BaseModel):
     include_arbeitnow: bool = False
+    # Arbeitnow is not published automatically (registry auto_publish
+    # False): including it needs this acknowledgement.
+    acknowledge_arbeitnow_terms: bool = False
     board_ids: list[int] | None = None
     sources: list[Literal["greenhouse", "lever", "ashby"]] | None = None
     max_boards: int = 10

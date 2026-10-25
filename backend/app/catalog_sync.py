@@ -724,6 +724,7 @@ def run_sync(
     http: HttpClient,
     *,
     include_arbeitnow: bool,
+    acknowledge_arbeitnow_terms: bool = False,
     board_ids: Iterable[int] | None = None,
     sources: Iterable[str] | None = None,
     max_boards: int = DEFAULT_MAX_BOARDS,
@@ -735,6 +736,13 @@ def run_sync(
 ) -> dict:
     max_boards = max(1, min(int(max_boards), MAX_BOARDS_LIMIT))
     max_pages = max(1, min(int(max_pages), MAX_PAGES_LIMIT))
+    arbeitnow = source_info("arbeitnow")
+    if include_arbeitnow and not arbeitnow.auto_publish and not acknowledge_arbeitnow_terms:
+        # Checked before the lock: nothing is fetched or written.
+        raise BoardNotSyncable(
+            f"{arbeitnow.label} is not published automatically ({arbeitnow.terms_url}); "
+            "sync it only with acknowledge_arbeitnow_terms after checking its terms."
+        )
     token = acquire_sync_lock(db)
     started = clock()
     last_renewal = [clock()]

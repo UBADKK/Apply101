@@ -49,17 +49,19 @@ SOURCES: dict[str, SourceInfo] = {
         attribution="Job listing from Arbeitnow (arbeitnow.com); apply on the original posting.",
         attribution_url="https://www.arbeitnow.com",
         terms_checked=True,
-        # Already used by the project through POST /jobs/fetch before the
-        # multi-source catalog; kept as it was.
-        auto_publish=True,
+        # The project owner decided (2026-10-25) that Arbeitnow is not
+        # published automatically either, because of section 2 below: every
+        # sync of it needs an explicit acknowledgement.
+        auto_publish=False,
         terms_note=(
             "Checked 2026-10-25 (arbeitnow.com/terms, section 11 API): the API is "
             "provided as is, using it requires a link back to Arbeitnow.com on the "
             "platform (shown with every Arbeitnow job in the pool, Jobs for me and "
             "the job page), and the permission can be "
             "revoked at any time. Section 2 limits copying the website's own "
-            "materials to personal, non-commercial viewing; the project owner should "
-            "confirm that showing API jobs in Apply101 fits."
+            "materials to personal, non-commercial viewing; because of it the project "
+            "owner turned automatic publishing off (2026-10-25): a sync includes "
+            "Arbeitnow only with acknowledge_arbeitnow_terms."
         ),
         fetch_board=arbeitnow.fetch_board,
     ),
