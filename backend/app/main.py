@@ -13,6 +13,7 @@ from ..routers import jobs
 from ..routers import matches
 from ..routers import auth
 from ..routers import meta
+from ..routers import catalog_admin
 
 
 
@@ -24,6 +25,7 @@ app.include_router(jobs.router)
 app.include_router(matches.router)
 app.include_router(auth.router)
 app.include_router(meta.router)
+app.include_router(catalog_admin.router)
 
 Base.metadata.create_all(bind=engine)
 

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from bs4 import BeautifulSoup
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
@@ -34,6 +34,7 @@ from ..app.analysis_contract import (
     JOB_ANALYSIS_PROMPT_VERSION,
 )
 from ..app.job_analysis_sanitizer import sanitize_job_analysis_requirements
+from ..app.catalog_sync import STATUS_CLOSED, job_content_hash
 from ..app.openai_client import (
     ANALYSIS_SERVICE_NOT_CONFIGURED_DETAIL,
     create_openai_client_or_none,
@@ -885,6 +886,35 @@ def _verify_job_unchanged_or_404(
         raise _job_not_found(job_id)
 
 
+def _job_content_unchanged(db: Session, *, job_id: int, content_hash: str) -> bool:
+    """True when the job's analysis inputs still hash to content_hash. Call
+    after _verify_job_unchanged_or_404 (which flushed, so this connection
+    holds the write lock and a catalog sync cannot commit a content change
+    between this read and our commit)."""
+    row = (
+        db.query(
+            models.Job.title,
+            models.Job.company_name,
+            models.Job.location,
+            models.Job.description_text,
+        )
+        .filter(models.Job.job_id == job_id)
+        .first()
+    )
+    return row is not None and job_content_hash(*row) == content_hash
+
+
+def _job_changed_during_analysis(job_id: int) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "error_code": "ERR_JOB_CHANGED_DURING_ANALYSIS",
+            "message": "The job's text changed while it was analyzed. Analyze it again.",
+            "job_id": job_id,
+        },
+    )
+
+
 def _analyze_job_impl(
     *,
     job_id: int,
@@ -952,6 +982,11 @@ def _analyze_job_impl(
     # be reused by a different job.
     job_url = job.url
     job_owner_id = job.created_by_user_id
+    # The analysis must describe the text it was computed from: a catalog
+    # sync may update the job while the provider call runs.
+    job_content_at_start = job_content_hash(
+        job.title, job.company_name, job.location, job.description_text
+    )
 
     if not job.description_text:
         raise HTTPException(
@@ -1312,6 +1347,10 @@ def _analyze_job_impl(
             db, job_id=job_id, job_url=job_url, job_owner_id=job_owner_id,
             owner_token_key=owner_token_key,
         )
+        if not _job_content_unchanged(db, job_id=job_id, content_hash=job_content_at_start):
+            # Rolls back the new row and the is_current demotion above.
+            db.rollback()
+            raise _job_changed_during_analysis(job_id)
         db.commit()
         job_analysis_committed = True
         db.refresh(new_analysis)
@@ -1454,6 +1493,8 @@ def analyze_missing_jobs(
         # Automatic (admin-triggered) batch analysis only covers ownerless
         # jobs; user-owned jobs are never selected here.
         models.Job.created_by_user_id.is_(None),
+        # Closed catalog jobs (see catalog_sync) are not worth a paid call.
+        or_(models.Job.job_status.is_(None), models.Job.job_status != STATUS_CLOSED),
     ]
     # Snapshot of the candidate filters before the retry-block exclusion.
     base_job_filters = list(job_filters)

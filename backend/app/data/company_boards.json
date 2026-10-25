@@ -1,0 +1,326 @@
+{
+  "description": "Company job boards for the shared catalog (focus: Germany, Turkey, remote). Every entry is an unverified candidate until POST /admin/catalog/boards/{id}/check or `sync_catalog check` reads it live; seeding adds them disabled. Do not mark an entry verified without a successful live check.",
+  "last_reviewed": "2026-10-25",
+  "boards": [
+    {
+      "company": "GetYourGuide",
+      "source": "greenhouse",
+      "board_token": "getyourguide",
+      "region": "global",
+      "website": "https://www.getyourguide.com",
+      "focus": "germany",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling.",
+      "country_code": "DE"
+    },
+    {
+      "company": "Contentful",
+      "source": "greenhouse",
+      "board_token": "contentful",
+      "region": "global",
+      "website": "https://www.contentful.com",
+      "focus": "germany",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling.",
+      "country_code": "DE"
+    },
+    {
+      "company": "Celonis",
+      "source": "greenhouse",
+      "board_token": "celonis",
+      "region": "global",
+      "website": "https://www.celonis.com",
+      "focus": "germany",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling.",
+      "country_code": "DE"
+    },
+    {
+      "company": "N26",
+      "source": "greenhouse",
+      "board_token": "n26",
+      "region": "global",
+      "website": "https://n26.com",
+      "focus": "germany",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling.",
+      "country_code": "DE"
+    },
+    {
+      "company": "HelloFresh",
+      "source": "greenhouse",
+      "board_token": "hellofresh",
+      "region": "global",
+      "website": "https://www.hellofresh.com",
+      "focus": "germany",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling.",
+      "country_code": "DE"
+    },
+    {
+      "company": "SumUp",
+      "source": "greenhouse",
+      "board_token": "sumup",
+      "region": "global",
+      "website": "https://www.sumup.com",
+      "focus": "germany",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling.",
+      "country_code": "DE"
+    },
+    {
+      "company": "Babbel",
+      "source": "greenhouse",
+      "board_token": "babbel",
+      "region": "global",
+      "website": "https://www.babbel.com",
+      "focus": "germany",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling.",
+      "country_code": "DE"
+    },
+    {
+      "company": "Raisin",
+      "source": "greenhouse",
+      "board_token": "raisin",
+      "region": "global",
+      "website": "https://www.raisin.com",
+      "focus": "germany",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling.",
+      "country_code": "DE"
+    },
+    {
+      "company": "n8n",
+      "source": "ashby",
+      "board_token": "n8n",
+      "region": "global",
+      "website": "https://n8n.io",
+      "focus": "germany",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling.",
+      "country_code": "DE"
+    },
+    {
+      "company": "Helsing",
+      "source": "ashby",
+      "board_token": "helsing",
+      "region": "global",
+      "website": "https://helsing.ai",
+      "focus": "germany",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling.",
+      "country_code": "DE"
+    },
+    {
+      "company": "Parloa",
+      "source": "ashby",
+      "board_token": "parloa",
+      "region": "global",
+      "website": "https://www.parloa.com",
+      "focus": "germany",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling.",
+      "country_code": "DE"
+    },
+    {
+      "company": "Black Forest Labs",
+      "source": "ashby",
+      "board_token": "blackforestlabs",
+      "region": "global",
+      "website": "https://blackforestlabs.ai",
+      "focus": "germany",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling.",
+      "country_code": "DE"
+    },
+    {
+      "company": "Trade Republic",
+      "source": "greenhouse",
+      "board_token": "traderepublicbank",
+      "region": "global",
+      "website": "https://traderepublic.com",
+      "focus": "germany",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling.",
+      "country_code": "DE"
+    },
+    {
+      "company": "Getir",
+      "source": "lever",
+      "board_token": "getir",
+      "region": "global",
+      "website": "https://getir.com",
+      "focus": "turkey",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling.",
+      "country_code": "TR"
+    },
+    {
+      "company": "Insider",
+      "source": "lever",
+      "board_token": "useinsider",
+      "region": "global",
+      "website": "https://useinsider.com",
+      "focus": "turkey",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling.",
+      "country_code": "TR"
+    },
+    {
+      "company": "Papara",
+      "source": "lever",
+      "board_token": "papara",
+      "region": "global",
+      "website": "https://www.papara.com",
+      "focus": "turkey",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling.",
+      "country_code": "TR"
+    },
+    {
+      "company": "Dream Games",
+      "source": "lever",
+      "board_token": "dreamgames",
+      "region": "global",
+      "website": "https://dreamgames.com",
+      "focus": "turkey",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling.",
+      "country_code": "TR"
+    },
+    {
+      "company": "Codeway",
+      "source": "lever",
+      "board_token": "codeway",
+      "region": "global",
+      "website": "https://codeway.co",
+      "focus": "turkey",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling.",
+      "country_code": "TR"
+    },
+    {
+      "company": "Midas",
+      "source": "lever",
+      "board_token": "getmidas",
+      "region": "global",
+      "website": "https://www.getmidas.com",
+      "focus": "turkey",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling.",
+      "country_code": "TR"
+    },
+    {
+      "company": "Peak Games",
+      "source": "lever",
+      "board_token": "peakgames",
+      "region": "global",
+      "website": "https://peak.com",
+      "focus": "turkey",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling.",
+      "country_code": "TR"
+    },
+    {
+      "company": "GitLab",
+      "source": "greenhouse",
+      "board_token": "gitlab",
+      "region": "global",
+      "website": "https://about.gitlab.com",
+      "focus": "remote",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling."
+    },
+    {
+      "company": "Grafana Labs",
+      "source": "greenhouse",
+      "board_token": "grafanalabs",
+      "region": "global",
+      "website": "https://grafana.com",
+      "focus": "remote",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling."
+    },
+    {
+      "company": "Elastic",
+      "source": "greenhouse",
+      "board_token": "elastic",
+      "region": "global",
+      "website": "https://www.elastic.co",
+      "focus": "remote",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling."
+    },
+    {
+      "company": "Canonical",
+      "source": "greenhouse",
+      "board_token": "canonical",
+      "region": "global",
+      "website": "https://canonical.com",
+      "focus": "remote",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling."
+    },
+    {
+      "company": "Mozilla",
+      "source": "greenhouse",
+      "board_token": "mozilla",
+      "region": "global",
+      "website": "https://www.mozilla.org",
+      "focus": "remote",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling."
+    },
+    {
+      "company": "PostHog",
+      "source": "ashby",
+      "board_token": "posthog",
+      "region": "global",
+      "website": "https://posthog.com",
+      "focus": "remote",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling."
+    },
+    {
+      "company": "Supabase",
+      "source": "ashby",
+      "board_token": "supabase",
+      "region": "global",
+      "website": "https://supabase.com",
+      "focus": "remote",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling."
+    },
+    {
+      "company": "Linear",
+      "source": "ashby",
+      "board_token": "linear",
+      "region": "global",
+      "website": "https://linear.app",
+      "focus": "remote",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling."
+    },
+    {
+      "company": "Deel",
+      "source": "ashby",
+      "board_token": "deel",
+      "region": "global",
+      "website": "https://www.deel.com",
+      "focus": "remote",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling."
+    },
+    {
+      "company": "Mistral AI",
+      "source": "lever",
+      "board_token": "mistral",
+      "region": "global",
+      "website": "https://mistral.ai",
+      "focus": "remote",
+      "verification": "unverified",
+      "notes": "Candidate from public knowledge; not checked live (the session that added it could not reach the source). Verify with the board check before enabling."
+    }
+  ]
+}

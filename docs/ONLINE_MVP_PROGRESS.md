@@ -29,7 +29,7 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 | W7 | Account deletion removes CV files | todo | |
 | W8 | HTTPS, secrets, backups, log hygiene | todo | Depends on D2 |
 | W9 | Fix stale version list in `MATCHING_CONTRACT.md` | todo | Documentation only |
-| W10 | Phase 1: companies, multi-source connectors (Arbeitnow, Greenhouse, Lever, Ashby), bounded admin sync | in progress | Scope extension 2026-10-25, see "Scope extension task" below |
+| W10 | Phase 1: companies, multi-source connectors (Arbeitnow, Greenhouse, Lever, Ashby), bounded admin sync | in review | No live GET possible here (network policy 403); the 30 board ids are unverified candidates, disabled until a live check passes | Scope extension 2026-10-25, see "Scope extension task" below |
 | W11 | Phase 2: catalog browse and "Jobs for me" (backend and web client) | todo | |
 | W12 | Phase 2: URL import (ATS APIs, JobPosting JSON-LD, SSRF protections) | todo | |
 | W13 | Phase 3: motivation letters (TR/EN/DE, versions, quota, fake provider) | todo | |
@@ -64,14 +64,20 @@ from it.
 - **Done:**
   - plan and scope recorded;
   - code audit of the catalog fetch, analysis currency, matching purity,
-    guards and visibility.
-- **Next:** phase 1, in this order:
-  1. models and migration `phase9_catalog_sources`;
-  2. connectors in `backend/app/job_sources/`;
-  3. the sync service `backend/app/catalog_sync.py`;
-  4. admin routes and the CLI `backend/scripts/sync_catalog.py`;
-  5. the company board list `backend/app/data/company_boards.json`;
-  6. tests with fixtures.
+    guards and visibility;
+  - **phase 1 code, committed:**
+    - migration `phase9_catalog_sources`;
+    - connectors in `backend/app/job_sources/`;
+    - `backend/app/catalog_sync.py`;
+    - admin routes `/admin/catalog/*`;
+    - CLI `backend/scripts/sync_catalog.py`;
+    - 30 unverified candidate boards in `backend/app/data/company_boards.json`;
+    - offline tests.
+- **Next:** reviewer on phase 1, then phase 2:
+  1. catalog browse;
+  2. recommendations;
+  3. URL import;
+  4. the web client screens.
 - **Environment limits found:**
   - The cloud network policy answers 403 to `boards-api.greenhouse.io`,
     `api.lever.co`, `api.ashbyhq.com` and `www.arbeitnow.com`. Live GETs

@@ -656,3 +656,66 @@ class JobAnalysisStructured(BaseModel):
     @classmethod
     def validate_preferred_skills(cls, values: list[str]) -> list[str]:
         return normalize_skill_tags(values)
+
+
+# --- Shared job catalog (admin) ---------------------------------------------
+
+class CatalogBoardCreate(BaseModel):
+    company_name: str
+    source: Literal["greenhouse", "lever", "ashby"]
+    board_token: str
+    region: Literal["global", "eu"] = "global"
+    website: str | None = None
+    country_code: str | None = None
+    notes: str | None = None
+
+    @field_validator("company_name")
+    @classmethod
+    def _company_name(cls, value: str) -> str:
+        value = (value or "").strip()
+        if not value or len(value) > 200:
+            raise ValueError("company_name must be 1-200 characters.")
+        return value
+
+    @field_validator("website")
+    @classmethod
+    def _website(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        value = value.strip()
+        parts = urlsplit(value)
+        if parts.scheme not in ("http", "https") or not parts.netloc or len(value) > 500:
+            raise ValueError("website must be an http(s) URL.")
+        return value
+
+    @field_validator("country_code")
+    @classmethod
+    def _country_code(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        value = value.strip().upper()
+        if len(value) != 2 or not value.isalpha():
+            raise ValueError("country_code must be an ISO 3166-1 alpha-2 code.")
+        return value
+
+
+class CatalogBoardUpdate(BaseModel):
+    is_enabled: bool
+    # Required to enable a board of a source whose terms were not checked
+    # (registry auto_publish False).
+    acknowledge_terms: bool = False
+
+
+class CatalogSyncRequest(BaseModel):
+    include_arbeitnow: bool = False
+    board_ids: list[int] | None = None
+    sources: list[Literal["greenhouse", "lever", "ashby"]] | None = None
+    max_boards: int = 10
+    max_pages: int = 10
+
+    @field_validator("max_boards", "max_pages")
+    @classmethod
+    def _bounded(cls, value: int) -> int:
+        if value < 1 or value > 50:
+            raise ValueError("must be between 1 and 50.")
+        return value
