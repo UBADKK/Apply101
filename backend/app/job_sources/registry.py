@@ -68,7 +68,7 @@ SOURCES: dict[str, SourceInfo] = {
         label="Greenhouse Job Board",
         per_company=True,
         regions=("global",),
-        docs_url="https://developers.greenhouse.io/job-board.html",
+        docs_url="https://docs.greenhouse.io/job-board.html",
         terms_url="https://www.greenhouse.com/legal",
         attribution="Job listing published on the company's Greenhouse job board; apply on the original posting.",
         attribution_url=None,
@@ -78,8 +78,8 @@ SOURCES: dict[str, SourceInfo] = {
             "Checked 2026-10-25: greenhouse.com/legal publishes only customer agreements "
             "(Master subscription agreement, DPA) and policies, and contains no terms that "
             "allow or forbid third parties to reuse postings from the public Job Board API. "
-            "developers.greenhouse.io (the API documentation) could not be reached, so its "
-            "own wording is not checked. Without an explicit permission, boards stay off until an admin "
+            "The API documentation (developers.greenhouse.io now redirects to docs.greenhouse.io) "
+            "could not be reached, so its own wording is not checked. Without an explicit permission, boards stay off until an admin "
             "acknowledges this (ideally with the company's consent)."
         ),
         fetch_board=greenhouse.fetch_board,

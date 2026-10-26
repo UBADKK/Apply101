@@ -391,8 +391,9 @@ The project owner opened the terms hosts. Everything below was read-only.
   (Master subscription agreement, DPA) and policies.
   - It contains no terms that allow or forbid third parties to reuse
     postings from the public Job Board API.
-  - developers.greenhouse.io, the API documentation, is still unreachable,
-    so its own wording is not checked.
+  - The API documentation is still unreachable, so its own wording is not
+    checked: on 2026-10-26 developers.greenhouse.io answered, but only with
+    a redirect to docs.greenhouse.io, which this environment blocks.
 - **Lever:** lever.co/legal/terms-of-service governs Lever customers (Order
   Form) and says nothing about third parties reading public postings.
   - The postings API README describes the API as a way for a company to
