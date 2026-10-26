@@ -112,6 +112,13 @@ from it.
   3. a live check of the pinned page fetch (`guarded_get`) in an
      environment without a proxy; the JSON-LD parsing itself was checked
      live.
+  4. reading the Greenhouse API documentation (now at docs.greenhouse.io)
+     and checking the EU Greenhouse API host `boards-api.eu.greenhouse.io`;
+     both are blocked here. If the EU host works, map it in
+     `url_import.py` with tests.
+- **Owner decision (2026-10-26):** items 3 and 4 stay open in PR #27
+  ("leave as gaps"); this environment cannot reach those hosts or connect
+  without its proxy.
 - **Environment limits found (first part of the session; network opened
   later, see the log entry "Live check of sources"):**
   - The cloud network policy answers 403 to `boards-api.greenhouse.io`,
