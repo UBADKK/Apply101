@@ -78,8 +78,10 @@ SOURCES: dict[str, SourceInfo] = {
             "Checked 2026-10-25: greenhouse.com/legal publishes only customer agreements "
             "(Master subscription agreement, DPA) and policies, and contains no terms that "
             "allow or forbid third parties to reuse postings from the public Job Board API. "
-            "The API documentation (developers.greenhouse.io now redirects to docs.greenhouse.io) "
-            "could not be reached, so its own wording is not checked. Without an explicit permission, boards stay off until an admin "
+            "The Job Board API documentation (docs.greenhouse.io, read 2026-10-28) says the "
+            "data is public and GET needs no authentication, and presents the API as a way for "
+            "a company to build its own careers pages; it says nothing about third-party reuse. "
+            "Without an explicit permission, boards stay off until an admin "
             "acknowledges this (ideally with the company's consent)."
         ),
         fetch_board=greenhouse.fetch_board,

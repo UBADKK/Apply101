@@ -112,13 +112,13 @@ from it.
   3. a live check of the pinned page fetch (`guarded_get`) in an
      environment without a proxy; the JSON-LD parsing itself was checked
      live.
-  4. reading the Greenhouse API documentation (now at docs.greenhouse.io)
-     and checking the EU Greenhouse API host `boards-api.eu.greenhouse.io`;
-     both are blocked here. If the EU host works, map it in
-     `url_import.py` with tests.
+  4. checking the EU Greenhouse API host `boards-api.eu.greenhouse.io`,
+     still blocked here and not named in the Job Board API documentation.
+     If it works, map it in `url_import.py` with tests.
 - **Owner decision (2026-10-26):** items 3 and 4 stay open in PR #27
-  ("leave as gaps"); this environment cannot reach those hosts or connect
-  without its proxy.
+  ("leave as gaps"); this environment cannot reach the EU host or connect
+  without its proxy. The Greenhouse API documentation was read on
+  2026-10-28 after the owner opened its host.
 - **Environment limits found (first part of the session; network opened
   later, see the log entry "Live check of sources"):**
   - The cloud network policy answers 403 to `boards-api.greenhouse.io`,
@@ -398,9 +398,15 @@ The project owner opened the terms hosts. Everything below was read-only.
   (Master subscription agreement, DPA) and policies.
   - It contains no terms that allow or forbid third parties to reuse
     postings from the public Job Board API.
-  - The API documentation is still unreachable, so its own wording is not
-    checked: on 2026-10-26 developers.greenhouse.io answered, but only with
-    a redirect to docs.greenhouse.io, which this environment blocks.
+  - The Job Board API documentation (docs.greenhouse.io/job-board.html;
+    developers.greenhouse.io now redirects there) was read on 2026-10-28.
+    - It says job board data is publicly available and GET endpoints need
+      no authentication.
+    - It presents the API as a way for a company to build its own careers
+      pages, and says nothing about third parties reusing the data.
+    - The documented endpoint, `?content=true`, the HTML-escaped `content`
+      and the missing pagination match the connector.
+    - It names only `boards-api.greenhouse.io`, no EU host.
 - **Lever:** lever.co/legal/terms-of-service governs Lever customers (Order
   Form) and says nothing about third parties reading public postings.
   - The postings API README describes the API as a way for a company to
