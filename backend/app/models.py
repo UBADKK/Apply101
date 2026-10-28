@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Boolean, ForeignKey, Text, DateTime, Index, false, text
+from sqlalchemy import Column, Integer, String, Float, Boolean, ForeignKey, Text, DateTime, Index, UniqueConstraint, false, text
 from sqlalchemy.orm import relationship
 from .database import Base
 from .security import new_token_key
@@ -192,6 +192,97 @@ class Job(Base):
         Integer, ForeignKey("users.user_id"), nullable=True, index=True
     )
 
+    # Catalog-only fields, set by backend/app/catalog_sync.py; personal
+    # (manual / imported) jobs leave them NULL. Added by
+    # backend/migrations/phase9_catalog_sources.py.
+    company_id = Column(Integer, ForeignKey("companies.company_id"), nullable=True, index=True)
+    # "remote" / "hybrid" / "onsite" only when the source states it.
+    work_mode = Column(String, nullable=True)
+    # ISO 3166-1 alpha-2, only from a structured source field.
+    country_code = Column(String, nullable=True)
+    # sha256 of the analysis inputs (title, company, location, description);
+    # see catalog_sync.job_content_hash.
+    content_hash = Column(String, nullable=True)
+    closed_at = Column(DateTime, nullable=True)
+
+class Company(Base):
+    """A company of the shared catalog. Filled only from catalog sources
+    (backend/app/catalog_sync.py and the company board list), never from a
+    user's CV, notes or personal jobs."""
+
+    __tablename__ = "companies"
+
+    company_id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    # catalog_sync.normalize_company_name(name); one row per company.
+    normalized_name = Column(String, nullable=False, unique=True)
+    website = Column(String, nullable=True)
+    # Where the company is mainly listed for (e.g. "DE", "TR"), from the
+    # company board list; informational only.
+    country_code = Column(String, nullable=True)
+    # Public text about the company and where it came from (e.g. a
+    # Greenhouse board intro). Never generated.
+    about_text = Column(Text, nullable=True)
+    about_source_url = Column(String, nullable=True)
+    created_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, nullable=True)
+
+
+class JobSourceBoard(Base):
+    """A company's public job board on one source (Greenhouse board token,
+    Lever site, Ashby job board name). Configured by admins."""
+
+    __tablename__ = "job_source_boards"
+    __table_args__ = (
+        UniqueConstraint("source", "board_token", "region", name="uq_job_source_boards_source_token_region"),
+    )
+
+    board_id = Column(Integer, primary_key=True, index=True)
+    company_id = Column(Integer, ForeignKey("companies.company_id"), nullable=False, index=True)
+    source = Column(String, nullable=False)
+    board_token = Column(String, nullable=False)
+    # Lever: "global" or "eu"; other sources: "global".
+    region = Column(String, nullable=False, default="global")
+    is_enabled = Column(Boolean, nullable=False, default=False)
+    # "unverified" until a live fetch succeeded, then "verified"; "failed"
+    # after a failed check.
+    verification_status = Column(String, nullable=False, default="unverified")
+    verified_at = Column(DateTime, nullable=True)
+    last_synced_at = Column(DateTime, nullable=True)
+    last_sync_status = Column(String, nullable=True)
+    last_active_jobs_count = Column(Integer, nullable=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, nullable=True)
+
+
+class JobSourceRecord(Base):
+    """One posting as a source lists it, linked to the catalog job that
+    holds it. Several records may point to one job: exact copies of the
+    same posting on different sources (see catalog_sync)."""
+
+    __tablename__ = "job_source_records"
+    __table_args__ = (
+        UniqueConstraint("source", "source_key", name="uq_job_source_records_source_key"),
+    )
+
+    record_id = Column(Integer, primary_key=True, index=True)
+    job_id = Column(Integer, ForeignKey("jobs.job_id"), nullable=False, index=True)
+    board_id = Column(Integer, ForeignKey("job_source_boards.board_id"), nullable=True, index=True)
+    source = Column(String, nullable=False)
+    # Source-unique id: "<board>:<posting id>" for ATS sources, the slug
+    # for Arbeitnow.
+    source_key = Column(String, nullable=False)
+    url = Column(String, nullable=False)
+    # The record whose content the job shows; copies only link.
+    is_primary = Column(Boolean, nullable=False, default=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    content_hash = Column(String, nullable=True)
+    first_seen_at = Column(DateTime, nullable=True)
+    last_seen_at = Column(DateTime, nullable=True)
+    closed_at = Column(DateTime, nullable=True)
+
+
 class JobAnalysis(Base):
     __tablename__ = "job_analysis"
 
@@ -247,6 +338,14 @@ class JobFetchRun(Base):
     stopped_reason = Column(String, nullable=True)
     status = Column(String, default="running")
     error_message = Column(Text, nullable=True)
+
+    # Added by backend/migrations/phase9_catalog_sources.py.
+    board_id = Column(Integer, ForeignKey("job_source_boards.board_id"), nullable=True)
+    updated_jobs_count = Column(Integer, nullable=True)
+    closed_jobs_count = Column(Integer, nullable=True)
+    linked_duplicates_count = Column(Integer, nullable=True)
+    # True only when every page of the board was read.
+    complete = Column(Boolean, nullable=True)
 
 class UserLanguage(Base):
     __tablename__ = "user_languages"
@@ -353,3 +452,53 @@ class AnalysisQuotaReservation(Base):
     user_id = Column(Integer, nullable=False)
     job_id = Column(Integer, nullable=True)
     reserved_at = Column(Float, nullable=False)
+
+
+class CoverLetter(Base):
+    """A user's motivation letter for one job in one language. Visible to
+    its user and, like profiles and CVs, to admins; never shared and never
+    part of the catalog. The job title and
+    company are kept as written at creation, so the letter stays readable
+    if the job changes or is deleted. Created by
+    backend/migrations/phase10_cover_letters.py or create_all."""
+
+    __tablename__ = "cover_letters"
+    __table_args__ = (
+        UniqueConstraint("user_id", "job_id", "language", name="uq_cover_letters_user_job_language"),
+    )
+
+    letter_id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.user_id"), nullable=False, index=True)
+    profile_id = Column(Integer, ForeignKey("candidate_profiles.profile_id"), nullable=True)
+    job_id = Column(Integer, ForeignKey("jobs.job_id"), nullable=True, index=True)
+    language = Column(String, nullable=False)
+    job_title = Column(String, nullable=True)
+    company_name = Column(String, nullable=True)
+    current_version_id = Column(Integer, nullable=True)
+    created_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, nullable=True)
+
+
+class CoverLetterVersion(Base):
+    """One saved text of a letter. Versions are never changed or replaced:
+    a regeneration or an edit adds a new one, so an edited draft is never
+    overwritten. kind is "generated" or "edited"."""
+
+    __tablename__ = "cover_letter_versions"
+    __table_args__ = (
+        UniqueConstraint("letter_id", "version_no", name="uq_cover_letter_versions_letter_version"),
+    )
+
+    version_id = Column(Integer, primary_key=True, index=True)
+    letter_id = Column(Integer, ForeignKey("cover_letters.letter_id"), nullable=False, index=True)
+    version_no = Column(Integer, nullable=False)
+    kind = Column(String, nullable=False)
+    body_text = Column(Text, nullable=False)
+    # Generated versions: the facts given to the model (with their source),
+    # the facts it says it used, and what was missing.
+    grounding_json = Column(Text, nullable=True)
+    model = Column(String, nullable=True)
+    prompt_version = Column(String, nullable=True)
+    # Owner of the letter, for the rolling per-user generation quota.
+    user_id = Column(Integer, nullable=False, index=True)
+    created_at = Column(DateTime, nullable=True)

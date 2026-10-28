@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from backend.app import models
 from backend.app.database import Base
 from backend.migrations import phase5_job_owner
+from backend.migrations import phase9_catalog_sources
 
 
 ORIGINAL_JOB_COLUMNS = (
@@ -149,6 +150,9 @@ class Phase5JobOwnerMigrationTests(unittest.TestCase):
     def test_orm_reads_migrated_table(self):
         self._create_pre_migration_schema_with_rows()
         phase5_job_owner.run(engine=self.engine)
+        # The current Job model also reads the catalog columns that
+        # phase9_catalog_sources adds.
+        phase9_catalog_sources.run(engine=self.engine)
 
         session = sessionmaker(bind=self.engine)()
         try:

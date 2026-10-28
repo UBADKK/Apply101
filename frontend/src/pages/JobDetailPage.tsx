@@ -5,6 +5,7 @@ import { api } from '../api/endpoints';
 import type { AnalyzedJob, MatchData } from '../api/types';
 import { useCurrentUser } from '../auth/AuthContext';
 import { Alert } from '../components/Alert';
+import { CoverLetterPanel } from '../components/CoverLetterPanel';
 import { EmptyState } from '../components/EmptyState';
 import { ErrorAlert } from '../components/ErrorAlert';
 import { formatDateTime, titleCase } from '../components/labels';
@@ -219,6 +220,17 @@ export function JobDetailPage() {
             Open the original posting<span className="visually-hidden"> (opens in a new tab)</span>
           </a>
         </p>
+        {data.attribution && (
+          <p className="small muted">
+            {data.attribution_url ? (
+              <a href={data.attribution_url} target="_blank" rel="noopener noreferrer">
+                {data.attribution}
+              </a>
+            ) : (
+              data.attribution
+            )}
+          </p>
+        )}
         <details>
           <summary>Show the description</summary>
           <p className="description-text">{data.description_text}</p>
@@ -296,6 +308,7 @@ export function JobDetailPage() {
           </div>
         )}
       </section>
+      <CoverLetterPanel userId={user.user_id} profileId={profile?.profile_id ?? null} jobId={jobId} />
     </>
   );
 }
