@@ -474,8 +474,9 @@ read-only or used a throwaway database; nothing touched `apply101.db`.
   - The Lever README confirms the fields used (`skip`, `limit`,
     `mode=json`, `country`, `workplaceType`, `hostedUrl`) and the EU hosts.
   - The Ashby documentation (read later) matches the fields used. The
-    Greenhouse documentation is still unreachable; its API answered in the
-    expected format.
+    Greenhouse documentation was unreachable then (read on 2026-10-28, see
+    the entry "Terms of Greenhouse, Lever and Ashby"); its API answered in
+    the expected format.
 - **Terms:**
   - Arbeitnow, checked (arbeitnow.com/terms, section 11): the API is
     provided as is; using it requires a link back to Arbeitnow.com, now
