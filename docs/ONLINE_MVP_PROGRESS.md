@@ -112,9 +112,10 @@ from it.
   3. a live check of the pinned page fetch (`guarded_get`) in an
      environment without a proxy; the JSON-LD parsing itself was checked
      live.
-  4. checking the EU Greenhouse API host `boards-api.eu.greenhouse.io`,
-     still blocked here and not named in the Job Board API documentation.
-     If it works, map it in `url_import.py` with tests.
+  4. checking the EU Greenhouse API host `boards-api.eu.greenhouse.io`.
+     It is not named in the Job Board API documentation, and the proxy
+     cannot reach it (see the log entry of 2026-10-28). If it works from
+     another environment, map it in `url_import.py` with tests.
 - **Owner decision (2026-10-26):** items 3 and 4 stay open in PR #27
   ("leave as gaps"); this environment cannot reach the EU host or connect
   without its proxy. The Greenhouse API documentation was read on
@@ -430,6 +431,24 @@ The project owner opened the terms hosts. Everything below was read-only.
     recommended next step.
 - **EU Greenhouse API host:** `boards-api.eu.greenhouse.io` is still
   unreachable from this environment.
+
+### 2026-10-28: why the EU Greenhouse API host fails
+One investigation, no retries in a loop. The project owner confirmed that
+`boards-api.eu.greenhouse.io` is in the environment's allowed domains.
+- **`boards-api.eu.greenhouse.io`:** the agent proxy answers the CONNECT
+  with `502 Bad Gateway`, body `upstream dial failed`.
+  - The host is allowed, but the gateway could not open a connection to
+    it. The likeliest cause is that the name does not resolve or nothing
+    answers there.
+  - The Job Board API documentation names only `boards-api.greenhouse.io`,
+    so this name is a guess, not a documented endpoint.
+  - It could not be resolved independently: no DNS from the container,
+    and public DNS-over-HTTPS hosts are not allowed.
+- **`job-boards.eu.greenhouse.io`** (the EU board pages): `403`, a policy
+  denial, because it is not in the allowed domains.
+- **Result:** the EU API host stays unverified and unmapped. EU-hosted
+  Greenhouse links keep going the JSON-LD way. The guards were not
+  loosened.
 
 ### 2026-10-25: live check of sources
 The project owner opened the network for the sources. Every check below was
