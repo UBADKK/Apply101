@@ -1,0 +1,20 @@
+# Real local data and secrets never enter the image.
+.env
+.env.*
+*.db
+*.db-*
+uploads/
+backups/
+
+.git/
+.claude/
+.venv/
+venv/
+**/__pycache__/
+**/*.pyc
+backend/tests/
+frontend/node_modules/
+frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
+frontend/e2e/screenshots/
