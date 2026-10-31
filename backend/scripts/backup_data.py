@@ -58,7 +58,20 @@ def _paths(environ) -> tuple[Path, Path, Path]:
     if config._same_path(database, real_db) or config._same_path(upload_dir, real_uploads):
         raise BackupError("Refusing the repository's real apply101.db or uploads/.")
     backups = (environ.get(BACKUP_DIR_ENV) or "").strip()
-    return database, upload_dir, Path(os.path.abspath(backups)) if backups else database.parent / "backups"
+    backups = Path(os.path.abspath(backups)) if backups else database.parent / "backups"
+    # The upload directory is archived and swapped whole on restore, so it
+    # must contain neither the database nor the backups.
+    if _within(database, upload_dir) or _within(backups, upload_dir) or _within(upload_dir, backups):
+        raise BackupError(
+            f"{config.UPLOAD_DIR_ENV} ({upload_dir}) must be separate from the database ({database}) "
+            f"and the backups ({backups})."
+        )
+    return database, upload_dir, backups
+
+
+def _within(path: Path, root: Path) -> bool:
+    path, root = Path(os.path.realpath(path)), Path(os.path.realpath(root))
+    return path == root or root in path.parents
 
 
 def _copy_sqlite(source: Path, target: Path) -> None:
@@ -115,25 +128,36 @@ def restore(environ, name: str, *, now: datetime | None = None) -> dict:
     source = backups / name
     if Path(name).name != name or not (source / DATABASE_NAME).is_file():
         raise BackupError(f"No backup named {name!r} in {backups}.")
-    safety = backup(environ, keep=0, now=now) if database.is_file() else None
-    staging = upload_dir.parent / f".restore-{upload_dir.name}"
-    if staging.exists():
-        shutil.rmtree(staging)
-    staging.mkdir(parents=True)
     with tarfile.open(source / UPLOADS_NAME, "r:gz") as tar:
-        tar.extractall(staging, members=list(_safe_members(tar)), filter="data")
-    database.parent.mkdir(parents=True, exist_ok=True)
-    _copy_sqlite(source / DATABASE_NAME, database)
-    moved_aside = None
-    if upload_dir.exists():
-        moved_aside = upload_dir.parent / f"{upload_dir.name}.before-restore-{(now or datetime.now(timezone.utc)).strftime('%Y%m%dT%H%M%SZ')}"
-        upload_dir.rename(moved_aside)
-    restored_uploads = staging / "uploads"
-    if restored_uploads.is_dir():
-        restored_uploads.rename(upload_dir)
-    else:
-        upload_dir.mkdir(parents=True)
-    shutil.rmtree(staging)
+        members = list(_safe_members(tar))  # checked before anything changes
+        safety = backup(environ, keep=0, now=now) if database.is_file() else None
+        staging = upload_dir.parent / f".restore-{upload_dir.name}"
+        if staging.exists():
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True)
+        try:
+            tar.extractall(staging, members=members, filter="data")
+            restored_uploads = staging / "uploads"
+            if not restored_uploads.is_dir():
+                restored_uploads.mkdir()
+            # Uploads first, then the database; a failed database copy puts
+            # the previous uploads back.
+            moved_aside = None
+            if upload_dir.exists():
+                stamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
+                moved_aside = upload_dir.parent / f"{upload_dir.name}.before-restore-{stamp}"
+                upload_dir.rename(moved_aside)
+            restored_uploads.rename(upload_dir)
+            try:
+                database.parent.mkdir(parents=True, exist_ok=True)
+                _copy_sqlite(source / DATABASE_NAME, database)
+            except Exception:
+                upload_dir.rename(restored_uploads)
+                if moved_aside is not None:
+                    moved_aside.rename(upload_dir)
+                raise
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
     return {
         "restored": name,
         "backup_of_previous_state": str(safety) if safety else None,

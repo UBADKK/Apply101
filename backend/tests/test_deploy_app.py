@@ -91,6 +91,12 @@ class EnvironmentCheckTests(DeployTestCase):
             ("file-backed SQLite", {"APPLY101_DATABASE_URL": "sqlite://"}),
             ("must not use a SQLite URI", {"APPLY101_DATABASE_URL": f"sqlite:///file:{self.data / 'x.db'}?uri=true"}),
             ("upload directory", {"APPLY101_UPLOAD_DIR": str(self.tmp / "uploads")}),
+            ("subdirectory of APPLY101_DATA_DIR", {"APPLY101_UPLOAD_DIR": str(self.data)}),
+            ("must not be inside the upload directory", {
+                "APPLY101_UPLOAD_DIR": str(self.data / "files"),
+                "APPLY101_DATABASE_URL": f"sqlite:///{self.data / 'files' / 'apply101-test.db'}",
+            }),
+            ("No Railway volume is attached", {"RAILWAY_PROJECT_ID": "project"}),
             ("APPLY101_UPLOAD_DIR must be an absolute", {"APPLY101_UPLOAD_DIR": "uploads"}),
             ("must be 'fake'", {"APPLY101_ANALYSIS_PROVIDER": "openai"}),
             ("must be 'fake'", {"APPLY101_ANALYSIS_PROVIDER": None}),
@@ -117,9 +123,11 @@ class EnvironmentCheckTests(DeployTestCase):
                      "APPLY101_UPLOAD_DIR", "APPLY101_ANALYSIS_PROVIDER", "JWT_SECRET_KEY", "APPLY101_ACCESS_KEY"):
             self.assertIn(name, message)
 
-    def test_create_app_refuses_before_importing_the_api(self):
+    def test_create_app_refuses_before_starting(self):
         with self.assertRaises(ConfigError):
-            deploy_app.create_app(environ={**self.env, "APPLY101_LOAD_DOTENV": "1"})
+            deploy_app.create_app(stub_api(), environ={**self.env, "APPLY101_LOAD_DOTENV": "1"},
+                                  session_factory=lambda: None)
+        self.assertFalse((self.data / "uploads").exists())
 
 
 class AccessGateTests(DeployTestCase):
@@ -160,6 +168,29 @@ class AccessGateTests(DeployTestCase):
             self.assertIn(flag, cookie)
         self.assertNotIn(ACCESS_KEY, response.headers["set-cookie"])
         self.assertEqual(client.get("/api/meta").json(), {"analysis_provider": "fake"})
+
+    def test_cookie_is_secure_over_plain_http_too(self):
+        app = deploy_app.create_app(stub_api(), environ=self.env, session_factory=lambda: None)
+        response = TestClient(app, base_url="http://localhost").post(
+            "/__access", data={"key": ACCESS_KEY}, follow_redirects=False)
+        self.assertIn("secure", response.headers["set-cookie"].lower())
+
+    def test_a_non_ascii_cookie_is_refused_not_an_error(self):
+        client = self.client()
+        response = client.get("/api/meta", headers={"Cookie": "apply101_access=é".encode("utf-8")})
+        self.assertEqual(response.status_code, 401)
+
+    def test_a_right_key_does_not_use_up_attempts(self):
+        client = self.client()
+        for _ in range(deploy_app.MAX_ACCESS_FAILURES + 2):
+            self.assertEqual(client.post("/__access", data={"key": ACCESS_KEY}, follow_redirects=False).status_code, 303)
+
+    def test_forwarded_for_does_not_reset_the_limit(self):
+        client = self.client()
+        for index in range(deploy_app.MAX_ACCESS_FAILURES):
+            client.post("/__access", data={"key": "wrong"}, headers={"X-Forwarded-For": f"203.0.113.{index}"})
+        blocked = client.post("/__access", data={"key": "wrong"}, headers={"X-Forwarded-For": "198.51.100.7"})
+        self.assertEqual(blocked.status_code, 429)
 
     def test_a_new_key_invalidates_old_cookies(self):
         old = deploy_app.access_token(ACCESS_KEY)

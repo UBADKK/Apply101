@@ -11,9 +11,9 @@ APPLY101_CATALOG_SYNC_HOUR_UTC, on the same database as the app:
   APPLY101_CATALOG_SYNC_MAX_PAGES pages per board (catalog_sync limits).
 - One run per day across restarts and processes: the day is claimed first
   with an insert into analysis_guards, whose primary key makes the claim
-  atomic. A day whose run failed or was cut off by a restart is not
-  retried; the next day runs again. run_sync's lease still keeps a manual
-  sync and this one apart.
+  atomic. A day whose run failed, was cut off by a restart or found a
+  manual sync running is not retried; the next day runs again. run_sync's
+  lease keeps a manual sync and this one apart.
 """
 import logging
 import os
@@ -123,7 +123,11 @@ def run_daily_once(
                 max_pages=settings.max_pages,
             )
         except catalog_sync.SyncAlreadyRunning:
-            logger.warning("Daily catalog sync skipped: another catalog sync is running.")
+            # Either another sync held the lease at the start, or this run
+            # lost it midway. The day stays claimed either way, so the two
+            # can never overlap; today's daily run is over.
+            logger.warning("Daily catalog sync stopped: the catalog sync lease is held by another sync "
+                           "(a manual sync, or this run lost its lease). Today's daily run is skipped.")
             return {"skipped": "sync_running"}
         logger.info(
             "Daily catalog sync finished: %s boards, stopped_reason=%s.",

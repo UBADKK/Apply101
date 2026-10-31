@@ -14,8 +14,9 @@ dashboard and docs before relying on them.
 - **Image:** `Dockerfile`, a single image built by Railway (`railway.json`).
   - It builds the web client with `VITE_API_BASE_URL=/api` and installs
     `requirements.txt`.
-  - `.dockerignore` keeps `.env`, `*.db`, `uploads/`, backups, tests and
-    `node_modules` out of the image.
+  - `.dockerignore` keeps `.env` files, SQLite files, `uploads/` and
+    `backups/` at any depth, as well as tests and `node_modules`, out of the
+    build context.
 - **Process:** `uvicorn --factory backend.app.deploy_app:create_app`, with
   one worker.
   - `/` serves the web client; client routes such as `/catalog` load the app
@@ -42,6 +43,9 @@ dashboard and docs before relying on them.
 2. Attach a volume to the service, mounted at `/data`.
    - Railway sets `RAILWAY_VOLUME_MOUNT_PATH` for it. The start check
      requires `APPLY101_DATA_DIR` to be inside it.
+   - When Railway's own variables (`RAILWAY_PROJECT_ID`, ...) are present
+     but no volume is, the service refuses to start, because its data would
+     be lost on redeploy (check the variable names).
    - Keep the service at one replica: SQLite lives on that single volume.
 3. Set the variables below on the service. Secrets are entered only in
    Railway's variables screen; nothing goes into the repository.
@@ -66,10 +70,17 @@ to one origin.
   it when testing pauses (check).
 - **Access key:** every page and API call needs it.
   - The form at `/__access` sets an HttpOnly, Secure, SameSite=Strict
-    cookie valid for 30 days. The cookie holds an HMAC of the key, not the
-    key itself.
-  - Ten wrong keys from one address within 15 minutes are refused for a
-    while. The counter is per process and restarts with it.
+    cookie. The browser keeps it for 30 days.
+    - It holds an HMAC of the key, not the key itself.
+    - The server does not expire it: a copied cookie works until the key
+      changes.
+  - Wrong keys are limited to ten per 15 minutes per peer address.
+    - uvicorn trusts no `X-Forwarded-For` here, so a client cannot pick its
+      own address.
+    - Behind Railway's proxy the peer is the proxy, so the limit counts all
+      clients together. A flood of wrong keys can block new logins for 15
+      minutes, but browsers that already hold the cookie keep working.
+    - The counter is per process and restarts with it.
   - Pages carry `noindex`.
 - **Share the key only with testers.** To revoke access, change
   `APPLY101_ACCESS_KEY`: the redeploy invalidates every cookie.
@@ -154,6 +165,10 @@ Arbeitnow is synced only by hand, with `--include-arbeitnow` and
   - A run that fails or is cut off by a restart is not retried that day.
   - A manual sync and the daily one never overlap: they share the catalog
     sync lease.
+    - If a manual sync holds the lease when the daily run starts, that day's
+      daily run is skipped.
+    - The log then says `Daily catalog sync stopped: the catalog sync lease
+      is held by another sync`.
 - **Each run:**
   - takes the least recently synced enabled boards first;
   - stops at the 15-minute sync budget;
@@ -179,10 +194,12 @@ python -m backend.scripts.backup_data restore --from apply101-20261102T030000Z -
     a download), or use Railway's volume backups if your plan has them
     (check).
 - **Restore:**
+  - The archive is checked before anything changes.
   - It first backs up the current state.
   - It moves the current uploads aside to
     `uploads.before-restore-<time>`.
-  - Then it copies the backup in.
+  - Then it copies the backup in: the uploads first, then the database.
+    If the database copy fails, the previous uploads are put back.
   - Run it while nobody uses the service, then redeploy.
 
 ## 7. Cost tracking (check)

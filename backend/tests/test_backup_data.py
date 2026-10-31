@@ -92,12 +92,36 @@ class BackupDataTests(unittest.TestCase):
             {"APPLY101_DATABASE_URL": f"sqlite:///{config.REPO_ROOT / 'apply101.db'}", "APPLY101_UPLOAD_DIR": str(self.uploads)},
             {"APPLY101_DATABASE_URL": f"sqlite:///{self.db}", "APPLY101_UPLOAD_DIR": str(config.REPO_ROOT / "uploads")},
             {"APPLY101_DATABASE_URL": "postgresql://x/y", "APPLY101_UPLOAD_DIR": str(self.uploads)},
+            # The upload directory must not hold the database or the backups.
+            {"APPLY101_DATABASE_URL": f"sqlite:///{self.db}", "APPLY101_UPLOAD_DIR": str(self.tmp)},
+            {**self.env, "APPLY101_BACKUP_DIR": str(self.uploads / "backups")},
         ]
         for env in cases:
             with self.subTest(env=env):
                 code, out = self.run_main(["backup", "--yes"], env=env)
                 self.assertEqual(code, 1)
                 self.assertIn("Refusing", out)
+
+    def test_failed_database_copy_puts_the_uploads_back(self):
+        target = backup_data.backup(self.env, keep=0, now=_now(0))
+        (self.uploads / "user_2_profile_2_cv.pdf").write_bytes(b"%PDF-new")
+        real_copy = backup_data._copy_sqlite
+
+        def failing_copy(source, destination):
+            if Path(destination) == self.db:
+                raise sqlite3.OperationalError("database is locked")
+            return real_copy(source, destination)
+
+        backup_data._copy_sqlite = failing_copy
+        try:
+            code, out = self.run_main(["restore", "--from", target.name, "--yes"])
+        finally:
+            backup_data._copy_sqlite = real_copy
+        self.assertEqual(code, 1)
+        self.assertIn("database is locked", out)
+        self.assertEqual((self.uploads / "user_2_profile_2_cv.pdf").read_bytes(), b"%PDF-new")
+        self.assertEqual(self.notes(), ["original"])
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir() if p.name.startswith((".restore", "uploads.before"))), [])
 
     def test_restore_refuses_unknown_names_and_bad_archives(self):
         code, out = self.run_main(["restore", "--from", "../etc", "--yes"])
@@ -113,6 +137,8 @@ class BackupDataTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("Unexpected path", out)
         self.assertFalse((self.tmp / "escape.txt").exists())
+        # Refused before anything was written, not even a safety backup.
+        self.assertEqual(backup_data.list_backups(self.tmp / "backups"), [target.name])
         # Nothing was replaced.
         self.assertEqual(self.notes(), ["original"])
         self.assertEqual((self.uploads / "user_1_profile_1_cv.pdf").read_bytes(), b"%PDF-original")

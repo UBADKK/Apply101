@@ -1,10 +1,10 @@
-# Real local data and secrets never enter the image.
-.env
-.env.*
-*.db
-*.db-*
-uploads/
-backups/
+# Real local data and secrets never enter the build context, at any depth.
+**/.env
+**/.env.*
+**/*.db
+**/*.db-*
+**/uploads/
+**/backups/
 
 .git/
 .claude/

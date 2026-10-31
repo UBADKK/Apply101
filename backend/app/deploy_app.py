@@ -27,8 +27,6 @@ import hashlib
 import hmac
 import logging
 import os
-import threading
-import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from html import escape
@@ -47,12 +45,15 @@ from .config import (
     _sqlite_file,
 )
 from .openai_client import ANALYSIS_PROVIDER_ENV, FAKE_ANALYSIS_PROVIDER, OPENAI_API_KEY_ENV
+from .rate_limiting import RateLimiter, ReservationOutcome, ReservationSpec, get_client_ip_key
 
 
 DATA_DIR_ENV = "APPLY101_DATA_DIR"
 ACCESS_KEY_ENV = "APPLY101_ACCESS_KEY"
 WEB_DIR_ENV = "APPLY101_WEB_DIR"
 RAILWAY_VOLUME_ENV = "RAILWAY_VOLUME_MOUNT_PATH"
+# Set by Railway in every deployment (check against Railway's docs).
+RAILWAY_MARKER_ENVS = ("RAILWAY_PROJECT_ID", "RAILWAY_ENVIRONMENT_ID", "RAILWAY_SERVICE_ID")
 
 MIN_ACCESS_KEY_LENGTH = 24
 ACCESS_COOKIE = "apply101_access"
@@ -60,7 +61,9 @@ ACCESS_COOKIE_MAX_AGE = 30 * 24 * 3600
 ACCESS_PATH = "/__access"
 HEALTH_PATH = "/healthz"
 API_PREFIX = "/api"
-# Wrong keys per client address before /__access answers 429 for a while.
+# Wrong keys per peer address before /__access answers 429 for a while.
+# uvicorn trusts no proxy headers here, so behind Railway's proxy the peer is
+# the proxy and the limit counts all clients together.
 MAX_ACCESS_FAILURES = 10
 ACCESS_FAILURE_WINDOW_SECONDS = 15 * 60
 
@@ -102,6 +105,8 @@ def check_deploy_environment(environ=None) -> DeploySettings:
     volume = value(RAILWAY_VOLUME_ENV)
     if data_dir is not None and volume and not _inside(data_dir, Path(volume)):
         errors.append(f"{DATA_DIR_ENV} ({data_dir}) must be inside the Railway volume ({volume}).")
+    if not volume and any(value(name) for name in RAILWAY_MARKER_ENVS):
+        errors.append(f"No Railway volume is attached ({RAILWAY_VOLUME_ENV} is not set): data would be lost on redeploy.")
 
     database_file = None
     if not value(DATABASE_URL_ENV):
@@ -124,8 +129,10 @@ def check_deploy_environment(environ=None) -> DeploySettings:
     upload_dir = Path(value(UPLOAD_DIR_ENV)) if value(UPLOAD_DIR_ENV) else None
     if upload_dir is None or not upload_dir.is_absolute():
         errors.append(f"{UPLOAD_DIR_ENV} must be an absolute directory inside {DATA_DIR_ENV}.")
-    elif data_dir is not None and not _inside(upload_dir, data_dir):
-        errors.append(f"The upload directory ({upload_dir}) must be inside {DATA_DIR_ENV} ({data_dir}).")
+    elif data_dir is not None and (not _inside(upload_dir, data_dir) or _inside(data_dir, upload_dir)):
+        errors.append(f"The upload directory ({upload_dir}) must be a subdirectory of {DATA_DIR_ENV} ({data_dir}).")
+    elif database_file is not None and _inside(database_file, upload_dir):
+        errors.append(f"The database ({database_file}) must not be inside the upload directory ({upload_dir}).")
 
     if value(ANALYSIS_PROVIDER_ENV).lower() != FAKE_ANALYSIS_PROVIDER:
         errors.append(f"{ANALYSIS_PROVIDER_ENV} must be {FAKE_ANALYSIS_PROVIDER!r} in the test deployment.")
@@ -163,24 +170,6 @@ def check_deploy_environment(environ=None) -> DeploySettings:
 def access_token(access_key: str) -> str:
     """The cookie value; a new key invalidates every issued cookie."""
     return hmac.new(access_key.encode("utf-8"), b"apply101-access-v1", hashlib.sha256).hexdigest()
-
-
-class _FailureLimiter:
-    def __init__(self, limit: int, window: float, clock=time.monotonic):
-        self._limit, self._window, self._clock = limit, window, clock
-        self._failures: dict[str, list[float]] = {}
-        self._lock = threading.Lock()
-
-    def blocked(self, client: str) -> bool:
-        with self._lock:
-            now = self._clock()
-            recent = [t for t in self._failures.get(client, []) if now - t < self._window]
-            self._failures[client] = recent
-            return len(recent) >= self._limit
-
-    def record(self, client: str) -> None:
-        with self._lock:
-            self._failures.setdefault(client, []).append(self._clock())
 
 
 def _access_page(message: str = "", status_code: int = 401) -> HTMLResponse:
@@ -239,7 +228,7 @@ def create_app(api_app: FastAPI | None = None, *, environ=None, session_factory=
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.scheduler = scheduler
     expected_token = access_token(settings.access_key)
-    limiter = _FailureLimiter(MAX_ACCESS_FAILURES, ACCESS_FAILURE_WINDOW_SECONDS)
+    limiter = RateLimiter()
     web_root = Path(os.path.realpath(settings.web_dir))
 
     @app.middleware("http")
@@ -248,7 +237,7 @@ def create_app(api_app: FastAPI | None = None, *, environ=None, session_factory=
         if path in (HEALTH_PATH, ACCESS_PATH):
             return await call_next(request)
         cookie = request.cookies.get(ACCESS_COOKIE, "")
-        if hmac.compare_digest(cookie, expected_token):
+        if hmac.compare_digest(cookie.encode("utf-8"), expected_token.encode("ascii")):
             response = await call_next(request)
             response.headers.setdefault("X-Robots-Tag", "noindex")
             return response
@@ -266,21 +255,29 @@ def create_app(api_app: FastAPI | None = None, *, environ=None, session_factory=
 
     @app.post(ACCESS_PATH, include_in_schema=False)
     async def access_submit(request: Request):
-        client = request.client.host if request.client else "unknown"
-        if limiter.blocked(client):
+        # Every attempt takes a slot; a right key gives it back.
+        attempt = limiter.try_reserve([ReservationSpec(
+            counter_space="access_key",
+            key=get_client_ip_key(request),
+            max_count=MAX_ACCESS_FAILURES,
+            window_seconds=ACCESS_FAILURE_WINDOW_SECONDS,
+        )])
+        if attempt.outcome is not ReservationOutcome.GRANTED:
             return _access_page("Too many wrong keys. Try again later.", status_code=429)
         form = await request.form()
         key = str(form.get("key") or "")
         if not hmac.compare_digest(key.encode("utf-8"), settings.access_key.encode("utf-8")):
-            limiter.record(client)
             return _access_page("Wrong access key.")
+        limiter.release(attempt.tokens)
         response = RedirectResponse("/", status_code=303)
         response.set_cookie(
             ACCESS_COOKIE,
             expected_token,
             max_age=ACCESS_COOKIE_MAX_AGE,
             httponly=True,
-            secure=request.url.scheme == "https",
+            # Always: Railway terminates TLS, and browsers accept Secure
+            # cookies on http://localhost for local checks.
+            secure=True,
             samesite="strict",
         )
         return response
