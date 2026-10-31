@@ -1802,6 +1802,22 @@ def _match_profile_with_job_impl(
         _verify_match_write_targets_or_404(
             db, owner_identity, job_id, job_url, job_owner_id
         )
+        # A catalog sync may have marked the job analysis not current (the
+        # job's text changed) while this match was computed; the flush in
+        # the check above holds the write lock, so this read is final.
+        if not db.query(models.JobAnalysis.analysis_id).filter(
+            models.JobAnalysis.analysis_id == job_analysis_id_value,
+            models.JobAnalysis.is_current == True,
+        ).first():
+            db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error_code": "ERR_JOB_ANALYSIS_CHANGED",
+                    "message": "The job changed while it was matched. Analyze it again, then match.",
+                    "job_id": job_id,
+                },
+            )
         db.commit()
         db.refresh(new_match)
 

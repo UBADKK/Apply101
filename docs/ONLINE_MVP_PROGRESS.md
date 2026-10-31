@@ -29,6 +29,10 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 | W7 | Account deletion removes CV files | todo | |
 | W8 | HTTPS, secrets, backups, log hygiene | todo | Depends on D2 |
 | W9 | Fix stale version list in `MATCHING_CONTRACT.md` | todo | Documentation only |
+| W10 | Phase 1: companies, multi-source connectors (Arbeitnow, Greenhouse, Lever, Ashby), bounded admin sync | in review | See "Scope extension task" below. Live check on 2026-10-25: 32 boards read, 29 with open jobs; see the log |
+| W11 | Phase 2: catalog browse and "Jobs for me" (backend and web client) | in review | `GET /catalog/jobs`, `GET /catalog/filters`, `GET /users/{id}/profiles/{id}/recommendations`; screens `/catalog`, `/for-you` |
+| W12 | Phase 2: URL import (ATS APIs, JobPosting JSON-LD, SSRF protections) | in review | `POST /jobs/import/preview`, plus the import box on `/jobs/new`. Live: Greenhouse, Lever and Ashby links and the JSON-LD parsing of real Arbeitnow pages; the pinned fetch itself needs an environment without a proxy |
+| W13 | Phase 3: motivation letters (TR/EN/DE, versions, quota, fake provider) | in review | `backend/routers/cover_letters.py`, `backend/app/cover_letter.py`, migration `phase10_cover_letters`, panel on the job page and `/letters`. Checked with the fake provider only, which is a template: the real model's writing quality is not checked |
 
 ## Acceptance criteria
 
@@ -40,6 +44,199 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 | AC4 | Analysis | in progress | Web client analyses with the fake provider, 429 countdown without retry, and mocked 503 verified locally; profile analysis limit open (W3); real provider not exercised |
 | AC5 | Reasoned match result | in progress | Web client shows `eligible` (74) and `ineligible` (20, `required_language_missing`) with reasons; saved results reopen and rematch work; `review_required` covered by a unit test only; staging open |
 | AC6 | End to end and operations | todo | Needs W1-W8 |
+
+## Scope extension task (phases 1-3)
+
+The full scope is in [ONLINE_MVP_PLAN.md](ONLINE_MVP_PLAN.md), under "Scope
+extension (2026-10-25)". It was given on 2026-10-25, with a budget of about
+6 active hours.
+
+- **Branch:** `feat/online-mvp-web-client-qf43gs`. It was restarted from
+  `main` at `7056e01`, after PR #26 was merged.
+- **Delivery:** one commit per phase, a draft PR and a reviewer approval of
+  the last head. No merge or deploy.
+
+### Continuation note
+
+Update this note after every step, so that an interrupted session can resume
+from it.
+
+- **Done:**
+  - plan and scope recorded;
+  - code audit of the catalog fetch, analysis currency, matching purity,
+    guards and visibility;
+  - **phase 1 code, committed:**
+    - migration `phase9_catalog_sources`;
+    - connectors in `backend/app/job_sources/`;
+    - `backend/app/catalog_sync.py`;
+    - admin routes `/admin/catalog/*`;
+    - CLI `backend/scripts/sync_catalog.py`;
+    - 30 unverified candidate boards in `backend/app/data/company_boards.json`;
+    - offline tests.
+  - phase 1 review: changes requested, fixed in `87bc5d4`;
+  - **phase 2 code:**
+    - `backend/routers/catalog.py`;
+    - `backend/app/url_import.py`, and its route in `routers/jobs.py`;
+    - screens `/catalog`, `/for-you` and the import box;
+    - Vitest and e2e (`e2e/discovery.spec.ts`).
+  - phase 2 review: changes requested, fixed after phase 3:
+    - a board disabled during a sync is not written;
+    - the lease is renewed during long fetches;
+    - empty feeds close nothing;
+    - the link and source follow the primary record;
+    - the import deadline covers slow reads and the robots.txt check;
+    - robots.txt is checked for a redirect target on another host;
+    - parsing hardened;
+    - coverage wording fixed;
+    - import asks before replacing typed fields;
+  - **phase 3 code:**
+    - letters backend, migration `phase10_cover_letters` and the fake
+      provider template;
+    - the letter panel on the job page and the `/letters` page;
+    - tests and e2e.
+  - draft PR [UBADKK/Apply101#27](https://github.com/UBADKK/Apply101/pull/27);
+  - phase 3 review: changes requested, fixed in the final fix commit:
+    - the letter's skill gaps use the matching's own skills and
+      comparison;
+    - saving is atomic, with one letter per job and language;
+    - the visibility and "made up" wording corrected;
+    - the list omits the facts;
+    - the Turkish template fixed.
+  - live check of sources and boards done; see the log entry "Live check
+    of sources".
+- **Next:**
+  1. the project owner's review of PR #27;
+  2. a decision on enabling Greenhouse, Lever and Ashby boards (their terms
+     were checked; none grants third-party reuse explicitly), and an
+     Ashby partner feed request;
+  3. a live check of the pinned page fetch (`guarded_get`) in an
+     environment without a proxy; the JSON-LD parsing itself was checked
+     live.
+  4. checking the EU Greenhouse API host `boards-api.eu.greenhouse.io`.
+     It is not named in the Job Board API documentation, and the proxy
+     cannot reach it (see the log entry of 2026-10-28). If it works from
+     another environment, map it in `url_import.py` with tests.
+- **Owner decision (2026-10-26):** items 3 and 4 stay open in PR #27
+  ("leave as gaps"); this environment cannot reach the EU host or connect
+  without its proxy. The Greenhouse API documentation was read on
+  2026-10-28 after the owner opened its host.
+- **Environment limits found (first part of the session; network opened
+  later, see the log entry "Live check of sources"):**
+  - The cloud network policy answers 403 to `boards-api.greenhouse.io`,
+    `api.lever.co`, `api.ashbyhq.com` and `www.arbeitnow.com`. Live GETs
+    are not possible from this session.
+  - The project owner declined WebFetch. Official documentation and the
+    board ids therefore could not be checked online here.
+  - Connectors follow the documented public response formats as known from
+    the providers' documentation. Every board id is recorded as unverified
+    and disabled until a live check succeeds (`--check` in the sync CLI).
+
+### Deploying phase 1 on an existing database
+
+1. Back up the database and stop the app.
+2. Run `python -m backend.migrations.phase9_catalog_sources --dry-run`, then
+   run it again without `--dry-run`.
+   - It adds the new columns. Without it, every job query fails with
+     "no such column jobs.company_id", because `create_all` adds new
+     tables but no new columns.
+3. Start the app, then seed the boards (`sync_catalog seed --yes` or
+   `POST /admin/catalog/boards/seed`).
+4. Check every board live (`check --unverified --yes`).
+5. Read each source's terms note (`GET /admin/catalog/sources`), then
+   enable the verified boards. No source is published automatically, so
+   enabling needs `acknowledge_terms`; the acknowledgement is written into
+   the board's notes.
+6. Sync, for example `sync --max-boards 10 --yes`. To include Arbeitnow,
+   add `--include-arbeitnow --acknowledge-arbeitnow-terms` (in the API:
+   `include_arbeitnow` with `acknowledge_arbeitnow_terms`).
+
+**Legacy Arbeitnow jobs.** Jobs from the old `POST /jobs/fetch` keep
+`job_status = "unknown"`.
+- The shared pool and "Jobs for me" list only jobs a sync has seen open
+  (`active`).
+- The older routes still show every catalog job to signed-in users,
+  whatever its status: `GET /jobs/`, `GET /jobs/{id}`,
+  `GET /jobs/analyzed` and `match-analyzed`. They existed before the pool,
+  and the web client uses them only for the user's own jobs and the job
+  page. Legacy Arbeitnow rows already in a database therefore stay
+  reachable there.
+- A complete Arbeitnow sync adopts the legacy jobs it sees, and closes the
+  ones it no longer sees.
+- The legacy `POST /jobs/fetch` and `/jobs/fetch-pages` now need
+  `acknowledge_arbeitnow_terms=true` too (409 otherwise, before any
+  request to Arbeitnow).
+
+**Empty feeds.** A complete fetch that returns no posting at all closes
+nothing. It is treated as a source hiccup, not as every job closing at
+once. A board that really has no jobs left keeps them open until it is
+disabled, or until a later fetch lists other jobs.
+
+**URL import limits.**
+- Links to EU-hosted Greenhouse boards (`job-boards.eu.greenhouse.io`) are
+  read as JSON-LD pages, because their API host could not be verified.
+- DNS resolution time is not inside the import deadline; socket reads and
+  redirects are.
+- Recommendations are computed on every request, with no paid call and up
+  to 1000 jobs. Caching or a rate limit is a follow-up.
+
+**Arbeitnow, decided by the project owner (2026-10-25).** Automatic
+publishing is off (`auto_publish = False`).
+- Reason: section 2 of its site terms limits the site's own materials to
+  personal, non-commercial viewing.
+- A sync includes Arbeitnow only with an explicit acknowledgement: the new
+  sync (API and CLI) and the legacy fetch routes alike. Without it the
+  request is refused (409) before anything is fetched. The
+  acknowledgement is recorded in the run's parameters.
+- Its API terms (section 11) were checked: a link back to Arbeitnow.com is
+  required, and it is shown on the pool, "Jobs for me" and the job page.
+
+### Design decisions
+
+- **Companies and sources:**
+  - `companies`: one row per company.
+  - `job_source_boards`: company, source, board token, region (Lever
+    `global`/`eu`), enabled flag, and verification status and time.
+  - `job_source_records`: one row per source posting
+    (`source` + `source_key` unique). It points at the catalog job it
+    belongs to.
+  - Exact copies are linked to the existing job through a second record. An
+    exact copy means the same public URL, or the same company with the same
+    normalized title, location and content hash. Similar titles are never
+    merged.
+- **Jobs:** new nullable columns `company_id`, `work_mode`, `country_code`,
+  `content_hash` and `closed_at`. `job_status` becomes `active` or `closed`
+  for synced jobs.
+  - Personal (manual and imported) jobs never get a company, and never
+    reach companies or records.
+- **Closing:** only a complete board scan closes jobs. A job is closed when
+  none of its active records were seen. Failed, partial and capped runs
+  close nothing.
+- **Content updates:**
+  - Only the job's primary record updates its content.
+  - A changed content hash marks the job's analyses and matches
+    `is_current = false`, so matching and the saved-match screens no longer
+    treat them as current.
+  - An analysis that runs while the content changes is not written; it
+    returns 409.
+- **Sources and terms:** a registry in code holds each source's
+  attribution, terms URL and whether it may be published automatically.
+  Boards of a source with unclear terms stay disabled until an admin enables
+  them.
+- **Recommendations:**
+  - They call the pure `calculate_backend_match` with the same inputs as the
+    match route, without writes and without analysis calls, over active
+    catalog jobs that have a current analysis.
+  - The response reports coverage (active, analyzed, evaluated, capped).
+    The ranking is eligible, then review_required, then ineligible, then
+    the score.
+  - Matching rules and `MATCH_VERSION` are unchanged.
+- **Letters:**
+  - `cover_letters`, plus `cover_letter_versions` (generated or edited)
+    that hold the grounding facts and gaps.
+  - The version constant is `COVER_LETTER_PROMPT_VERSION` in
+    `analysis_contract.py`.
+  - Per-user rolling quota and an in-flight guard; the fake provider writes
+    a deterministic template.
 
 ## W4 task (web client)
 
@@ -195,6 +392,136 @@ that an interrupted session can resume.
   second job within 60 seconds returns 429 with `Retry-After`.
 
 ## Log
+
+### 2026-10-28: why the EU Greenhouse API host fails
+One investigation, no retries in a loop. The project owner confirmed that
+`boards-api.eu.greenhouse.io` is in the environment's allowed domains.
+- **`boards-api.eu.greenhouse.io`:** the agent proxy answers the CONNECT
+  with `502 Bad Gateway`, body `upstream dial failed`.
+  - The host is allowed, but the gateway could not open a connection to
+    it. A likely cause is that the name does not resolve or nothing
+    answers there; a failure on the gateway side is not ruled out.
+  - The Job Board API documentation names only `boards-api.greenhouse.io`,
+    so this name is a guess, not a documented endpoint.
+  - It could not be resolved independently: a direct connection from the
+    container fails to resolve any name (curl exit 6), and `dns.google`
+    was not reachable either.
+- **`job-boards.eu.greenhouse.io`** (the EU board pages): `403`, a policy
+  denial; the owner did not list it among the allowed domains.
+- **Result:** the EU API host stays unverified and unmapped. EU-hosted
+  Greenhouse links keep going the JSON-LD way. The guards were not
+  loosened.
+
+### 2026-10-25: terms of Greenhouse, Lever and Ashby
+The project owner opened the terms hosts. Everything below was read-only.
+- **Greenhouse:** greenhouse.com/legal publishes only customer agreements
+  (Master subscription agreement, DPA) and policies.
+  - It contains no terms that allow or forbid third parties to reuse
+    postings from the public Job Board API.
+  - The Job Board API documentation (docs.greenhouse.io/job-board.html;
+    developers.greenhouse.io now redirects there) was read on 2026-10-28.
+    - It says job board data is publicly available and GET endpoints need
+      no authentication.
+    - It presents the API as a way for a company to build its own careers
+      pages, and says nothing about third parties reusing the data.
+    - The documented endpoint, `?content=true`, the HTML-escaped `content`
+      and the missing pagination match the connector.
+    - It names only `boards-api.greenhouse.io`, no EU host.
+- **Lever:** lever.co/legal/terms-of-service governs Lever customers (Order
+  Form) and says nothing about third parties reading public postings.
+  - The postings API README describes the API as a way for a company to
+    build its own job site.
+- **Ashby:** the Job Postings API documentation describes the API as data
+  for an organization's own careers page.
+  - For partners that ingest postings, Ashby documents "Dedicated Partner
+    Job Feeds": customers opt in, and partners contact
+    integrations@ashbyhq.com.
+  - ashbyhq.com/terms is the customer agreement and says nothing about
+    third parties.
+- **Result:** none of the three grants third-party reuse explicitly.
+  - "Checked" means the published terms were read, not that reuse is
+    permitted.
+  - The 409 code `ERR_SOURCE_TERMS_UNCHECKED` keeps its name for
+    compatibility and means "not published automatically".
+  - They are recorded as checked, and none is published automatically: a
+    board is enabled only with `acknowledge_terms`, ideally with the
+    company's consent.
+  - For Ashby, a dedicated partner feed is the documented way and the
+    recommended next step.
+- **EU Greenhouse API host:** `boards-api.eu.greenhouse.io` is still
+  unreachable from this environment.
+
+### 2026-10-25: live check of sources
+The project owner opened the network for the sources. Every check below was
+read-only or used a throwaway database; nothing touched `apply101.db`.
+
+- **Boards:** 33 candidates were read live with
+  `catalog_sync.check_board` (no database).
+  - 6 answered 404: Babbel (Greenhouse), Helsing (Ashby), Black Forest Labs
+    (Ashby), Getir, Insider (`useinsider`) and Papara (Lever).
+  - Probing other providers found these boards: Babbel on Ashby, Helsing on
+    Greenhouse, and Insider as `insiderone` on Lever.
+  - Added after a successful read: Trendyol, Picus and iyzico (Lever), and
+    commercetools and Staffbase (Greenhouse).
+  - `insider` on Greenhouse belongs to Business Insider and was not used.
+  - Getir, Papara and Black Forest Labs were removed; no board was found
+    for them.
+- **`backend/app/data/company_boards.json`:** 32 verified boards, each with
+  its live result.
+  - 29 list open jobs. Codeway, Deel and Mistral AI answered with no open
+    jobs.
+  - By focus: Germany 14, Turkey 8 (7 with jobs), remote 10.
+  - Active postings per board on the check date range from 5 (iyzico) to
+    402 (Elastic).
+  - Seeding still adds boards disabled and unverified in the database,
+    until a check run there.
+- **Live sync into a throwaway database:** all boards enabled, Arbeitnow
+  limited to 3 pages.
+  - 32 board runs completed. Arbeitnow was partial (page cap), so it closed
+    nothing.
+  - Active jobs by source: Greenhouse 2606, Arbeitnow 897, Lever 226,
+    Ashby 211; 454 companies; 15 exact copies linked.
+  - A second run created 0 new jobs (739 unchanged).
+- **Countries:** the connectors read a country code from Lever and Ashby.
+  In the live data only Lever sent one; every Ashby board answered with
+  none.
+  - Structured country codes: TR 85, US 19, BR 17, DE 9, others below 10;
+    3734 jobs have none.
+  - Text hints in location or work mode: Germany 751, Turkey 85,
+    remote 766.
+  - Structured work mode: remote 218, hybrid 123, on-site 67, unknown 3532.
+- **Connector formats:** every live posting parsed, with 0 skipped.
+  - The Lever README confirms the fields used (`skip`, `limit`,
+    `mode=json`, `country`, `workplaceType`, `hostedUrl`) and the EU hosts.
+  - The Ashby documentation (read later) matches the fields used. The
+    Greenhouse documentation was unreachable then (read on 2026-10-28, see
+    the entry "Terms of Greenhouse, Lever and Ashby"); its API answered in
+    the expected format.
+- **Terms:**
+  - Arbeitnow, checked (arbeitnow.com/terms, section 11): the API is
+    provided as is; using it requires a link back to Arbeitnow.com, now
+    shown on the pool, "Jobs for me" and the job page; the permission is
+    revocable.
+  - Arbeitnow section 2 limits copying the site's own materials to
+    personal, non-commercial viewing. Because of it the project owner
+    turned automatic publishing of Arbeitnow off; a sync needs an explicit
+    acknowledgement to include it.
+  - Greenhouse, Lever and Ashby: checked later, see the entry "Terms of
+    Greenhouse, Lever and Ashby". None grants third-party reuse
+    explicitly, and none is published automatically.
+- **URL import live:**
+  - Real Greenhouse, Lever and Ashby posting links previewed correctly.
+  - LinkedIn was refused.
+  - The JSON-LD path, live on three real Arbeitnow job pages: robots.txt
+    allowed them, and each preview had title, company, location and the
+    full text; the titles equal the API's.
+    - The pages were fetched through this environment's proxy and then
+      handed to the same `url_import` functions (robots check, JSON-LD
+      parser, required fields).
+  - The pinned `guarded_get` connection itself could not be tried live. It
+    connects straight to the checked address, and this environment only
+    allows traffic through its proxy. Its tests run against a local
+    server.
 
 ### 2026-10-25: two minor review notes on PR #26
 - **`outdatedParts`:** a direct regression test for `770cc3e`

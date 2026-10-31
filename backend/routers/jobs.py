@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from bs4 import BeautifulSoup
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone
@@ -34,6 +34,15 @@ from ..app.analysis_contract import (
     JOB_ANALYSIS_PROMPT_VERSION,
 )
 from ..app.job_analysis_sanitizer import sanitize_job_analysis_requirements
+from ..app.catalog_sync import STATUS_CLOSED, job_content_hash
+from ..app import url_import
+from ..app.job_sources import HttpClient, source_info
+from ..app.rate_limiting import (
+    RateLimiter,
+    ReservationOutcome,
+    get_rate_limiter,
+    reserve_import_preview,
+)
 from ..app.openai_client import (
     ANALYSIS_SERVICE_NOT_CONFIGURED_DETAIL,
     create_openai_client_or_none,
@@ -301,6 +310,49 @@ def create_manual_job(
     return new_job
 
 
+def make_import_http_client() -> HttpClient:
+    """Replaced in tests; the real client reads the ATS public APIs."""
+    return HttpClient(timeout_seconds=10, max_retries=0)
+
+
+def _import_fetch(url: str, **kwargs):
+    """Replaced in tests; the real fetch is url_import.guarded_get."""
+    return url_import.guarded_get(url, **kwargs)
+
+
+@router.post("/import/preview")
+def preview_job_import(
+    payload: schemas.JobImportPreviewRequest,
+    current_user: models.User = Depends(get_current_user),
+    rate_limiter: RateLimiter = Depends(get_rate_limiter),
+):
+    """Reads a job from a supported ATS link or a page's JobPosting JSON-LD
+    and returns the fields for the user to correct. Saves nothing; the user
+    saves the corrected job with POST /jobs/manual. Every failure answers
+    with a stable error_code and the advice to paste the job text."""
+    reservation = reserve_import_preview(rate_limiter, user_id=current_user.user_id)
+    if reservation.outcome == ReservationOutcome.CAPACITY_UNAVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail={"error_code": "ERR_IMPORT_UNAVAILABLE", "message": "Importing is busy. Try again in a minute."},
+        )
+    if reservation.outcome != ReservationOutcome.GRANTED:
+        retry_after = reservation.retry_after_seconds or 60
+        raise HTTPException(
+            status_code=429,
+            detail={"error_code": "ERR_IMPORT_RATE_LIMITED", "message": "Too many imports. Try again later."},
+            headers={"Retry-After": str(retry_after)},
+        )
+    try:
+        preview = url_import.preview_url(payload.url, http=make_import_http_client(), fetch=_import_fetch)
+    except url_import.ImportError_ as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"error_code": exc.code, "message": str(exc), "fallback": "paste_text"},
+        )
+    return {"status": "ok", **preview.as_dict()}
+
+
 @router.get("/analyzed")
 def get_analyzed_jobs(
     limit: int = Query(default=50, ge=1, le=200),
@@ -391,12 +443,33 @@ def get_job_fetch_runs(
 
     return fetch_runs
 
+def _require_arbeitnow_acknowledgement(acknowledged: bool) -> None:
+    """Arbeitnow is not published automatically (registry auto_publish
+    False, decided by the project owner): the legacy fetch routes need the
+    same explicit acknowledgement as POST /admin/catalog/sync, checked
+    before any request to Arbeitnow."""
+    info = source_info("arbeitnow")
+    if not info.auto_publish and not acknowledged:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error_code": "ERR_SOURCE_TERMS_UNCHECKED",
+                "message": (
+                    f"{info.label} is not published automatically ({info.terms_url}); "
+                    "repeat the request with acknowledge_arbeitnow_terms=true after checking its terms."
+                ),
+            },
+        )
+
+
 # Fetch first page of jobs from Arbeitnow
 @router.post("/fetch")
 def fetch_jobs(
+    acknowledge_arbeitnow_terms: bool = Query(False),
     current_admin: models.User = Depends(get_current_admin),
     db: Session = Depends(get_db),
 ):
+    _require_arbeitnow_acknowledgement(acknowledge_arbeitnow_terms)
     url = "https://www.arbeitnow.com/api/job-board-api"
 
     headers = {
@@ -494,9 +567,11 @@ def fetch_jobs_by_pages(
     alljobs: bool = Query(..., description="True ise tüm sayfaları çeker. False ise maxpage veya thispage kullanılır."),
     maxpage: int | None = Query(None, ge=1, description="İlk kaç sayfanın çekileceğini belirler."),
     thispage: int | None = Query(None, ge=1, description="Sadece belirli bir sayfayı çeker."),
+    acknowledge_arbeitnow_terms: bool = Query(False),
     current_admin: models.User = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
+    _require_arbeitnow_acknowledgement(acknowledge_arbeitnow_terms)
     base_url = "https://www.arbeitnow.com/api/job-board-api"
 
     headers = {
@@ -885,6 +960,35 @@ def _verify_job_unchanged_or_404(
         raise _job_not_found(job_id)
 
 
+def _job_content_unchanged(db: Session, *, job_id: int, content_hash: str) -> bool:
+    """True when the job's analysis inputs still hash to content_hash. Call
+    after _verify_job_unchanged_or_404 (which flushed, so this connection
+    holds the write lock and a catalog sync cannot commit a content change
+    between this read and our commit)."""
+    row = (
+        db.query(
+            models.Job.title,
+            models.Job.company_name,
+            models.Job.location,
+            models.Job.description_text,
+        )
+        .filter(models.Job.job_id == job_id)
+        .first()
+    )
+    return row is not None and job_content_hash(*row) == content_hash
+
+
+def _job_changed_during_analysis(job_id: int) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "error_code": "ERR_JOB_CHANGED_DURING_ANALYSIS",
+            "message": "The job's text changed while it was analyzed. Analyze it again.",
+            "job_id": job_id,
+        },
+    )
+
+
 def _analyze_job_impl(
     *,
     job_id: int,
@@ -952,6 +1056,11 @@ def _analyze_job_impl(
     # be reused by a different job.
     job_url = job.url
     job_owner_id = job.created_by_user_id
+    # The analysis must describe the text it was computed from: a catalog
+    # sync may update the job while the provider call runs.
+    job_content_at_start = job_content_hash(
+        job.title, job.company_name, job.location, job.description_text
+    )
 
     if not job.description_text:
         raise HTTPException(
@@ -1312,6 +1421,10 @@ def _analyze_job_impl(
             db, job_id=job_id, job_url=job_url, job_owner_id=job_owner_id,
             owner_token_key=owner_token_key,
         )
+        if not _job_content_unchanged(db, job_id=job_id, content_hash=job_content_at_start):
+            # Rolls back the new row and the is_current demotion above.
+            db.rollback()
+            raise _job_changed_during_analysis(job_id)
         db.commit()
         job_analysis_committed = True
         db.refresh(new_analysis)
@@ -1454,6 +1567,8 @@ def analyze_missing_jobs(
         # Automatic (admin-triggered) batch analysis only covers ownerless
         # jobs; user-owned jobs are never selected here.
         models.Job.created_by_user_id.is_(None),
+        # Closed catalog jobs (see catalog_sync) are not worth a paid call.
+        or_(models.Job.job_status.is_(None), models.Job.job_status != STATUS_CLOSED),
     ]
     # Snapshot of the candidate filters before the retry-block exclusion.
     base_job_filters = list(job_filters)
@@ -1973,10 +2088,17 @@ Rules:
 # Declared last so the static GET paths above (/analyzed, /analyzed/{job_id},
 # /fetch-runs) are matched before this one. Another user's job gets the same
 # 404 as a nonexistent job_id.
-@router.get("/{job_id}", response_model=schemas.JobResponse)
+@router.get("/{job_id}", response_model=schemas.JobDetailResponse)
 def get_job(
     job_id: int,
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return get_visible_job_or_404(db, job_id, current_user)
+    job = get_visible_job_or_404(db, job_id, current_user)
+    response = schemas.JobDetailResponse.model_validate(job)
+    info = source_info(job.source or "") if job.created_by_user_id is None else None
+    if info is not None:
+        response.source_label = info.label
+        response.attribution = info.attribution
+        response.attribution_url = info.attribution_url
+    return response

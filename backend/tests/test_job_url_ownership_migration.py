@@ -349,7 +349,8 @@ class Phase7JobUrlOwnershipMigrationTests(unittest.TestCase):
             }
         self.assertEqual(
             set(index_list),
-            {CATALOG_INDEX, OWNER_INDEX, "ix_jobs_job_id", "ix_jobs_created_by_user_id"},
+            # ix_jobs_company_id comes from phase9_catalog_sources.
+            {CATALOG_INDEX, OWNER_INDEX, "ix_jobs_job_id", "ix_jobs_created_by_user_id", "ix_jobs_company_id"},
         )
         self.assertNotIn(OLD_INDEX, index_list)
         # (unique, origin, partial)
@@ -410,8 +411,10 @@ class Phase7JobUrlOwnershipMigrationTests(unittest.TestCase):
         self.assertNotIn("example.invalid", output)
 
         create_all_engine = self._fresh_create_all_engine()
+        # ix_jobs_company_id belongs to phase9_catalog_sources, not phase 7.
         self.assertEqual(
-            self._jobs_index_set(), self._jobs_index_set(create_all_engine)
+            self._jobs_index_set(),
+            {index for index in self._jobs_index_set(create_all_engine) if index[0] != "ix_jobs_company_id"},
         )
         self.assertNotIn(OLD_INDEX, self._index_names())
 

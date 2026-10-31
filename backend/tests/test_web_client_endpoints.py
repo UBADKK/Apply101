@@ -200,14 +200,26 @@ class GetJobTests(_BaseWebClientEndpointsTestCase):
         self.catalog_job = self._create_job("catalog")
 
     def _expected_job(self, job_id, slug):
-        return {
+        expected = {
             "job_id": job_id,
             "title": f"Synthetic Job {slug}",
             "company_name": "Synthetic Company",
             "location": "Synthetic City",
             "url": f"https://example.com/job/{slug}",
             "description_text": "synthetic description",
+            # Added with the shared pool: a catalog job carries its source's
+            # attribution (Arbeitnow requires a link back); personal jobs none.
+            "source_label": None,
+            "attribution": None,
+            "attribution_url": None,
         }
+        if slug == "catalog":
+            expected.update(
+                source_label="Arbeitnow",
+                attribution="Job listing from Arbeitnow (arbeitnow.com); apply on the original posting.",
+                attribution_url="https://www.arbeitnow.com",
+            )
+        return expected
 
     def test_owner_sees_the_job(self):
         response = self.client.get(

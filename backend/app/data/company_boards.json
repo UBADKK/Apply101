@@ -1,0 +1,734 @@
+{
+  "description": "Company job boards for the shared catalog (focus: Germany, Turkey, remote). Every entry was read live with a read-only check on the last_reviewed date (live_check holds the result); seeding adds them disabled and unverified in the database until POST /admin/catalog/boards/{id}/check or `sync_catalog check` reads them again. Candidates that answered 404 (Getir on Lever, Papara on Lever, Black Forest Labs on Ashby) were removed, not guessed.",
+  "last_reviewed": "2026-10-25",
+  "boards": [
+    {
+      "company": "GetYourGuide",
+      "source": "greenhouse",
+      "board_token": "getyourguide",
+      "region": "global",
+      "website": "https://www.getyourguide.com",
+      "focus": "germany",
+      "country_code": "DE",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 74,
+        "countries": {
+          "unknown": 74
+        },
+        "work_modes": {
+          "unknown": 74
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "Contentful",
+      "source": "greenhouse",
+      "board_token": "contentful",
+      "region": "global",
+      "website": "https://www.contentful.com",
+      "focus": "germany",
+      "country_code": "DE",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 24,
+        "countries": {
+          "unknown": 24
+        },
+        "work_modes": {
+          "unknown": 24
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "Celonis",
+      "source": "greenhouse",
+      "board_token": "celonis",
+      "region": "global",
+      "website": "https://www.celonis.com",
+      "focus": "germany",
+      "country_code": "DE",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 217,
+        "countries": {
+          "unknown": 217
+        },
+        "work_modes": {
+          "unknown": 217
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "N26",
+      "source": "greenhouse",
+      "board_token": "n26",
+      "region": "global",
+      "website": "https://n26.com",
+      "focus": "germany",
+      "country_code": "DE",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 39,
+        "countries": {
+          "unknown": 39
+        },
+        "work_modes": {
+          "unknown": 39
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "HelloFresh",
+      "source": "greenhouse",
+      "board_token": "hellofresh",
+      "region": "global",
+      "website": "https://www.hellofresh.com",
+      "focus": "germany",
+      "country_code": "DE",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 385,
+        "countries": {
+          "unknown": 385
+        },
+        "work_modes": {
+          "unknown": 385
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "SumUp",
+      "source": "greenhouse",
+      "board_token": "sumup",
+      "region": "global",
+      "website": "https://www.sumup.com",
+      "focus": "germany",
+      "country_code": "DE",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 349,
+        "countries": {
+          "unknown": 349
+        },
+        "work_modes": {
+          "unknown": 349
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "Babbel",
+      "source": "ashby",
+      "board_token": "babbel",
+      "region": "global",
+      "website": "https://www.babbel.com",
+      "focus": "germany",
+      "country_code": "DE",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 13,
+        "countries": {
+          "unknown": 13
+        },
+        "work_modes": {
+          "hybrid": 13
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "Raisin",
+      "source": "greenhouse",
+      "board_token": "raisin",
+      "region": "global",
+      "website": "https://www.raisin.com",
+      "focus": "germany",
+      "country_code": "DE",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 38,
+        "countries": {
+          "unknown": 38
+        },
+        "work_modes": {
+          "unknown": 38
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "n8n",
+      "source": "ashby",
+      "board_token": "n8n",
+      "region": "global",
+      "website": "https://n8n.io",
+      "focus": "germany",
+      "country_code": "DE",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 39,
+        "countries": {
+          "unknown": 39
+        },
+        "work_modes": {
+          "remote": 37,
+          "hybrid": 2
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "Helsing",
+      "source": "greenhouse",
+      "board_token": "helsing",
+      "region": "global",
+      "website": "https://helsing.ai",
+      "focus": "germany",
+      "country_code": "DE",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 160,
+        "countries": {
+          "unknown": 160
+        },
+        "work_modes": {
+          "unknown": 160
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "Parloa",
+      "source": "ashby",
+      "board_token": "parloa",
+      "region": "global",
+      "website": "https://www.parloa.com",
+      "focus": "germany",
+      "country_code": "DE",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 54,
+        "countries": {
+          "unknown": 54
+        },
+        "work_modes": {
+          "hybrid": 2,
+          "unknown": 52
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "Trade Republic",
+      "source": "greenhouse",
+      "board_token": "traderepublicbank",
+      "region": "global",
+      "website": "https://traderepublic.com",
+      "focus": "germany",
+      "country_code": "DE",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 44,
+        "countries": {
+          "unknown": 44
+        },
+        "work_modes": {
+          "unknown": 44
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "Insider",
+      "source": "lever",
+      "board_token": "insiderone",
+      "region": "global",
+      "website": "https://useinsider.com",
+      "focus": "turkey",
+      "country_code": "TR",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 119,
+        "countries": {
+          "TW": 3,
+          "ES": 1,
+          "AU": 7,
+          "CO": 8,
+          "BR": 22,
+          "MX": 4,
+          "GB": 5,
+          "TR": 24,
+          "DE": 8,
+          "KR": 4,
+          "IN": 2,
+          "FR": 7,
+          "US": 8,
+          "VN": 3,
+          "unknown": 1,
+          "PL": 2,
+          "NL": 2,
+          "IT": 2,
+          "ID": 1,
+          "PH": 1,
+          "MY": 2,
+          "TH": 1,
+          "AE": 1
+        },
+        "work_modes": {
+          "hybrid": 60,
+          "onsite": 23,
+          "remote": 35,
+          "unknown": 1
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "Dream Games",
+      "source": "lever",
+      "board_token": "dreamgames",
+      "region": "global",
+      "website": "https://dreamgames.com",
+      "focus": "turkey",
+      "country_code": "TR",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 17,
+        "countries": {
+          "TR": 17
+        },
+        "work_modes": {
+          "onsite": 17
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "Codeway",
+      "source": "lever",
+      "board_token": "codeway",
+      "region": "global",
+      "website": "https://codeway.co",
+      "focus": "turkey",
+      "country_code": "TR",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 0,
+        "countries": {},
+        "work_modes": {},
+        "stopped_reason": null
+      },
+      "notes": "Board reachable but listed no open jobs on the check date."
+    },
+    {
+      "company": "Midas",
+      "source": "lever",
+      "board_token": "getmidas",
+      "region": "global",
+      "website": "https://www.getmidas.com",
+      "focus": "turkey",
+      "country_code": "TR",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 13,
+        "countries": {
+          "TR": 13
+        },
+        "work_modes": {
+          "hybrid": 8,
+          "remote": 5
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "Peak Games",
+      "source": "lever",
+      "board_token": "peakgames",
+      "region": "global",
+      "website": "https://peak.com",
+      "focus": "turkey",
+      "country_code": "TR",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 19,
+        "countries": {
+          "unknown": 19
+        },
+        "work_modes": {
+          "onsite": 19
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "GitLab",
+      "source": "greenhouse",
+      "board_token": "gitlab",
+      "region": "global",
+      "website": "https://about.gitlab.com",
+      "focus": "remote",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 239,
+        "countries": {
+          "unknown": 239
+        },
+        "work_modes": {
+          "unknown": 239
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "Grafana Labs",
+      "source": "greenhouse",
+      "board_token": "grafanalabs",
+      "region": "global",
+      "website": "https://grafana.com",
+      "focus": "remote",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 146,
+        "countries": {
+          "unknown": 146
+        },
+        "work_modes": {
+          "unknown": 146
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "Elastic",
+      "source": "greenhouse",
+      "board_token": "elastic",
+      "region": "global",
+      "website": "https://www.elastic.co",
+      "focus": "remote",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 402,
+        "countries": {
+          "unknown": 402
+        },
+        "work_modes": {
+          "unknown": 402
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "Canonical",
+      "source": "greenhouse",
+      "board_token": "canonical",
+      "region": "global",
+      "website": "https://canonical.com",
+      "focus": "remote",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 314,
+        "countries": {
+          "unknown": 314
+        },
+        "work_modes": {
+          "unknown": 314
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "Mozilla",
+      "source": "greenhouse",
+      "board_token": "mozilla",
+      "region": "global",
+      "website": "https://www.mozilla.org",
+      "focus": "remote",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 123,
+        "countries": {
+          "unknown": 123
+        },
+        "work_modes": {
+          "unknown": 123
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "PostHog",
+      "source": "ashby",
+      "board_token": "posthog",
+      "region": "global",
+      "website": "https://posthog.com",
+      "focus": "remote",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 10,
+        "countries": {
+          "unknown": 10
+        },
+        "work_modes": {
+          "remote": 8,
+          "hybrid": 1,
+          "onsite": 1
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "Supabase",
+      "source": "ashby",
+      "board_token": "supabase",
+      "region": "global",
+      "website": "https://supabase.com",
+      "focus": "remote",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 61,
+        "countries": {
+          "unknown": 61
+        },
+        "work_modes": {
+          "unknown": 26,
+          "remote": 35
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "Linear",
+      "source": "ashby",
+      "board_token": "linear",
+      "region": "global",
+      "website": "https://linear.app",
+      "focus": "remote",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 34,
+        "countries": {
+          "unknown": 34
+        },
+        "work_modes": {
+          "remote": 31,
+          "hybrid": 3
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "Deel",
+      "source": "ashby",
+      "board_token": "deel",
+      "region": "global",
+      "website": "https://www.deel.com",
+      "focus": "remote",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 0,
+        "countries": {},
+        "work_modes": {},
+        "stopped_reason": null
+      },
+      "notes": "Board reachable but listed no open jobs on the check date."
+    },
+    {
+      "company": "Mistral AI",
+      "source": "lever",
+      "board_token": "mistral",
+      "region": "global",
+      "website": "https://mistral.ai",
+      "focus": "remote",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 0,
+        "countries": {},
+        "work_modes": {},
+        "stopped_reason": null
+      },
+      "notes": "Board reachable but listed no open jobs on the check date."
+    },
+    {
+      "company": "Trendyol",
+      "source": "lever",
+      "board_token": "trendyol",
+      "region": "global",
+      "website": "https://www.trendyol.com",
+      "focus": "turkey",
+      "country_code": "TR",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 41,
+        "countries": {
+          "SA": 7,
+          "TR": 23,
+          "RO": 8,
+          "FR": 1,
+          "AE": 1,
+          "DE": 1
+        },
+        "work_modes": {
+          "hybrid": 33,
+          "onsite": 8
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "Picus Security",
+      "source": "lever",
+      "board_token": "picus",
+      "region": "global",
+      "website": "https://www.picussecurity.com",
+      "focus": "turkey",
+      "country_code": "TR",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 18,
+        "countries": {
+          "US": 11,
+          "TH": 1,
+          "VN": 2,
+          "TR": 3,
+          "MY": 1
+        },
+        "work_modes": {
+          "remote": 17,
+          "hybrid": 1
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "iyzico",
+      "source": "lever",
+      "board_token": "iyzico",
+      "region": "global",
+      "website": "https://www.iyzico.com",
+      "focus": "turkey",
+      "country_code": "TR",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 5,
+        "countries": {
+          "TR": 5
+        },
+        "work_modes": {
+          "hybrid": 5
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "commercetools",
+      "source": "greenhouse",
+      "board_token": "commercetools",
+      "region": "global",
+      "website": "https://commercetools.com",
+      "focus": "germany",
+      "country_code": "DE",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 34,
+        "countries": {
+          "unknown": 34
+        },
+        "work_modes": {
+          "unknown": 34
+        },
+        "stopped_reason": null
+      }
+    },
+    {
+      "company": "Staffbase",
+      "source": "greenhouse",
+      "board_token": "staffbase",
+      "region": "global",
+      "website": "https://staffbase.com",
+      "focus": "germany",
+      "country_code": "DE",
+      "verification": "verified",
+      "live_check": {
+        "date": "2026-10-25",
+        "complete": true,
+        "active_postings": 25,
+        "countries": {
+          "unknown": 25
+        },
+        "work_modes": {
+          "unknown": 25
+        },
+        "stopped_reason": null
+      }
+    }
+  ]
+}

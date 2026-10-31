@@ -454,6 +454,32 @@ def reserve_registration_attempt(
     return limiter.try_reserve(specs, now=now)
 
 
+def import_preview_max_attempts() -> int:
+    return _get_positive_int_env("IMPORT_PREVIEW_MAX_PER_WINDOW", 20)
+
+
+def import_preview_window_seconds() -> int:
+    return _get_positive_int_env("IMPORT_PREVIEW_WINDOW_SECONDS", 600)
+
+
+def reserve_import_preview(
+    limiter: RateLimiter,
+    *,
+    user_id: int,
+    now: float | None = None,
+) -> ReservationResult:
+    """Each URL import preview fetches a remote page; bounded per user."""
+    specs = [
+        ReservationSpec(
+            counter_space="import_preview_user",
+            key=str(user_id),
+            max_count=import_preview_max_attempts(),
+            window_seconds=import_preview_window_seconds(),
+        ),
+    ]
+    return limiter.try_reserve(specs, now=now)
+
+
 # ---------------------------------------------------------------------------
 # Production dependency
 # ---------------------------------------------------------------------------

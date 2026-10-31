@@ -11,7 +11,23 @@ Flow:
 4. analyze the profile and the job;
 5. get a reasoned match (`eligible` / `ineligible` / `review_required`,
    scores, strengths, weaknesses, reasons);
-6. reopen saved matches and re-run them.
+6. reopen saved matches and re-run them;
+7. browse the shared job pool (search, country, work mode and source
+   filters, the source link and when each job was last seen);
+8. see "Jobs for me": analyzed open pool jobs ranked against the analyzed
+   profile with the existing matching rules, together with the share of the
+   pool that was ranked;
+9. import a job from a link (Greenhouse, Lever, Ashby, or a page with
+   JobPosting JSON-LD), check the fields and save it as a personal job.
+   Unsupported pages fall back to pasting the text;
+10. write a motivation letter draft (English, German or Turkish) on a job
+    page.
+    - The draft comes from the user's profile, CV, the posting and sourced
+      company information.
+    - The page shows the facts used and what is missing.
+    - The user can edit, save new versions, copy, download a .txt file and
+      regenerate; an edited version is never overwritten.
+    - With the fake provider the draft is a fixed template.
 
 ## Requirements
 
@@ -105,7 +121,17 @@ web client never re-sends an analysis by itself.
 - the production build.
 
 It then runs the whole flow with two users, desktop and mobile viewports,
-and the error states. Screenshots are written to `e2e/screenshots/`
+and the error states.
+
+- `e2e/discovery.spec.ts` covers the pool, "Jobs for me" and URL import.
+  It first runs `e2e/seed_catalog.py`, which adds synthetic catalog jobs
+  and an admin user to the sandbox database through
+  `backend/app/catalog_sync.py`. The script refuses any database but the
+  sandbox, and any provider but the fake one.
+- Then the admin analyzes the pool with the bounded
+  `POST /jobs/analyze-missing`.
+- `e2e/sandbox.ts` holds the sandbox's data settings, shared by the config
+  and the seeding. Screenshots are written to `e2e/screenshots/`
 (gitignored). Set `APPLY101_PYTHON` to use another Python interpreter for
 the backend.
 
