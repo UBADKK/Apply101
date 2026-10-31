@@ -45,6 +45,43 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 | AC5 | Reasoned match result | in progress | Web client shows `eligible` (74) and `ineligible` (20, `required_language_missing`) with reasons; saved results reopen and rematch work; `review_required` covered by a unit test only; staging open |
 | AC6 | End to end and operations | todo | Needs W1-W8 |
 
+## Railway test environment task
+
+- **Goal:** prepare a private Railway test environment on the branch
+  `feat/railway-test-env`, started from the head of PR #27 (`6df1620`).
+  - It is a separate draft PR. PR #27 is not merged.
+  - No deploy, no Railway charges, no paid AI calls, and nothing made
+    public.
+- **Scope:**
+  - one service, with a separate SQLite database and uploads on its volume;
+  - `.env` loading off, the fake analysis provider, and secrets from the
+    environment;
+  - a daily, bounded catalog sync on the same disk:
+    - off by default;
+    - it never sets an acknowledgement of a source's terms;
+    - no double run across restarts or processes.
+  - a runbook covering setup, access restriction, backup and restore, cost
+    tracking and the first sync: `docs/RAILWAY_TEST_RUNBOOK.md`.
+- **Out of scope:** the live `guarded_get` check and the undocumented EU
+  Greenhouse API host stay open items of PR #27.
+
+### Continuation note (Railway)
+
+- **Done:**
+  - `backend/app/deploy_app.py`: the start checks, the access-key gate, the
+    web client at `/`, the API at `/api` and `/healthz`;
+  - `backend/app/catalog_scheduler.py`: the daily sync, with an atomic
+    daily claim in `analysis_guards`;
+  - `backend/scripts/backup_data.py`: backup, list and restore;
+  - `Dockerfile`, `.dockerignore` and `railway.json`;
+  - tests: `test_deploy_app`, `test_catalog_scheduler`,
+    `test_backup_data` and `npm run e2e:deploy`;
+  - a local Docker build and a container run on a temporary volume.
+- **Next:** reviewer approval of the last head, then the draft PR.
+- **After a Railway account is connected:** follow the runbook, and check
+  each step it marks "(check)" against Railway's documentation, which
+  could not be reached from this environment.
+
 ## Scope extension task (phases 1-3)
 
 The full scope is in [ONLINE_MVP_PLAN.md](ONLINE_MVP_PLAN.md), under "Scope
