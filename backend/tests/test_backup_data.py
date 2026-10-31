@@ -123,6 +123,26 @@ class BackupDataTests(unittest.TestCase):
         self.assertEqual(self.notes(), ["original"])
         self.assertEqual(sorted(p.name for p in self.tmp.iterdir() if p.name.startswith((".restore", "uploads.before"))), [])
 
+    def test_failed_uploads_swap_puts_the_uploads_back(self):
+        target = backup_data.backup(self.env, keep=0, now=_now(0))
+        (self.uploads / "user_2_profile_2_cv.pdf").write_bytes(b"%PDF-new")
+        real_rename = Path.rename
+
+        def failing_rename(path, destination):
+            if path.name == "uploads" and path.parent.name.startswith(".restore"):
+                raise OSError("rename failed")
+            return real_rename(path, destination)
+
+        Path.rename = failing_rename
+        try:
+            code, out = self.run_main(["restore", "--from", target.name, "--yes"])
+        finally:
+            Path.rename = real_rename
+        self.assertEqual(code, 1)
+        self.assertIn("rename failed", out)
+        self.assertEqual((self.uploads / "user_2_profile_2_cv.pdf").read_bytes(), b"%PDF-new")
+        self.assertEqual(sorted(p.name for p in self.tmp.iterdir() if p.name.startswith((".restore", "uploads.before"))), [])
+
     def test_restore_refuses_unknown_names_and_bad_archives(self):
         code, out = self.run_main(["restore", "--from", "../etc", "--yes"])
         self.assertEqual(code, 1)

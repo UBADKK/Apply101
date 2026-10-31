@@ -147,12 +147,15 @@ def restore(environ, name: str, *, now: datetime | None = None) -> dict:
                 stamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
                 moved_aside = upload_dir.parent / f"{upload_dir.name}.before-restore-{stamp}"
                 upload_dir.rename(moved_aside)
-            restored_uploads.rename(upload_dir)
+            swapped = False
             try:
+                restored_uploads.rename(upload_dir)
+                swapped = True
                 database.parent.mkdir(parents=True, exist_ok=True)
                 _copy_sqlite(source / DATABASE_NAME, database)
             except Exception:
-                upload_dir.rename(restored_uploads)
+                if swapped:
+                    upload_dir.rename(restored_uploads)
                 if moved_aside is not None:
                     moved_aside.rename(upload_dir)
                 raise

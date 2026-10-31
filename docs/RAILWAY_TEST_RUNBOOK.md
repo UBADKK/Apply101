@@ -86,6 +86,11 @@ to one origin.
   `APPLY101_ACCESS_KEY`: the redeploy invalidates every cookie.
 - **App accounts:** registration stays open behind the key; testers
   register themselves. Changing `JWT_SECRET_KEY` logs everyone out.
+  - The app's own limits count per peer address too, so behind Railway's
+    proxy all testers share them (by default 5 registrations per hour and
+    20 failed logins per 15 minutes).
+  - For a larger group, raise `REGISTER_RATE_LIMIT_IP_MAX_ATTEMPTS` and
+    `LOGIN_RATE_LIMIT_IP_MAX_FAILURES` on the service.
 - **Admin:** make one tester admin from a shell in the service (step 4).
 
 ## 3. First start
