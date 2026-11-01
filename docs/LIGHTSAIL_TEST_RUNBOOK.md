@@ -113,15 +113,18 @@ sudo deploy/lightsail/ctl.sh logs 50      # Caddy reports the certificate here
 sudo deploy/lightsail/ctl.sh admin you@example.com
 ```
 
-3. Check that the app sees real client addresses:
+3. Check that the app sees real client addresses. Open any page on the
+   phone, then right away run:
 
 ```bash
-sudo deploy/lightsail/ctl.sh logs 20 | grep app-1
+sudo deploy/lightsail/ctl.sh logs 200 | grep app-1 | grep -v healthz
 ```
 
-   The lines should start with your phone's public IP. If they show
-   `172.30.0.1` instead, the rate limits count every tester together; tell
-   the developer.
+   - In each line, the address after `INFO:` should be your phone's public
+     IP.
+   - `127.0.0.1` lines are the health check (`grep -v healthz` hides them).
+   - If the lines show `172.30.0.1` instead, the rate limits count every
+     tester together; tell the developer.
 
 ## 4. Access
 
