@@ -223,3 +223,48 @@ class PowerShellEnvTests(HardeningCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReviewFollowUpTests(HardeningCase):
+    """Bypasses and false positives found by the independent review of the
+    hardening round."""
+
+    def test_powershell_without_explicit_command_flag(self):
+        self.check(
+            ['powershell "Get-ChildItem env:"', "powershell gc env:API_TOKEN",
+             'powershell -NoProfile "Get-Content env:*"', 'pwsh -NoLogo "cd env:; dir"'],
+            ["powershell -NoProfile -File build.ps1", "pwsh -File ./scripts/check.ps1"],
+        )
+
+    def test_remaining_sed_git_grep_and_javascript_forms(self):
+        self.check(
+            [
+                "sed -i '' 's/a/b/w out.txt' calc/core.py",
+                "git grep --open=cat add", "git grep --op=./x add",
+                "node -e \"const {env}=process; console.log(env)\"",
+                "node -e \"console.log(require('process').env)\"",
+                "node -e \"console.log(require('node:process')['env'])\"",
+                "node --input-type=module -e \"import {env} from 'node:process'; console.log(env)\"",
+                "node <<'EOF'\nconsole.log(process['env'])\nEOF",
+                "python3 - <<'EOF'\nimport os\nprint(getattr(os, 'environ'))\nEOF",
+            ],
+            [
+                "sed 's/;$//' calc/core.py",
+                "sed 's/&amp;/\\&/g' calc/core.py",
+                "sed -n '/a;b/p' calc/core.py",
+                "sed -n '1p; 3p' calc/core.py",
+                "sed --follow-symlinks -i 's/a/b/' calc/core.py",
+                "git grep -eTODO", "git grep -C2 -e Open calc",
+                "node -e \"console.log(require('path').sep)\"",
+                "python3 - <<'EOF'\nimport os\nprint(os.environ.get('HOME'))\nEOF",
+            ],
+        )
+
+    def test_powershell_env_text_is_not_a_drive_access(self):
+        self.check(
+            ["Get-ChildItem env:", "gc env:API_TOKEN", "(Get-Item env:DB_PASSWORD).Value"],
+            ["Select-String -Path .github\\workflows\\ci.yml -Pattern 'env:'",
+             'git grep -n "env:"', 'node -e "console.log({ env: 1 })"',
+             "Write-Output 'env: settings'"],
+            tool="PowerShell",
+        )

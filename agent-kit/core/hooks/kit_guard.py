@@ -321,6 +321,11 @@ _WRAPPER_OPTIONS_WITH_VALUE = {
 }
 _WRAPPERS_WITH_POSITIONAL = frozenset({"timeout"})
 _POSIX_SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh", "fish"})
+_POWERSHELL_OPTIONS_WITH_VALUE = frozenset({
+    "-executionpolicy", "-ex", "-ep", "-windowstyle", "-w", "-version", "-v",
+    "-configurationname", "-inputformat", "-if", "-outputformat", "-of", "-o",
+    "-psconsolefile", "-workingdirectory", "-wd", "-settingsfile", "-custompipename",
+})
 _POWERSHELLS = frozenset({"powershell", "pwsh"})
 _INTERPRETERS = _POSIX_SHELLS | _POWERSHELLS | frozenset({"cmd", "py", "node", "perl", "ruby", "deno", "bun"})
 _MAX_SHELL_DEPTH = 3
@@ -420,7 +425,14 @@ _INLINE_ENV_DUMP_RE = re.compile(
 )
 # JavaScript runtimes: process.env, process['env'], Bun.env, Deno.env.
 _JS_ENV_RE = re.compile(
-    r"\b(?:process\s*(?:\.\s*env\b|\[\s*(['\"`])env\1\s*\])|Bun\s*\.\s*env\b|Deno\s*\.\s*env\b)"
+    r"(?:\bprocess|\brequire\s*\(\s*['\"`](?:node:)?process['\"`]\s*\))"
+    r"\s*(?:\.\s*env\b|\[\s*(['\"`])env\1\s*\])|\bBun\s*\.\s*env\b|\bDeno\s*\.\s*env\b"
+)
+# The env object bound to another name: const {env} = process, imports.
+_JS_ENV_ALIAS_RE = re.compile(
+    r"\{[^{}]*\benv\b[^{}]*\}\s*(?:=\s*(?:process\b|require\s*\(\s*['\"`](?:node:)?process)"
+    r"|from\s*['\"`](?:node:)?process['\"`])"
+    r"|\bimport\s+\*\s+as\s+\w+\s+from\s*['\"`](?:node:)?process['\"`]"
 )
 # Object.prototype members: calling or reading them on the env object
 # exposes the whole environment (process.env['valueOf']()).
@@ -587,8 +599,8 @@ def _check_git(args):
         return None
     if any(a == "--output" or a.startswith("--output=") for a in rest):
         return f"writes files through git {sub} --output"
-    if sub == "grep" and any(a.startswith("--open-files-in-pager") or (
-            a.startswith("-") and not a.startswith("--") and "O" in a) for a in rest):
+    if sub == "grep" and any(a.startswith("--op") or _short_flag_before_value(a, "O", "efABCm")
+                             for a in rest):
         return "git grep -O runs another program on the matching files"
     if sub in _GIT_READ_ONLY:
         return None
@@ -603,6 +615,19 @@ def _check_git(args):
         ):
             return None
     return f"changes git state or contacts a remote (git {sub}); only the orchestrator does that"
+
+
+def _short_flag_before_value(arg, flag, takes_value):
+    """True when a short option cluster such as -nO contains ``flag`` before
+    any option that takes the rest of the cluster as its value (-eTODO)."""
+    if not arg.startswith("-") or arg.startswith("--"):
+        return False
+    for ch in arg[1:]:
+        if ch == flag:
+            return True
+        if ch in takes_value:
+            return False
+    return False
 
 
 def _filters_only(args):
@@ -675,7 +700,7 @@ def js_env_access(text):
     Only a plain ``.NAME`` or ``['NAME']`` read of one variable counts as a
     single read; computed keys, prototype members, calls and any other use
     of the env object count as exposing all of it."""
-    dump, names = False, []
+    dump, names = bool(_JS_ENV_ALIAS_RE.search(text)), []
     for m in _JS_ENV_RE.finditer(text):
         after = text[m.end():]
         if m.group(0).startswith("Deno"):
@@ -720,19 +745,17 @@ def _is_secret_name(name, settings):
 
 _PS_ENV_VAR_RE = re.compile(r"\$\{?env:([A-Za-z_][A-Za-z0-9_]*)\}?(\s*[-+*/]?=(?!=))?", re.IGNORECASE)
 _PS_ENV_PATH_RE = re.compile(r"(?<![\w$:{])env:[\\/]?([A-Za-z0-9_*?\[\]]*)", re.IGNORECASE)
-_PS_ENV_LOCATION_RE = re.compile(
-    r"(?:^|[\s;|&(])(?:cd|chdir|sl|set-location|pushd|push-location)\s+"
-    r"(?:-(?:literal)?path\s+)?['\"]?env:", re.IGNORECASE)
 _DOTNET_ENV_RE = re.compile(
     r"\[(?:System\.)?Environment\]\s*::\s*(GetEnvironmentVariables|GetEnvironmentVariable"
     r"|SetEnvironmentVariable|ExpandEnvironmentVariables)\s*\(\s*(?:(['\"])([^'\"]*)\2)?",
     re.IGNORECASE)
 
 
-def check_powershell_env(text, settings, powershell):
-    """PowerShell and .NET environment access: $env:/${env:} reads of secret
-    names and assignments of variables that make tools run programs,
-    [Environment]:: calls, and (PowerShell only) the env: drive."""
+def check_powershell_env(text, settings):
+    """PowerShell and .NET environment access in raw command text: $env: and
+    ${env:} reads of secret names, assignments of variables that make tools
+    run programs, and [Environment]:: calls. The env: drive is checked per
+    command by check_powershell_env_drive."""
     for m in _PS_ENV_VAR_RE.finditer(text):
         name, assignment = m.group(1), m.group(2)
         if assignment and _DANGEROUS_ENV_RE.match(name):
@@ -754,17 +777,39 @@ def check_powershell_env(text, settings, powershell):
                         if _is_secret_name(n, settings)), None)
             if hit:
                 return f"reads a secret-looking environment variable ({hit})"
-    if powershell:
-        if _PS_ENV_LOCATION_RE.search(text):
+    return None
+
+
+# PowerShell commands that take provider paths such as env:NAME.
+_PS_PROVIDER_COMMANDS = frozenset({
+    "get-childitem", "gci", "dir", "ls", "get-item", "gi", "get-content", "gc", "cat", "type",
+    "get-itemproperty", "gp", "get-itempropertyvalue", "gpv", "set-item", "si", "new-item", "ni",
+    "copy-item", "cpi", "cp", "copy", "move-item", "mi", "mv", "move", "rename-item", "rni", "ren",
+    "remove-item", "ri", "rm", "del", "erase", "rd", "rmdir", "clear-item", "cli", "set-content",
+    "sc", "add-content", "ac", "test-path", "resolve-path", "rvpa", "cd", "chdir", "sl",
+    "set-location", "pushd", "push-location", "invoke-item", "ii",
+})
+_PS_LOCATION_COMMANDS = frozenset({"cd", "chdir", "sl", "set-location", "pushd", "push-location"})
+
+
+def check_powershell_env_drive(name, args, settings):
+    """The env: drive used by a provider cmdlet: listings, secret names,
+    variables that make tools run programs, and moving into the drive."""
+    if name not in _PS_PROVIDER_COMMANDS:
+        return None
+    for arg in args:
+        m = _PS_ENV_PATH_RE.search(arg)
+        if not m:
+            continue
+        drive = m.group(1)
+        if name in _PS_LOCATION_COMMANDS:
             return "moves into the env: drive, where any listing prints environment variables"
-        for m in _PS_ENV_PATH_RE.finditer(text):
-            name = m.group(1)
-            if not name or any(ch in name for ch in "*?["):
-                return "lists environment variables, which may hold secrets"
-            if _is_secret_name(name, settings):
-                return f"reads a secret-looking environment variable ({name})"
-            if _DANGEROUS_ENV_RE.match(name):
-                return f"touches {name}, which makes tools run other programs"
+        if not drive or any(ch in drive for ch in "*?["):
+            return "lists environment variables, which may hold secrets"
+        if _is_secret_name(drive, settings):
+            return f"reads a secret-looking environment variable ({drive})"
+        if _DANGEROUS_ENV_RE.match(drive):
+            return f"touches {drive}, which makes tools run other programs"
     return None
 
 
@@ -1016,11 +1061,23 @@ def _nested_command(name, args):
                 return " ".join(args[i + 1:]), True
         return None
     if name in _POWERSHELLS:
-        for i, arg in enumerate(args):
+        i = 0
+        while i < len(args):
+            arg, key = args[i], args[i].lower()
             if re.fullmatch(r"-(?:c|co|com|comm|comma|comman|command|e|ec|encodedcommand)", arg, re.IGNORECASE):
-                if arg.lower().startswith("-e"):
+                if key.startswith("-e"):
                     return "\x00encoded", True
                 return " ".join(args[i + 1:]), True
+            if key in ("-f", "-file"):
+                return None  # runs a script file the guard cannot read
+            if key in _POWERSHELL_OPTIONS_WITH_VALUE:
+                i += 2
+                continue
+            if arg.startswith("-"):
+                i += 1
+                continue
+            # Windows PowerShell treats the first operand as -Command.
+            return " ".join(args[i:]), True
     return None
 
 
@@ -1075,8 +1132,7 @@ def _check_protected_segment(name, args, hits, settings, root_check):
 
 _SED_ADDRESS = r"(?:\d+(?:~\d+)?|\$|/(?:[^/\\]|\\.)*/[IM]*)"
 _SED_ADDRESS_RE = re.compile(
-    rf"^(?:{_SED_ADDRESS}(?:\s*,\s*(?:{_SED_ADDRESS}|[+~]\d+))?)?\s*!?\s*")
-_SED_SIMPLE_RE = re.compile(r"[pPdDnNgGhHxz=]|[qQ]\s*\d*|l\s*\d*")
+    rf"(?:{_SED_ADDRESS}(?:\s*,\s*(?:{_SED_ADDRESS}|[+~]\d+))?)?\s*!?\s*")
 
 
 def _sed_delimited(rest, parts):
@@ -1100,23 +1156,50 @@ def _sed_delimited(rest, parts):
     return None
 
 
-def _sed_command_safe(command):
-    """True for sed commands that neither run programs (e, s///e) nor read
-    or write files (r, R, w, W, s///w): p, d, s, y, a/i/c and the like."""
-    if command.startswith("#"):
-        return True
-    rest = command[_SED_ADDRESS_RE.match(command).end():]
-    if _SED_SIMPLE_RE.fullmatch(rest):
-        return True
-    if rest[:1] in ("a", "i", "c") and (len(rest) == 1 or rest[1] in " \t\\"):
-        return True
-    if rest.startswith("s"):
-        end = _sed_delimited(rest, 2)
-        return end is not None and re.fullmatch(r"[gpiImM0-9]*", rest[end:]) is not None
-    if rest.startswith("y"):
-        end = _sed_delimited(rest, 2)
-        return end is not None and not rest[end:].strip()
-    return False
+_SED_FLAGS_RE = re.compile(r"[gpiImM0-9]*")
+_SED_BLANKS_RE = re.compile(r"[ \t]*")
+_SED_NUMBER_RE = re.compile(r"[ \t]*\d*")
+
+
+def _sed_script_safe(script):
+    """True when every command of a sed script neither runs programs (e,
+    s///e) nor reads or writes files (r, R, w, W, s///w): p, d, s, y, a/i/c
+    and the like. The script is parsed command by command, so ";" inside
+    an address or an s/y field does not split it."""
+    i, n = 0, len(script)
+    while i < n:
+        if script[i] in " \t;\n":
+            i += 1
+            continue
+        if script[i] == "#":
+            newline = script.find("\n", i)
+            i = n if newline < 0 else newline + 1
+            continue
+        i = _SED_ADDRESS_RE.match(script, i).end()
+        if i >= n:
+            return False
+        command = script[i]
+        if command in "sy":
+            end = _sed_delimited(script[i:], 2)
+            if end is None:
+                return False
+            i += end
+            if command == "s":
+                i = _SED_FLAGS_RE.match(script, i).end()
+        elif command in "aic":
+            newline = script.find("\n", i)  # the text runs to the end of the line
+            i = n if newline < 0 else newline + 1
+            continue
+        elif command in "pPdDnNgGhHxz=":
+            i += 1
+        elif command in "qQl":
+            i = _SED_NUMBER_RE.match(script, i + 1).end()
+        else:
+            return False  # e, r, R, w, W, blocks, labels, branches, ...
+        i = _SED_BLANKS_RE.match(script, i).end()
+        if i < n and script[i] not in ";\n":
+            return False
+    return True
 
 
 def _sed_scripts(args):
@@ -1138,7 +1221,7 @@ def _sed_scripts(args):
                     value = args[i]
                 scripts.append(value)
                 explicit = True
-            elif key.startswith("--f"):  # --file
+            elif key.startswith("--fi"):  # --file (not --follow-symlinks)
                 unreadable = explicit = True
                 if not eq:
                     i += 1
@@ -1160,7 +1243,7 @@ def _sed_scripts(args):
                     break
                 if flag == "i":
                     break  # the rest is a backup suffix
-        else:
+        elif arg:  # BSD "sed -i ''" passes an empty backup suffix
             positional.append(arg)
         i += 1
     if not explicit and positional:
@@ -1175,12 +1258,10 @@ def _check_sed(args):
     if sandbox:
         return None  # GNU sed --sandbox rejects e, r and w
     for script in scripts:
-        for command in re.split(r"[;\n]", script):
-            command = command.strip()
-            if command and not _sed_command_safe(command):
-                return ("sed script uses a command the guard cannot verify (e runs programs; "
-                        "r, R, w and W read or write files; blocks); use plain p, d, s or y "
-                        "commands, or the Read/Edit tools")
+        if not _sed_script_safe(script):
+            return ("sed script uses a command the guard cannot verify (e runs programs; "
+                    "r, R, w and W read or write files; blocks, labels); use plain p, d, s "
+                    "or y commands, or the Read/Edit tools")
     return None
 
 
@@ -1192,9 +1273,14 @@ def check_shell(command, settings, backslash_paths=False, depth=0):
         return "runs an encoded PowerShell command the guard cannot inspect"
     if depth > _MAX_SHELL_DEPTH:
         return "nests shells too deeply for the guard to inspect"
-    reason = check_powershell_env(command, settings, powershell=backslash_paths)
+    reason = check_powershell_env(command, settings)
     if reason:
         return reason
+    if "<<" in command and re.search(r"\b(?:python[\d.]*|py|node|deno|bun|perl|ruby)\b", command):
+        # Heredoc code: quotes are still intact in the raw text.
+        reason = _check_inline_env_dump([command], False, settings)
+        if reason:
+            return reason
     raw_hits = mention_hits(command, settings)
     try:
         parts = split_segments(command, backslash_paths)
@@ -1236,6 +1322,7 @@ def check_shell(command, settings, backslash_paths=False, depth=0):
             or _check_secret_env(" ".join(segment), settings)
             or _check_inline_env_dump(segment, text_only, settings)
             or (_check_sed(args) if name in ("sed", "gsed") else None)
+            or (check_powershell_env_drive(name, args, settings) if backslash_paths else None)
             or ("sort --compress-program runs another program" if name == "sort" and any(
                 a.startswith("--co") for a in args) else None)
             or _check_dangerous_env(segment, name, args)
