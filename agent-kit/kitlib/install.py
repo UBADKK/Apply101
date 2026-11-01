@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .common import (
     CONTEXT_FILE, GUARD_COMMAND, HOOK_MATCHER_TOOLS, INSTALL_DIR, INSTALL_MAP,
-    MANIFEST, SETTINGS_FILE, KitError, Layout, load_guard, read_text,
+    MANIFEST, SETTINGS_FILE, KitError, KitRefused, Layout, load_guard, read_text,
 )
 from .validate import deny_rules, kit_hook_entries
 
@@ -103,7 +103,7 @@ def install(target, context=None, force=False, dry_run=False, layout=None):
             actions.append(f"create     {dst}")
         writes.append((path, data))
     if conflicts:
-        raise KitError(
+        raise KitRefused(
             "these files exist and differ from the kit (local edits or another version): "
             + ", ".join(conflicts)
             + ". Nothing was written. Review them, then re-run with --force to replace them."

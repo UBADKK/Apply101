@@ -12,7 +12,8 @@ Rules:
 - Short notes only: no secrets, e-mail addresses, file contents, stack
   traces or long logs (at most 12 KB, 220 lines, 400 characters per line).
 - `Next step` is one exact action that someone without context can take.
-- `Baseline` stores sizes and modification times, never contents.
+- `Baseline` stores sizes and modification times, never contents; paths are
+  URL-encoded (`My%20Notes.md`).
 - Sections stay in this order; an empty section holds `-`.
 
 ```markdown
@@ -27,7 +28,7 @@ Rules:
 - Reason: <why the task waits or stopped, else ->
 - Branch: <branch>
 - Base commit: <commit when the task started>
-- Head commit: <commit at the last update>
+- Head commit: <commit the task is based on; changes only with record --accept-head>
 - Fix rounds: <used>/<max>
 - Risk flags: <production, remote_git, data, secrets, external, approval_path, auditor, or ->
 - Approval: <the user's recorded decision, else ->

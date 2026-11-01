@@ -52,6 +52,10 @@ class KitError(Exception):
     """A user-facing error; the message says what to do."""
 
 
+class KitRefused(KitError):
+    """The kit refuses to proceed until someone decides (exit code 3)."""
+
+
 class Layout:
     """Where the kit's files are: the source tree or an installed copy."""
 

@@ -361,7 +361,7 @@ def command_name(token):
 def command_of(segment):
     """(command name, args), skipping variable assignments, keywords and
     wrappers such as env, timeout and xargs."""
-    i = 0
+    i, saw_env = 0, False
     while i < len(segment):
         token = segment[i]
         if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token):
@@ -369,8 +369,7 @@ def command_of(segment):
             continue
         name = command_name(token)
         if name in _WRAPPERS:
-            if name == "env" and i + 1 >= len(segment):
-                return "env", []
+            saw_env = saw_env or name == "env"
             with_value = _WRAPPER_OPTIONS_WITH_VALUE.get(name, frozenset())
             i += 1
             while i < len(segment) and segment[i].startswith("-"):
@@ -379,7 +378,8 @@ def command_of(segment):
                 i += 1
             continue
         return name, segment[i + 1:]
-    return "", []
+    # "env", "env -0" or "env X=1" without a command prints the environment.
+    return ("env", []) if saw_env else ("", [])
 
 
 def _is_redirect(token):
@@ -400,6 +400,11 @@ _INLINE_DELETE_RE = re.compile(
     r"|\.(?:rm|rmSync|unlinkSync|rmdirSync)\s*\("
     r"|\[(?:System\.)?IO\.(?:File|Directory)\]::(?:Delete|Move)"
     r"|\bRemove-Item\b",
+    re.IGNORECASE,
+)
+_INLINE_ENV_DUMP_RE = re.compile(
+    r"\bos\.environ\b(?!\s*(?:\[|\.get\b))|\bprocess\.env\b(?!\s*[.\[])|%ENV\b|\bENV\.to_h\b"
+    r"|\bos\.getenv\s*\(\s*\)|\bSystem\.getenv\s*\(\s*\)",
     re.IGNORECASE,
 )
 _INLINE_NETWORK_RE = re.compile(
@@ -426,9 +431,10 @@ _ARCHIVE_COMMANDS = frozenset({"tar", "zip", "7z", "7za", "rar", "compress-archi
 _PACKAGE_RULES = {
     "pip": {"install", "uninstall", "download", "wheel"},
     "pip3": {"install", "uninstall", "download", "wheel"},
-    "pipx": None,
+    "pipx": None, "npx": None, "pnpx": None, "bunx": None, "uvx": None,
     "npm": {"install", "i", "ci", "add", "uninstall", "remove", "rm", "un",
-            "update", "up", "upgrade", "publish", "unpublish", "link", "dedupe"},
+            "update", "up", "upgrade", "publish", "unpublish", "link", "dedupe",
+            "exec", "x", "init", "create"},
     "yarn": {"", "add", "install", "remove", "publish", "upgrade", "up", "link", "dlx"},
     "pnpm": {"add", "install", "i", "remove", "rm", "update", "up", "publish", "link", "dlx"},
     "bun": {"add", "install", "i", "remove", "rm", "update", "publish", "link", "x"},
@@ -602,6 +608,12 @@ def _check_env_dump(name, args):
         a.lower().startswith("env:") for a in args
     ):
         return "lists environment variables, which may hold secrets"
+    return None
+
+
+def _check_inline_env_dump(segment, text_only):
+    if not text_only and _INLINE_ENV_DUMP_RE.search(" ".join(segment)):
+        return "prints the whole environment from inline code, which may hold secrets"
     return None
 
 
@@ -957,6 +969,7 @@ def check_shell(command, settings, backslash_paths=False, depth=0):
             or _check_packages(name, args)
             or _check_real_data(name, args, text_only, settings)
             or _check_secret_env(" ".join(segment), settings)
+            or _check_inline_env_dump(segment, text_only)
             or (check_grep(name, args, settings, root_check=not from_xargs) if name in _GREP_COMMANDS else None)
         )
         if reason:
@@ -970,7 +983,13 @@ def check_shell(command, settings, backslash_paths=False, depth=0):
                 if ">" in token and readonly_hit(target, settings):
                     return "writes into .claude/ or the checkpoint directory"
         if readonly_mentioned(" ".join(segment), settings):
-            in_place = name == "sed" and any(a.startswith("-i") or a == "--in-place" for a in args)
+            in_place = (
+                name == "sed" and any(a.startswith("-i") or a == "--in-place" for a in args)
+                or name == "sort" and any(a.startswith(("-o", "--output")) for a in args)
+                or name in ("awk", "gawk", "mawk", "nawk") and any(">" in a for a in args)
+                or name == "find" and any(a.lower() in ("-fprint", "-fprint0", "-fprintf", "-fls") for a in args)
+                or name in ("cd", "pushd", "chdir", "set-location", "sl", "push-location")
+            )
             runs_tests = bool(_TEST_RUNNER_RE.search(" ".join([name] + args)))
             if in_place or (name not in _READ_ONLY_COMMANDS and name != "git" and not runs_tests):
                 return (f"{name or 'command'} may write into .claude/ or the checkpoint "
@@ -989,6 +1008,44 @@ def check_shell(command, settings, backslash_paths=False, depth=0):
     unattributed = raw_hits - attributed
     if unattributed:
         return f"command references a protected path in a form the guard cannot attribute ({_describe(unattributed)})"
+    return None
+
+
+# The reviewer is read-only: these commands only, no output redirection
+# except to /dev/null or another descriptor.
+_REVIEWER_COMMANDS = frozenset({
+    "git", "cat", "head", "tail", "less", "more", "ls", "dir", "wc", "grep", "egrep",
+    "fgrep", "rg", "diff", "cmp", "stat", "file", "find", "sed", "sort", "uniq", "cut",
+    "tr", "column", "pwd", "cd", "echo", "printf", "test", "[", "[[", "basename",
+    "dirname", "realpath", "readlink", "tree", "sha256sum", "sha1sum", "md5sum",
+    "true", "false", "get-content", "gc", "type", "select-string", "sls",
+    "get-childitem", "gci", "test-path", "get-item",
+})
+
+
+def check_reviewer_shell(command, backslash_paths=False):
+    """Extra rule for kit-reviewer: only read-only commands."""
+    try:
+        parts = split_segments(command, backslash_paths)
+    except ValueError:
+        return "the reviewer's shell commands must parse; use the file tools"
+    for segment, _before, _after in parts:
+        name, args = command_of(segment)
+        if not name:
+            continue
+        if name not in _REVIEWER_COMMANDS:
+            return f"the reviewer only runs read-only commands; {name} is not one"
+        for idx, token in enumerate(args):
+            if _is_redirect(token) and ">" in token and "&" not in token:
+                target = args[idx + 1] if idx + 1 < len(args) else ""
+                if target.lower() not in ("/dev/null", "nul", "$null"):
+                    return "the reviewer does not write files (output redirection)"
+        if name == "sed" and any(a.startswith("-i") or a == "--in-place" for a in args):
+            return "the reviewer does not edit files (sed -i)"
+        if name == "sort" and any(a.startswith(("-o", "--output")) for a in args):
+            return "the reviewer does not write files (sort -o)"
+        if name == "find" and any(a.lower() in ("-fprint", "-fprint0", "-fprintf", "-fls") for a in args):
+            return "the reviewer does not write files (find -fprint)"
     return None
 
 
@@ -1021,16 +1078,35 @@ def decide(payload, settings_loader=load_installed_settings):
             if hits:
                 return f"{tool_name} selects a protected path ({_describe(hits)})"
     if tool_name in SHELL_TOOLS:
-        return check_shell(tool_input.get("command"), settings,
-                           backslash_paths=tool_name == "PowerShell")
+        backslash = tool_name == "PowerShell"
+        reason = check_shell(tool_input.get("command"), settings, backslash_paths=backslash)
+        if reason is None and payload.get("agent_type") == "kit-reviewer":
+            reason = check_reviewer_shell(tool_input.get("command"), backslash)
+        return reason
     return None
+
+
+_KIT_AGENT_RE = re.compile(r'"agent_type"\s*:\s*"kit-(?:researcher|auditor|developer|reviewer)"')
 
 
 def main(stdin=None, stderr=None, settings_loader=load_installed_settings):
     stdin = stdin if stdin is not None else sys.stdin.buffer
     stderr = stderr if stderr is not None else sys.stderr
+    raw = b""
     try:
-        payload = json.loads(stdin.read().decode("utf-8"))
+        raw = stdin.read()
+        payload = json.loads(raw.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise GuardError("hook input is not a JSON object")
+    except Exception:
+        # Unreadable input: block only when it names a kit agent, like the
+        # wrapper does when no Python is available; never lock out the main session.
+        if not _KIT_AGENT_RE.search(raw.decode("utf-8", "replace")):
+            return 0
+        payload = None
+    try:
+        if payload is None:
+            raise GuardError("hook input is not valid JSON")
         reason = decide(payload, settings_loader)
     except ConfigError as exc:
         reason = f"the project adapter is invalid ({str(exc)[:200]}); run the kit validator"

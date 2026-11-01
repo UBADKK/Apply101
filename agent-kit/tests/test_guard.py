@@ -171,6 +171,14 @@ class ShellTests(GuardCase):
         "kill -9 1", "pkill python", "crontab -r", "systemctl restart app",
         "zip -r project.zip .", "tar czf all.tgz .", "echo x > .git/hooks/pre-commit",
         "cat .git/config", "chmod +x .git/hooks/pre-push",
+        # package runners that may download code
+        "npx tsc", "npx prettier --write .", "uvx ruff", "bunx x", "pnpx x", "npm exec x",
+        # whole-environment dumps
+        "python -c \"import os; print(os.environ)\"", "python3 -c 'import os; print(dict(os.environ))'",
+        "node -e \"console.log(process.env)\"", "env -0", "env -i", "env X=1", "perl -e 'print %ENV'",
+        # read-only directories reached through read-only commands
+        "cd .claude && echo x > settings.json", "sort -o .claude/agent-kit/PROJECT_CONTEXT.md f",
+        "awk '{print > \".claude/x\"}' f", "find . -name x -fprint .claude/out",
     ]
     ALLOWED = [
         "python3 -m unittest discover -s tests -t .",
@@ -204,7 +212,8 @@ class ShellTests(GuardCase):
                     self.assertBlocked("Bash", {"command": command}, agent)
 
     def test_allowed(self):
-        for agent in KIT_AGENTS:
+        # The reviewer has a stricter read-only allowlist (test_reviewer_shell_is_read_only).
+        for agent in [a for a in KIT_AGENTS if a != "kit-reviewer"]:
             for command in self.ALLOWED:
                 with self.subTest(agent=agent, command=command):
                     self.assertAllowed("Bash", {"command": command}, agent)
@@ -247,11 +256,29 @@ class ScopeAndFailureTests(GuardCase):
         payload.pop("agent_type")
         self.assertEqual(guard.main(io.BytesIO(json.dumps(payload).encode()), io.StringIO(), broken), 0)
 
-    def test_malformed_input_fails_closed(self):
-        self.assertEqual(guard.main(io.BytesIO(b"not json"), io.StringIO(), lambda: self.settings), 2)
+    def test_malformed_input_fails_closed_for_kit_agents_only(self):
+        loader = lambda: self.settings  # noqa: E731
+        broken = b'{"agent_type": "kit-developer", "tool_name": "Bash", '
+        self.assertEqual(guard.main(io.BytesIO(broken), io.StringIO(), loader), 2)
+        self.assertEqual(guard.main(io.BytesIO(b"not json"), io.StringIO(), loader), 0)
+        self.assertEqual(guard.main(io.BytesIO(b"[1, 2]"), io.StringIO(), loader), 0)
         payload = {"agent_type": "kit-developer", "tool_name": "Bash", "tool_input": "x"}
-        self.assertEqual(guard.main(io.BytesIO(json.dumps(payload).encode()), io.StringIO(),
-                                    lambda: self.settings), 2)
+        self.assertEqual(guard.main(io.BytesIO(json.dumps(payload).encode()), io.StringIO(), loader), 2)
+
+    def test_reviewer_shell_is_read_only(self):
+        for command in ("echo x > calc/core.py", "sed -i 's/a/b/' calc/core.py", "python3 -m unittest",
+                        "awk '{print}' calc/core.py", "sort -o out.txt in.txt", "touch x", "mkdir y",
+                        "tee x", "make", "npm test", "chmod +x run.sh", "find . -fprint out"):
+            with self.subTest(command=command):
+                self.assertBlocked("Bash", {"command": command}, "kit-reviewer")
+                if command in ("python3 -m unittest", "npm test", "mkdir y", "chmod +x run.sh"):
+                    self.assertAllowed("Bash", {"command": command}, "kit-developer")
+        for command in ("git status --short --untracked-files=all", "git diff -- calc/core.py",
+                        "git log --oneline -3 2>/dev/null", "cat calc/core.py | head -20",
+                        "grep -n add calc/*.py", "sed -n '1,20p' calc/core.py", "ls -la",
+                        "git diff --stat 2>&1 | tail -3", "find calc -name '*.py' | xargs grep -n def"):
+            with self.subTest(command=command):
+                self.assertAllowed("Bash", {"command": command}, "kit-reviewer")
 
     def test_allow_writes_nothing(self):
         payload = {"agent_type": "kit-developer", "tool_name": "Read", "tool_input": {"file_path": "a.py"}}

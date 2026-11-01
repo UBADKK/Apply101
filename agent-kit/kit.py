@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from kitlib import checkpoint as cpmod  # noqa: E402
 from kitlib import workflow  # noqa: E402
-from kitlib.common import KitError, Layout, load_context, read_text  # noqa: E402
+from kitlib.common import KitError, KitRefused, Layout, load_context, read_text  # noqa: E402
 from kitlib.install import install  # noqa: E402
 from kitlib.validate import run as run_validate  # noqa: E402
 
@@ -103,9 +103,9 @@ def cmd_checkpoint(args, layout):
     project = _project(args, layout)
     _text, config = load_context(project)
     if args.action == "new":
-        path = workflow.checkpoint_path(project, config, args.task)
+        path = workflow.checkpoint_path(project, config, args.task, slug_only=True)
         if path.exists():
-            raise KitError(f"checkpoint already exists: {path.relative_to(project)}; use resume")
+            raise KitRefused(f"checkpoint already exists: {path.relative_to(project)}; use resume")
         try:
             cp = workflow.new_checkpoint(project, config, args.task, args.goal, args.scope or [],
                                          args.criterion or [], args.allow_dirty)
@@ -131,7 +131,16 @@ def cmd_checkpoint(args, layout):
         ok, lines = workflow.resume_report(project, config, cp)
         print("\n".join(lines))
         return EXIT_OK if ok else EXIT_REFUSED
+    if args.action in ("record", "event") and not getattr(args, "accept_head", False):
+        drift = workflow.repository_drift(project, cp)
+        if drift:
+            print("kit: refused: " + "; ".join(drift) + ". Run `checkpoint resume` and ask the user; "
+                  "after a commit the user made or asked for, record it with `record --accept-head`.",
+                  file=sys.stderr)
+            return EXIT_REFUSED
     if args.action == "record":
+        if args.accept_head:
+            workflow.accept_head(project, cp)
         for section, values in (("Done", args.done), ("Tests run", args.test), ("Open issues", args.issue),
                                 ("Approved scope", args.scope), ("Acceptance criteria", args.criterion)):
             if values and section in ("Approved scope", "Acceptance criteria") and \
@@ -213,6 +222,8 @@ def build_parser():
         c.add_argument(flag, action="append")
     c.add_argument("--next")
     c.add_argument("--clear-issues", action="store_true")
+    c.add_argument("--accept-head", action="store_true",
+                   help="record a commit the user made or asked for on the checkpoint's branch")
     c.add_argument("--user-approved-change", action="store_true",
                    help="the user explicitly approved changing scope or criteria mid-task")
     c = csub.add_parser("event", parents=[proj])
@@ -232,6 +243,9 @@ def main(argv=None):
     layout = Layout()
     try:
         return args.func(args, layout)
+    except KitRefused as exc:
+        print(f"kit: refused: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
     except KitError as exc:
         print(f"kit: {exc}", file=sys.stderr)
         return EXIT_ERROR

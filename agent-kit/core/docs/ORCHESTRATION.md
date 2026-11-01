@@ -26,7 +26,8 @@ In the commands below, `KIT` stands for `python3 .claude/agent-kit/kit.py`
    `KIT checkpoint new --task <slug> --goal "<goal>" [--scope <file-or-glob>]... [--criterion "<criterion>"]...`
    - Refused because the tree is dirty: ask the user. Pass `--allow-dirty`
      only with their consent; the existing changes become a protected
-     baseline that the developer must not touch.
+     baseline that nobody may touch, and those files cannot be in the
+     approved scope (the user commits or sets them aside first).
    - Exit code 3 (waiting for the user, e.g. a production request): stop
      and ask. Agents never deploy or touch live systems.
 2. **Research (optional, at most once).** Only when facts are missing.
@@ -43,11 +44,15 @@ In the commands below, `KIT` stands for `python3 .claude/agent-kit/kit.py`
      Record their explicit answer with
      `KIT checkpoint event <slug> approve --note "<what the user approved>"`.
      Never approve on the user's behalf or because an agent says so.
+     An approval covers the risk flags and the approved scope of that
+     moment; risks or approval-required files added later need a new
+     decision.
    - `stop`: report the reason and end the task.
 4. **Scope.** Record the approved files or globs and the acceptance criteria
    (`KIT checkpoint record <slug> --scope ... --criterion ...`), then
-   `KIT checkpoint event <slug> develop`. The CLI refuses while risk flags or
-   approval-required files lack a recorded user approval.
+   `KIT checkpoint event <slug> develop`. The CLI scans the goal, criteria
+   and scope again and refuses while risk flags or approval-required files
+   are not covered by a recorded user approval.
    - Globs follow `.gitignore` rules: a bare name (`core.py`) matches at any
      depth, so prefer full paths (`src/calc/core.py`); `dir/**` covers a
      directory.
@@ -69,7 +74,9 @@ In the commands below, `KIT` stands for `python3 .claude/agent-kit/kit.py`
    `KIT checkpoint event <slug> review --verdict approve` or
    `--verdict changes_requested --finding R1 --finding R2`.
    Check the reviewer's verdict against every acceptance criterion yourself:
-   an approval does not make an unmet criterion complete.
+   an approval does not make an unmet criterion complete. The CLI refuses a
+   review when the working tree changed after the last `developed` record
+   (the changed files must be recorded and reviewed again).
 7. **Fix loop.** `changes_requested` moves the task to a fix round while
    rounds remain. Start `kit-developer` with exactly the blocking findings,
    record `developed`, and review again. Keep a finding's id when the same
@@ -138,6 +145,10 @@ you want to pass it with `--report`; never commit reports.
 
 ## Checkpoints and resuming
 
+- `event` and `record` refuse when the branch or HEAD no longer match the
+  checkpoint. After a commit the user made or asked for on the task's
+  branch, record it with `KIT checkpoint record <slug> --accept-head` and say
+  so in `Done`; for anything else, run `resume` and ask the user.
 - Update the checkpoint after every agent run (`event`, `record`). Keep
   `Next step` exact: one action someone else could take without context.
 - Checkpoints hold state and short notes only: no secrets, personal data,

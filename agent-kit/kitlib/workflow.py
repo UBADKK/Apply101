@@ -6,12 +6,14 @@ scope, fix rounds are capped, and a finding that survives a fix round stops
 the loop. Agents never call this; the orchestrator (main session) does.
 """
 
+import hashlib
 import re
 from pathlib import Path
+from urllib.parse import quote, unquote
 
 from . import checkpoint as cpmod
 from .common import (
-    CORE_MAX_FIX_ROUNDS, INSTALL_DIR, KitError, changed_paths, current_branch,
+    CORE_MAX_FIX_ROUNDS, INSTALL_DIR, KitError, KitRefused, changed_paths, current_branch,
     head_commit, load_guard, max_fix_rounds, norm_rel, path_matches,
     stat_signature, tracked_paths,
 )
@@ -139,8 +141,57 @@ def _set_flags(cp, flags):
     cp["state"]["Risk flags"] = ", ".join(unique) if unique else cpmod.NONE
 
 
-def _approved(cp):
-    return cp["state"]["Approval"] not in ("", cpmod.NONE)
+def _approval_coverage(cp):
+    """(risk flags, scope entries) the user's recorded approvals cover. An
+    approval covers the flags and the approved scope of the moment it was
+    given; anything added later needs a new decision."""
+    flags, scopes = set(), []
+    for entry in cp["Log"]:
+        m = re.match(r"^approve: covers=(\S*) scope=(.*)$", entry)
+        if m:
+            flags |= {f for f in m.group(1).split(",") if f and f != "none"}
+            scopes.extend(x for x in m.group(2).split(";") if x and x != "none")
+    return flags, scopes
+
+
+def _fingerprint(project_root, config, cp):
+    """Short hash of the task's changed files and their stat signatures."""
+    dirty = {path for kind, path, _ in _parse_baseline(cp) if kind == "dirty"}
+    rows = [f"{p} {stat_signature(project_root, p)}" for p in task_changes(project_root, config)
+            if p not in dirty]
+    return hashlib.sha256("\n".join(sorted(rows)).encode("utf-8")).hexdigest()[:12]
+
+
+def _last_developed_fingerprint(cp):
+    for entry in reversed(cp["Log"]):
+        m = re.match(r"^developed: \S+ files=\d+ fp=([0-9a-f]+)$", entry)
+        if m:
+            return m.group(1)
+    return None
+
+
+def repository_drift(project_root, cp):
+    """Reasons the repository no longer matches the checkpoint (another
+    branch, or HEAD moved since the last recorded commit)."""
+    st = cp["state"]
+    problems = []
+    branch = current_branch(project_root)
+    if branch != st["Branch"]:
+        problems.append(f"current branch is {branch or '(detached)'}, checkpoint is on {st['Branch']}")
+    head = head_commit(project_root)
+    if head != st["Head commit"]:
+        problems.append(f"HEAD moved from {st['Head commit']} to {head} since the checkpoint")
+    return problems
+
+
+def accept_head(project_root, cp):
+    """Records a commit the user made or asked for on the task's branch."""
+    st = cp["state"]
+    if current_branch(project_root) != st["Branch"]:
+        raise KitRefused("accept-head only works on the checkpoint's branch")
+    old, new = st["Head commit"], head_commit(project_root)
+    st["Head commit"] = new
+    _log(cp, f"accept-head: {old}..{new}")
 
 
 def _log(cp, entry):
@@ -187,10 +238,14 @@ def baseline_entries(project_root, config):
     adapter's watch_files."""
     entries = []
     for rel in config.get("watch_files") or []:
-        entries.append(f"watch {norm_rel(rel)} {stat_signature(project_root, rel)}")
+        entries.append(f"watch {_quote(norm_rel(rel))} {stat_signature(project_root, rel)}")
     for rel in task_changes(project_root, config):
-        entries.append(f"dirty {rel} {stat_signature(project_root, rel)}")
+        entries.append(f"dirty {_quote(rel)} {stat_signature(project_root, rel)}")
     return entries
+
+
+def _quote(path):
+    return quote(path, safe="/._-~+@,")
 
 
 def _parse_baseline(cp):
@@ -199,44 +254,58 @@ def _parse_baseline(cp):
         m = re.match(r"^(watch|dirty) (\S+) (absent|size=\d+ mtime_ns=\d+)$", entry)
         if not m:
             raise KitError(f"unreadable Baseline entry: {entry[:80]!r}")
-        parsed.append(m.groups())
+        parsed.append((m.group(1), unquote(m.group(2)), m.group(3)))
     return parsed
+
+
+def baseline_problems(project_root, cp):
+    """Watched real-data files or pre-existing user changes whose size or
+    modification time changed (also when a change was reverted or a file
+    removed)."""
+    problems = []
+    for kind, path, sig in _parse_baseline(cp):
+        if stat_signature(project_root, path) != sig:
+            what = "watched real-data file changed" if kind == "watch" else \
+                "pre-existing user change was modified"
+            problems.append(f"{what}: {path}")
+    return problems
 
 
 def scope_check(project_root, cp, config):
     """(changed files, problems). Problems: files outside the approved
-    scope, protected paths, approval-required files without approval,
-    touched pre-existing changes and changed watch files."""
+    scope, protected paths, approval-required files the user's approvals do
+    not cover, touched pre-existing changes and changed watch files."""
     guard = load_guard()
     settings = guard.GuardSettings(config, str(project_root))
-    baseline = _parse_baseline(cp)
-    dirty = {path: sig for kind, path, sig in baseline if kind == "dirty"}
+    dirty = {path for kind, path, _ in _parse_baseline(cp) if kind == "dirty"}
     scope = cp["Approved scope"]
     approval = config.get("approval_required_paths") or []
-    changed, problems = [], []
-    for kind, path, sig in baseline:
-        if kind == "watch" and stat_signature(project_root, path) != sig:
-            problems.append(f"watched real-data file changed: {path}")
+    _flags_ok, approved_scope = _approval_coverage(cp)
+    changed, problems = [], baseline_problems(project_root, cp)
     for path in task_changes(project_root, config):
-        if path in dirty and stat_signature(project_root, path) == dirty[path]:
-            continue  # the user's pre-existing change, untouched
+        if path in dirty:
+            continue  # the user's pre-existing change; checked above
         changed.append(path)
         if guard.path_hits(path, settings):
             problems.append(f"protected path changed: {path}")
-        elif path in dirty and not path_matches(path, scope):
-            problems.append(f"pre-existing user change was modified: {path}")
         elif not path_matches(path, scope):
             problems.append(f"out of scope: {path}")
-        elif path_matches(path, approval) and not _approved(cp):
+        elif path_matches(path, approval) and not path_matches(path, approved_scope):
             problems.append(f"approval required for: {path}")
     return changed, problems
+
+
+def _dirty_in_scope(cp):
+    return [path for kind, path, _ in _parse_baseline(cp)
+            if kind == "dirty" and path_matches(path, cp["Approved scope"])]
 
 
 # -- events -------------------------------------------------------------------------
 
 def new_checkpoint(project_root, config, task, goal, scope, criteria, allow_dirty=False):
-    if not cpmod.TASK_RE.match(task):
-        raise KitError("task must be a short slug: a-z, 0-9, '.', '_' or '-', at most 64 characters")
+    if not cpmod.TASK_RE.match(task) or task.endswith(".md"):
+        raise KitError("task must be a short slug: a-z, 0-9, '.', '_' or '-', at most 64 characters, "
+                       "not ending in .md")
     if not goal.strip():
         raise KitError("goal is empty")
     dirty = task_changes(project_root, config)
@@ -251,6 +320,10 @@ def new_checkpoint(project_root, config, task, goal, scope, criteria, allow_dirt
     cp["Approved scope"] = [norm_rel(s) for s in scope]
     cp["Acceptance criteria"] = list(criteria)
     cp["Baseline"] = baseline_entries(project_root, config)
+    in_scope = _dirty_in_scope(cp)
+    if in_scope:
+        raise KitError("files with pre-existing uncommitted changes cannot be in the approved scope "
+                       f"({', '.join(in_scope[:5])}); commit or set them aside first")
     flags = scan_risk(" ".join([goal] + list(criteria) + list(scope)), config)
     _set_flags(cp, flags)
     _log(cp, f"new: risk={','.join(flags) or 'none'}")
@@ -303,9 +376,15 @@ def apply_event(project_root, config, cp, event, verdict=None, findings=(), risk
             raise KitError(f"nothing the user can approve now (status {st['Status']}: {st['Reason']})")
         if not note.strip():
             raise KitError("approve needs --note with the user's explicit decision")
+        covers, scope = cpmod.NONE, cpmod.NONE
+        if st["Reason"].startswith("approval required"):
+            covers = ",".join(_flags(cp)) or "none"
+            scope = ";".join(cp["Approved scope"]) or "none"
+            if len(scope) > 300:
+                raise KitError("the approved scope is too long to record in one approval; use globs")
         st["Status"], st["Reason"] = "active", cpmod.NONE
         st["Approval"] = note.strip()[:200]
-        _log(cp, "approve: user decision recorded")
+        _log(cp, f"approve: covers={covers} scope={scope}")
         cp["Next step"] = (
             "Apply the user's decision (extend the scope with record --scope --user-approved-change "
             "if they accepted extra files), re-run kit-developer if work remains, then record "
@@ -317,13 +396,21 @@ def apply_event(project_root, config, cp, event, verdict=None, findings=(), risk
         _require(cp, phases=("intake", "research", "audit"))
         if not cp["Approved scope"] or not cp["Acceptance criteria"]:
             raise KitError("record the approved scope and acceptance criteria first (checkpoint record)")
-        needs = [f for f in _flags(cp)]
+        in_scope = _dirty_in_scope(cp)
+        if in_scope:
+            raise KitError("files with pre-existing uncommitted changes cannot be in the approved scope "
+                           f"({', '.join(in_scope[:5])}); commit or set them aside first")
+        # Scope and criteria may have been recorded after `new`: scan them again.
+        rescanned = scan_risk(" ".join([cp["Goal"]] + cp["Acceptance criteria"] + cp["Approved scope"]), config)
+        _set_flags(cp, _flags(cp) + rescanned)
         approval_files = scope_needs_approval(project_root, cp["Approved scope"], config)
-        if approval_files and "approval_path" not in needs:
-            needs.append("approval_path")
+        if approval_files:
             _set_flags(cp, _flags(cp) + ["approval_path"])
-        if needs and not _approved(cp):
-            detail = ", ".join(needs) + (f" ({', '.join(approval_files[:5])})" if approval_files else "")
+        covered_flags, covered_scope = _approval_coverage(cp)
+        missing_flags = [f for f in _flags(cp) if f not in covered_flags]
+        missing_files = [f for f in approval_files if not path_matches(f, covered_scope)]
+        if missing_flags or missing_files:
+            detail = ", ".join(missing_flags) + (f" ({', '.join(missing_files[:5])})" if missing_files else "")
             _wait(cp, f"approval required before development: {detail}",
                   "Ask the user for an explicit decision on these risks; record it with `approve`.")
             return "waiting for user approval"
@@ -338,7 +425,7 @@ def apply_event(project_root, config, cp, event, verdict=None, findings=(), risk
             raise KitError(f"developed needs --verdict {'|'.join(VERDICTS['kit-developer'])}")
         changed, problems = scope_check(project_root, cp, config)
         cp["Changed files"] = changed[:60]
-        _log(cp, f"developed: {verdict} files={len(changed)}")
+        _log(cp, f"developed: {verdict} files={len(changed)} fp={_fingerprint(project_root, config, cp)}")
         if verdict == "blocked":
             _wait(cp, f"developer blocked: {note or 'see developer report'}",
                   "Report the blocker to the user and ask how to proceed.")
@@ -362,6 +449,17 @@ def apply_event(project_root, config, cp, event, verdict=None, findings=(), risk
         bad = [f for f in findings if not FINDING_RE.match(f)]
         if bad:
             raise KitError(f"finding ids must be short tokens such as R1: {bad}")
+        if verdict == "approve" and findings:
+            raise KitError("an approval cannot carry blocking findings; use changes_requested")
+        # The reviewed tree must be the one the developer run left behind.
+        _changed, problems = scope_check(project_root, cp, config)
+        if _fingerprint(project_root, config, cp) != _last_developed_fingerprint(cp):
+            problems.insert(0, "the working tree changed after the last `developed` record")
+        if problems:
+            st["Phase"] = "fix" if used else "develop"  # the tree needs a new `developed` record
+            _wait(cp, "out of scope or unsafe changes: " + "; ".join(problems[:5]),
+                  "Show the user what changed since the developer run. Do not revert anything yourself.")
+            return "waiting for user"
         if verdict == "approve":
             if findings:
                 raise KitError("an approval cannot carry blocking findings; use changes_requested")
@@ -399,7 +497,6 @@ def apply_event(project_root, config, cp, event, verdict=None, findings=(), risk
 
 
 def touch(project_root, cp):
-    cp["state"]["Head commit"] = head_commit(project_root)
     cp["state"]["Updated"] = cpmod.now_utc()
 
 
@@ -422,31 +519,21 @@ def resume_report(project_root, config, cp):
         f"Task: {st['Task']}  status={st['Status']}  phase={st['Phase']}  fix rounds={st['Fix rounds']}",
         f"Goal: {cp['Goal'].splitlines()[0][:200]}",
     ]
+    if st["Status"] == "done":
+        lines.append("Task is complete; nothing to resume.")
+        lines.append("RESUME OK")
+        return True, lines
     ok = True
-    branch = current_branch(project_root)
-    if branch != st["Branch"]:
+    for problem in repository_drift(project_root, cp):
         ok = False
-        lines.append(f"STOP: current branch is {branch or '(detached)'}, checkpoint is on {st['Branch']}. "
-                     "Do not switch branches yourself; ask the user.")
-    head = head_commit(project_root)
-    if head != st["Head commit"]:
-        ok = False
-        lines.append(f"STOP: HEAD moved from {st['Head commit']} to {head} since the checkpoint; "
-                     "inspect `git log` and ask the user before continuing.")
+        lines.append(f"STOP: {problem}. Do not switch branches or reset; inspect `git log` and ask the user.")
     now_changed = task_changes(project_root, config)
-    for kind, path, sig in _parse_baseline(cp):
-        if stat_signature(project_root, path) != sig:
-            if kind == "watch":
-                ok = False
-                lines.append(f"STOP: watched real-data file changed: {path}")
-            elif path not in now_changed or not path_matches(path, cp["Approved scope"]):
-                ok = False
-                lines.append(f"STOP: the user's pre-existing change was modified: {path}")
+    for problem in baseline_problems(project_root, cp):
+        ok = False
+        lines.append(f"STOP: {problem}")
     if st["Status"] in ("waiting_user", "stopped"):
         ok = False
         lines.append(f"STOP: task is {st['Status']}: {st['Reason']}")
-    if st["Status"] == "done":
-        lines.append("Task is complete; nothing to resume.")
     recorded = set(cp["Changed files"])
     dirty = {p for kind, p, _ in _parse_baseline(cp) if kind == "dirty"}
     unrecorded = [p for p in now_changed if p not in recorded and p not in dirty]
@@ -465,9 +552,9 @@ def resume_report(project_root, config, cp):
     return ok, lines
 
 
-def checkpoint_path(project_root, config, ref):
+def checkpoint_path(project_root, config, ref, slug_only=False):
     """A checkpoint path from a task slug or a path."""
-    if ref.endswith(".md") or "/" in ref or "\\" in ref:
+    if not slug_only and (ref.endswith(".md") or "/" in ref or "\\" in ref):
         path = Path(ref)
         return path if path.is_absolute() else Path(project_root) / path
     return Path(project_root) / _checkpoint_dir(config) / f"{ref}.md"

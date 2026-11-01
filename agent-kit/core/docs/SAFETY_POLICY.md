@@ -68,10 +68,13 @@ decision with `kit.py checkpoint event <task> approve --note "..."`.
 2. **The guard hook** (`.claude/agent-kit/hooks/kit_guard.py`) checks every
    tool call of the four kit agents: protected paths, writes into `.claude/`
    and `.git/`, deletion, state-changing git, network and deployment tools,
-   package installs, privilege escalation, process and service control,
+   package installs and runners (`npx`, `uvx`), privilege escalation,
+   process and service control,
    archives of the project root, environment dumps, secret variables,
    root-wide recursive grep, common migration runners and database clients,
-   and the adapter's real-data commands. It fails closed for kit agents.
+   and the adapter's real-data commands. The reviewer's shell is limited to
+   read-only commands without output redirection. It fails closed for kit
+   agents and never blocks the main session.
 3. **Agent contracts** (`.claude/agents/kit-*.md`): tool lists, authority
    limits and stop conditions.
 4. **Workflow gates** (`kit.py checkpoint`): risk flags and approval-required

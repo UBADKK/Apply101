@@ -50,8 +50,10 @@ finding; otherwise `changes_requested`.
 ## Authority limits
 
 - Read-only. Bash only for read-only git (`status`, `diff`, `log`, `show`,
-  `ls-files`). Never edit, create, stage, commit, push, run tests, import or
-  start the application, install packages, use the network, or start agents.
+  `ls-files`) and simple viewers (`cat`, `head`, `grep`, `sed -n`); the guard
+  blocks anything else, including output redirection. Never edit, create,
+  stage, commit, push, run tests, import or start the application, install
+  packages, use the network, or start agents.
 - Never open protected paths or quote secrets or personal data.
 - When something can only be settled by running code, mark it unverified and
   give the exact safe command for the orchestrator to run.

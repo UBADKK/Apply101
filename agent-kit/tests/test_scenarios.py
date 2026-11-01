@@ -13,6 +13,7 @@ from kit_test_support import FakeProjectCase, git
 
 FIXED_ADD = "def add(a, b):\n    return a + b\n"
 FIXED_MUL = "def mul(a, b):\n    return a * b\n"
+CALC_WIP = "def add(a, b):\n    return a - b  # the user's work in progress\n"
 EXIT_REFUSED = 3
 
 
@@ -112,6 +113,32 @@ class Scenario2MigrationRisk(FakeProjectCase):
         self.assertIn("approval_path", cp["state"]["Risk flags"])
         self.assertIn("calc/contract.py", cp["state"]["Reason"])
 
+    def test_approval_does_not_cover_risks_added_later(self):
+        self.kit("checkpoint", "new", "--task", "ship-code", "--goal", "Prepare the release notes for deploy",
+                 "--criterion", "notes written", expect=EXIT_REFUSED)
+        self.kit("checkpoint", "event", "ship-code", "approve", "--note",
+                 "User: only a code change, nobody deploys", expect=0)
+        # Scope and criteria recorded after the approval bring new risks.
+        self.kit("checkpoint", "record", "ship-code", "--scope", "migrations/0002_notes.sql",
+                 "--criterion", "add a ledger table", expect=0)
+        self.kit("checkpoint", "event", "ship-code", "develop", expect=EXIT_REFUSED)
+        reason = self.state("ship-code")["state"]["Reason"]
+        self.assertIn("approval_path", reason)
+        self.assertIn("data", reason)  # "ledger" is an adapter risk word, found by the rescan
+        self.assertIn("migrations/0002_notes.sql", reason)
+        self.kit("checkpoint", "event", "ship-code", "approve", "--note",
+                 "User approved the notes migration file", expect=0)
+        self.kit("checkpoint", "event", "ship-code", "develop", expect=0)
+
+    def test_developer_block_approval_does_not_approve_risks(self):
+        self.kit("checkpoint", "new", "--task", "tidy", "--goal", "Tidy the calculator",
+                 "--scope", "calc/core.py", "--criterion", "tidy", expect=0)
+        self.kit("checkpoint", "event", "tidy", "develop", expect=0)
+        self.kit("checkpoint", "event", "tidy", "developed", "--verdict", "blocked", "--note", "unclear",
+                 expect=EXIT_REFUSED)
+        self.kit("checkpoint", "event", "tidy", "approve", "--note", "User clarified the task", expect=0)
+        self.assertIn("approve: covers=- scope=-", self.state("tidy")["Log"])
+
     def test_audit_runs_are_capped(self):
         self.kit("checkpoint", "new", "--task", "audit-cap", "--goal", "Tidy the calculator",
                  "--scope", "calc/core.py", "--criterion", "tidy", expect=0)
@@ -170,6 +197,41 @@ class Scenario3InterruptedTask(FakeProjectCase):
         out = self.kit("checkpoint", "resume", "doc", expect=EXIT_REFUSED).stdout
         self.assertIn("STOP: HEAD moved", out)
         self.assertIn("RESUME BLOCKED", out)
+
+    def test_record_and_event_refuse_after_the_repository_moved(self):
+        self.kit("checkpoint", "new", "--task", "doc3", "--goal", "Document add()",
+                 "--scope", "README.md", "--criterion", "README explains add", expect=0)
+        git(self.root, "add", "-A")
+        git(self.root, "commit", "-q", "-m", "user commit during the task")
+        proc = self.kit("checkpoint", "record", "doc3", "--done", "x", expect=EXIT_REFUSED)
+        self.assertIn("HEAD moved", proc.stderr)
+        self.kit("checkpoint", "event", "doc3", "develop", expect=EXIT_REFUSED)
+        # The orchestrator records the user's commit explicitly; then work continues.
+        self.kit("checkpoint", "record", "doc3", "--accept-head", "--done",
+                 "user committed the checkpoint", expect=0)
+        self.assertTrue(any(e.startswith("accept-head: ") for e in self.state("doc3")["Log"]))
+        self.kit("checkpoint", "event", "doc3", "develop", expect=0)
+        git(self.root, "checkout", "-q", "-b", "elsewhere")
+        self.kit("checkpoint", "record", "doc3", "--accept-head", expect=EXIT_REFUSED)
+
+    def test_baseline_paths_with_spaces(self):
+        self.write("My Notes.md", "user notes\n")
+        self.kit("checkpoint", "new", "--task", "spaces", "--goal", "Fix add()",
+                 "--scope", "calc/core.py", "--criterion", "add works", "--allow-dirty", expect=0)
+        self.kit("checkpoint", "event", "spaces", "develop", expect=0)
+        self.write("calc/core.py", FIXED_ADD)
+        self.kit("checkpoint", "event", "spaces", "developed",
+                 "--report", self.report("developer", "implemented"), expect=0)
+        self.assertIn("RESUME OK", self.kit("checkpoint", "resume", "spaces", expect=0).stdout)
+
+    def test_task_names_and_duplicates(self):
+        self.kit("checkpoint", "new", "--task", "foo.md", "--goal", "x", "--scope", "README.md",
+                 "--criterion", "x", expect=EXIT_REFUSED)
+        self.assertFalse((self.root / "foo.md").exists())
+        self.kit("checkpoint", "new", "--task", "dup", "--goal", "x", "--scope", "README.md",
+                 "--criterion", "x", expect=0)
+        self.kit("checkpoint", "new", "--task", "dup", "--goal", "x", "--scope", "README.md",
+                 "--criterion", "x", expect=EXIT_REFUSED)
 
     def test_resume_blocks_on_another_branch(self):
         self.kit("checkpoint", "new", "--task", "doc2", "--goal", "Document mul()",
@@ -243,6 +305,20 @@ class Scenario4IncompleteImplementation(FakeProjectCase):
                  "--finding", "R1", expect=EXIT_REFUSED)
         self.assertIn("no progress", self.state("stuck")["state"]["Reason"])
 
+    def test_review_refuses_a_tree_changed_after_development(self):
+        self._start("late-change")
+        self._developed("late-change", FIXED_ADD)
+        self.write("calc/core.py", FIXED_ADD + "\n# edited after the developer run\n")
+        self.kit("checkpoint", "event", "late-change", "review",
+                 "--report", self.report("reviewer", "approve"), expect=EXIT_REFUSED)
+        cp = self.state("late-change")
+        self.assertIn("working tree changed after the last `developed` record", cp["state"]["Reason"])
+        self.assertEqual(cp["state"]["Phase"], "develop")
+        self.kit("checkpoint", "event", "late-change", "approve", "--note", "User kept the edit", expect=0)
+        self._developed("late-change", FIXED_ADD + "\n# edited after the developer run\n")
+        self.kit("checkpoint", "event", "late-change", "review",
+                 "--report", self.report("reviewer", "approve"), expect=0)
+
     def test_report_of_another_role_is_refused(self):
         self._start("wrong-role")
         self._developed("wrong-role", FIXED_ADD)
@@ -315,6 +391,23 @@ class Scenario5ProductionAndOutOfScope(FakeProjectCase):
         self.assertEqual(cp["state"]["Status"], "waiting_user")
         self.assertIn("out of scope: README.md", cp["state"]["Reason"])
         self.assertIn("Rewritten", (self.root / "README.md").read_text())  # nothing reverted
+
+    def test_pre_existing_changes_cannot_be_in_scope(self):
+        self.write("calc/core.py", CALC_WIP)
+        proc = self.kit("checkpoint", "new", "--task", "wip", "--goal", "Fix add()",
+                        "--scope", "calc/**", "--criterion", "add works", "--allow-dirty", expect=EXIT_REFUSED)
+        self.assertIn("pre-existing uncommitted changes", proc.stderr)
+
+    def test_reverted_user_change_is_detected(self):
+        self.write("NOTES.txt", "the user's unfinished notes\n")
+        self.kit("checkpoint", "new", "--task", "revert", "--goal", "Fix add()",
+                 "--scope", "calc/core.py", "--criterion", "add works", "--allow-dirty", expect=0)
+        self.kit("checkpoint", "event", "revert", "develop", expect=0)
+        self.write("calc/core.py", FIXED_ADD)
+        (self.root / "NOTES.txt").unlink()  # simulates an agent discarding the user's file
+        self.kit("checkpoint", "event", "revert", "developed",
+                 "--report", self.report("developer", "implemented"), expect=EXIT_REFUSED)
+        self.assertIn("pre-existing user change was modified: NOTES.txt", self.state("revert")["state"]["Reason"])
 
     def test_pre_existing_user_changes_are_protected(self):
         self.write("NOTES.txt", "the user's unfinished notes\n")

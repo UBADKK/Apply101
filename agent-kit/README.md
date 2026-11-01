@@ -85,14 +85,19 @@ intake ─► (research) ─► (audit) ─► develop ─► review ─┬─�
 - `checkpoint new` scans the request for risk words (production, remote git,
   data, secrets, external systems, plus the adapter's words). Production
   requests wait for the user immediately.
-- `event develop` is refused while risk flags or approval-required files in
-  the scope have no recorded user decision (`event approve --note ...`).
+- `event develop` scans the goal, criteria and scope again and is refused
+  while risk flags or approval-required files in the scope are not covered
+  by a recorded user decision (`event approve --note ...`); an approval
+  covers what was flagged and in scope when it was given.
 - `event developed` compares the changed files with the approved scope,
   protected paths, approval-required paths, the pre-existing changes
   (baseline) and watched real-data files. Violations wait for the user;
   nothing is reverted automatically.
-- `event review` ends the task on approval, or opens a fix round. The loop
+- `event review` first checks that the tree is still the one the developer
+  run left, then ends the task on approval or opens a fix round. The loop
   stops when the round limit is reached or a finding survives a fix round.
+- `event` and `record` refuse when the branch or HEAD moved; a commit the
+  user made or asked for is recorded with `record --accept-head`.
 - `checkpoint resume` tells a new session whether it can continue
   (`RESUME OK`) or must ask (`RESUME BLOCKED`: other branch, HEAD moved,
   user changes touched, unrecorded changes outside a developer phase).
