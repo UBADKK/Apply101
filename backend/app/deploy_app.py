@@ -62,9 +62,10 @@ ACCESS_COOKIE_MAX_AGE = 30 * 24 * 3600
 ACCESS_PATH = "/__access"
 HEALTH_PATH = "/healthz"
 API_PREFIX = "/api"
-# Wrong keys per peer address before /__access answers 429 for a while.
-# uvicorn trusts no proxy headers here, so behind Railway's proxy the peer is
-# the proxy and the limit counts all clients together.
+# Wrong keys per client address before /__access answers 429 for a while.
+# On Railway uvicorn trusts no proxy headers, so the address is the proxy's
+# and the limit counts all clients together; on Lightsail it is the client's,
+# taken from X-Forwarded-For set by Caddy only (deploy/lightsail/compose.yaml).
 MAX_ACCESS_FAILURES = 10
 ACCESS_FAILURE_WINDOW_SECONDS = 15 * 60
 

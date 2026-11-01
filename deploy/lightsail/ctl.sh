@@ -10,6 +10,7 @@
 #   sudo deploy/lightsail/ctl.sh admin <email>    make a registered user admin
 #   sudo deploy/lightsail/ctl.sh catalog <args>   backend.scripts.sync_catalog
 #   sudo deploy/lightsail/ctl.sh backup | backups | restore <name>
+#   sudo deploy/lightsail/ctl.sh exec <command>   run a command in the app container
 #
 # Data, secrets and certificates live under APPLY101_ROOT (default
 # /srv/apply101), never in the checkout. Secrets are generated here and
@@ -88,7 +89,8 @@ cmd_up() {
 }
 
 cmd_update() {
-  git -C "$REPO" pull --ff-only
+  # As the checkout's owner, so sudo leaves no root-owned files in it.
+  sudo -u "${SUDO_USER:-root}" git -C "$REPO" pull --ff-only
   cmd_up
 }
 
@@ -125,7 +127,8 @@ main() {
     backup) cmd_backup "$@" ;;
     backups) in_app python -m backend.scripts.backup_data list ;;
     restore) cmd_restore "$@" ;;
-    *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; [ -z "$command" ] || exit 1 ;;
+    exec) [ -n "${1:-}" ] || die "usage: ctl.sh exec <command>"; in_app "$@" ;;
+    *) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; [ -z "$command" ] || exit 1 ;;
   esac
 }
 

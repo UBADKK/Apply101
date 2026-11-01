@@ -20,9 +20,15 @@ could not be read from the environment this was written in.
   published port and is reachable only through Caddy.
 - **`caddy` (2.10.2):** HTTPS on ports 80 and 443, with an automatic
   Let's Encrypt certificate for your domain, HSTS and a redirect from HTTP.
-  - The app trusts `X-Forwarded-For` only from Caddy's fixed address.
-  - Caddy ignores that header from clients, so each tester has their own
-    rate limits and nobody can spoof an address.
+  - The app trusts `X-Forwarded-For` only from Caddy's fixed address, and
+    Caddy ignores that header from clients, so nobody can spoof an
+    address.
+  - The rate limits then count per client address, as long as Caddy sees
+    real public addresses.
+    - Testers behind the same mobile carrier NAT still share one address.
+    - IPv6 connections reach Caddy through Docker's proxy as one internal
+      address, so use only an IPv4 (A) record, no AAAA.
+    - Step 3 shows how to check this.
 - **Data on the host, outside the checkout:**
 
 | Host path | What |
@@ -42,8 +48,8 @@ alone lists them.
    The image is built on the server, and building the web client needs the
    memory. On a smaller plan, add swap (step 2).
 2. **Static IP:** create one and attach it to the instance.
-3. **Domain:** a DNS name pointing to the static IP, as an A record, for
-   example `apply101-test.example.com`.
+3. **Domain:** a DNS name pointing to the static IP, as an A record only, for
+   example `apply101-test.example.com`. Do not add an AAAA (IPv6) record.
    - Without a domain, `<ip with dashes>.sslip.io` (for example
      `203-0-113-10.sslip.io`) resolves to the IP. Let's Encrypt can issue a
      certificate for it, but the shared domain has rate limits.
@@ -73,6 +79,8 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 ```
 
 ## 3. Install
+
+The repository is public, so cloning needs no credentials.
 
 ```bash
 cd ~
@@ -104,6 +112,16 @@ sudo deploy/lightsail/ctl.sh logs 50      # Caddy reports the certificate here
 ```bash
 sudo deploy/lightsail/ctl.sh admin you@example.com
 ```
+
+3. Check that the app sees real client addresses:
+
+```bash
+sudo deploy/lightsail/ctl.sh logs 20 | grep app-1
+```
+
+   The lines should start with your phone's public IP. If they show
+   `172.30.0.1` instead, the rate limits count every tester together; tell
+   the developer.
 
 ## 4. Access
 
@@ -154,6 +172,7 @@ sudo deploy/lightsail/ctl.sh restore apply101-20261102T030000Z   # restarts the 
   Lightsail's automatic instance snapshots, or take a manual snapshot
   before updates (check).
 - **Restore:**
+  - Run it while nobody uses the service; it restarts the app afterwards.
   - It first backs up the current state.
   - It moves the current CVs aside to `uploads.before-restore-<time>`.
   - It puts the old state back if a step fails.
@@ -169,7 +188,8 @@ sudo deploy/lightsail/ctl.sh update      # git pull --ff-only, rebuild, restart
 - **Data:** it stays in `/srv/apply101`.
 - **New tables:** created on start.
 - **Changed columns:** they need the matching script from
-  `backend/migrations/`. Run it with `docker compose exec`, after a backup.
+  `backend/migrations/`. Run it after a backup, for example
+  `sudo deploy/lightsail/ctl.sh exec python -m backend.migrations.<script>`.
 
 ## 8. Cost (check)
 
@@ -205,13 +225,15 @@ sudo rm -rf /srv/apply101                # deletes ALL data, secrets and certifi
   - the gate: 401 without the key, then a Secure, HttpOnly, SameSite=strict
     cookie;
   - the API and a deep link;
-  - a spoofed `X-Forwarded-For` does not reset the limit, and the app sees
-    the client's address, not Caddy's;
+  - a spoofed `X-Forwarded-For` does not reset the limit, and the app took
+    the address from Caddy's header rather than Caddy's own. Locally that
+    address is Docker's gateway; step 3 checks the real one on the server;
   - registration, `admin`, `catalog seed` and `summary`, and a backup and
     restore that removed a user added after the backup;
   - data kept across `down` and `up`, and the app healthy.
 - **Not checked there:**
   - a real Let's Encrypt certificate, which needs a public domain;
+  - the client addresses Caddy sees on Lightsail;
   - the Lightsail console and firewall steps;
   - `ctl.sh update` against GitHub;
   - the apt package names on a real Lightsail image.
