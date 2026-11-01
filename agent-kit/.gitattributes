@@ -1,0 +1,3 @@
+# Bash must read the hook wrapper with LF line endings, also in Windows
+# checkouts with core.autocrlf=true.
+*.sh text eol=lf
