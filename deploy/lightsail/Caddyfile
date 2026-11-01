@@ -1,0 +1,13 @@
+# HTTPS for the test deployment; the certificate comes from Let's Encrypt
+# for a public domain (ports 80 and 443 must reach the server), or from
+# Caddy's own local CA for "localhost" in local checks.
+{$APPLY101_DOMAIN} {
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		-Server
+	}
+	reverse_proxy 172.30.0.20:8000
+}

@@ -1,4 +1,5 @@
-"""Single-service entry point for a private test deployment (Railway).
+"""Single-service entry point for a private test deployment (Railway, or one
+Docker host such as AWS Lightsail behind Caddy: deploy/lightsail/).
 
     uvicorn --factory backend.app.deploy_app:create_app --workers 1 ...
 
