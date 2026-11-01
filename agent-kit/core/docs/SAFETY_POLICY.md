@@ -69,7 +69,9 @@ decision with `kit.py checkpoint event <task> approve --note "..."`.
    tool call of the four kit agents: protected paths, writes into `.claude/`
    and `.git/`, deletion, state-changing git, network and deployment tools,
    package installs and runners (`npx`, `uvx`), privilege escalation,
-   process and service control,
+   process and service control, programs started by viewer tools (`sed e`,
+   `sort --compress-program`, `git grep -O`), environment reads in shell,
+   Python, JavaScript and PowerShell,
    archives of the project root, environment dumps, secret variables,
    root-wide recursive grep, common migration runners and database clients,
    and the adapter's real-data commands. The reviewer's shell is limited to

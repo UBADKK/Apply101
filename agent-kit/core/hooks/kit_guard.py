@@ -35,8 +35,12 @@ What it blocks for a kit agent (exit code 2, reason on stderr)
   checkout, switch, restore, stash, clean, fetch, pull, remote, config);
   network, deployment and cloud CLIs; package installs and publishing;
   privilege escalation; process and service control; archives of the
-  project root; environment dumps and expansion of secret-looking
-  environment variables; root-wide recursive grep and unrestricted rg.
+  project root; environment dumps and reads of secret-looking environment
+  variables (shell, Python, JavaScript, PowerShell and .NET forms) and
+  assignments of variables that make tools run programs; programs started
+  or files read and written by viewer tools (sed e/r/w, sort
+  --compress-program, git grep -O, rg --pre); root-wide recursive grep and
+  unrestricted rg.
 * Common migration runners and database clients (CORE_REAL_DATA_COMMANDS)
   and the adapter's ``real_data_commands`` (entry points that open real data
   or live systems), also inside nested shells and heredocs.
@@ -409,11 +413,22 @@ _INLINE_DELETE_RE = re.compile(
     re.IGNORECASE,
 )
 _INLINE_ENV_DUMP_RE = re.compile(
-    r"\bos\.environ\b(?!\s*(?:\[|\.get\b))|\bprocess\.env\b(?!\s*\[|\.(?!valueOf|toString|toJSON)\w)"
+    r"\bos\.environ\b(?!\s*(?:\[|\.get\b))|\bos\.environb\b|['\"]environb?['\"]"
     r"|%ENV\b|\bENV\.to_h\b"
     r"|\bos\.getenv\s*\(\s*\)|\bSystem\.getenv\s*\(\s*\)",
     re.IGNORECASE,
 )
+# JavaScript runtimes: process.env, process['env'], Bun.env, Deno.env.
+_JS_ENV_RE = re.compile(
+    r"\b(?:process\s*(?:\.\s*env\b|\[\s*(['\"`])env\1\s*\])|Bun\s*\.\s*env\b|Deno\s*\.\s*env\b)"
+)
+# Object.prototype members: calling or reading them on the env object
+# exposes the whole environment (process.env['valueOf']()).
+_JS_PROTO_MEMBERS = frozenset({
+    "valueOf", "toString", "toLocaleString", "toJSON", "hasOwnProperty",
+    "isPrototypeOf", "propertyIsEnumerable", "constructor", "__proto__",
+    "__defineGetter__", "__defineSetter__", "__lookupGetter__", "__lookupSetter__",
+})
 _INLINE_NETWORK_RE = re.compile(
     r"\brequests\.(?:get|post|put|patch|delete|request)\b|\burllib\.request\b"
     r"|\bhttp\.client\b|\bhttpx\.|\burlopen\s*\(|\bfetch\s*\(|\bsocket\.socket\b"
@@ -489,8 +504,9 @@ _READ_ONLY_COMMANDS = frozenset({
     "test-path", "select-string", "sls", "realpath", "readlink", "basename",
     "dirname", "pwd", "cut", "column", "jq",
 })
-# Viewers that cannot start a program: the adapter's real-data patterns
-# (which name modules and scripts) do not apply to them.
+# Viewers that cannot start a program (sed's e command and sort
+# --compress-program are blocked separately): the adapter's real-data
+# patterns, which name modules and scripts, do not apply to them.
 _REAL_DATA_SKIP = _READ_ONLY_COMMANDS | frozenset({"sed", "sort", "uniq", "less", "more", "tree", "cd"})
 # Environment variables that make common tools run other programs.
 _DANGEROUS_ENV_RE = re.compile(
@@ -571,6 +587,9 @@ def _check_git(args):
         return None
     if any(a == "--output" or a.startswith("--output=") for a in rest):
         return f"writes files through git {sub} --output"
+    if sub == "grep" and any(a.startswith("--open-files-in-pager") or (
+            a.startswith("-") and not a.startswith("--") and "O" in a) for a in rest):
+        return "git grep -O runs another program on the matching files"
     if sub in _GIT_READ_ONLY:
         return None
     if sub in _GIT_LISTING_ONLY:
@@ -651,9 +670,101 @@ def _check_dangerous_env(segment, name, args):
     return None
 
 
-def _check_inline_env_dump(segment, text_only):
-    if not text_only and _INLINE_ENV_DUMP_RE.search(" ".join(segment)):
+def js_env_access(text):
+    """(whole environment exposed?, variable names read) for JavaScript.
+    Only a plain ``.NAME`` or ``['NAME']`` read of one variable counts as a
+    single read; computed keys, prototype members, calls and any other use
+    of the env object count as exposing all of it."""
+    dump, names = False, []
+    for m in _JS_ENV_RE.finditer(text):
+        after = text[m.end():]
+        if m.group(0).startswith("Deno"):
+            one = re.match(r"\s*\.\s*get\s*\(\s*(['\"`])([A-Za-z_][A-Za-z0-9_]*)\1\s*\)", after)
+            if one:
+                names.append(one.group(2))
+            else:
+                dump = True
+            continue
+        dot = re.match(r"\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)", after)
+        bracket = re.match(r"\s*\[\s*(['\"`])([A-Za-z_][A-Za-z0-9_]*)\1\s*\]", after)
+        hit = dot or bracket
+        if not hit:
+            dump = True
+            continue
+        name = hit.group(1) if dot else hit.group(2)
+        if name in _JS_PROTO_MEMBERS or "$" in name or re.match(r"\s*\(", after[hit.end():]):
+            dump = True
+        else:
+            names.append(name)
+    return dump, names
+
+
+def _check_inline_env_dump(segment, text_only, settings):
+    if text_only:
+        return None
+    text = " ".join(segment)
+    if _INLINE_ENV_DUMP_RE.search(text):
         return "prints the whole environment from inline code, which may hold secrets"
+    dump, names = js_env_access(text)
+    if dump:
+        return "exposes the whole environment object from inline code, which may hold secrets"
+    secret = next((n for n in names if _is_secret_name(n, settings)), None)
+    if secret:
+        return f"reads a secret-looking environment variable ({secret})"
+    return None
+
+
+def _is_secret_name(name, settings):
+    return name.upper() in settings.secret_env or bool(_SECRET_NAME_RE.fullmatch(name))
+
+
+_PS_ENV_VAR_RE = re.compile(r"\$\{?env:([A-Za-z_][A-Za-z0-9_]*)\}?(\s*[-+*/]?=(?!=))?", re.IGNORECASE)
+_PS_ENV_PATH_RE = re.compile(r"(?<![\w$:{])env:[\\/]?([A-Za-z0-9_*?\[\]]*)", re.IGNORECASE)
+_PS_ENV_LOCATION_RE = re.compile(
+    r"(?:^|[\s;|&(])(?:cd|chdir|sl|set-location|pushd|push-location)\s+"
+    r"(?:-(?:literal)?path\s+)?['\"]?env:", re.IGNORECASE)
+_DOTNET_ENV_RE = re.compile(
+    r"\[(?:System\.)?Environment\]\s*::\s*(GetEnvironmentVariables|GetEnvironmentVariable"
+    r"|SetEnvironmentVariable|ExpandEnvironmentVariables)\s*\(\s*(?:(['\"])([^'\"]*)\2)?",
+    re.IGNORECASE)
+
+
+def check_powershell_env(text, settings, powershell):
+    """PowerShell and .NET environment access: $env:/${env:} reads of secret
+    names and assignments of variables that make tools run programs,
+    [Environment]:: calls, and (PowerShell only) the env: drive."""
+    for m in _PS_ENV_VAR_RE.finditer(text):
+        name, assignment = m.group(1), m.group(2)
+        if assignment and _DANGEROUS_ENV_RE.match(name):
+            return f"sets {name}, which makes tools run other programs"
+        if not assignment and _is_secret_name(name, settings):
+            return f"reads a secret-looking environment variable ({name})"
+    for m in _DOTNET_ENV_RE.finditer(text):
+        method, literal = m.group(1).lower(), m.group(3)
+        if method == "getenvironmentvariables":
+            return "lists environment variables, which may hold secrets"
+        if literal is None:
+            return f"calls {m.group(1)} with a name the guard cannot read"
+        if method == "getenvironmentvariable" and _is_secret_name(literal, settings):
+            return f"reads a secret-looking environment variable ({literal})"
+        if method == "setenvironmentvariable" and _DANGEROUS_ENV_RE.match(literal):
+            return f"sets {literal}, which makes tools run other programs"
+        if method == "expandenvironmentvariables":
+            hit = next((n for n in re.findall(r"%([A-Za-z_][A-Za-z0-9_]*)%", literal)
+                        if _is_secret_name(n, settings)), None)
+            if hit:
+                return f"reads a secret-looking environment variable ({hit})"
+    if powershell:
+        if _PS_ENV_LOCATION_RE.search(text):
+            return "moves into the env: drive, where any listing prints environment variables"
+        for m in _PS_ENV_PATH_RE.finditer(text):
+            name = m.group(1)
+            if not name or any(ch in name for ch in "*?["):
+                return "lists environment variables, which may hold secrets"
+            if _is_secret_name(name, settings):
+                return f"reads a secret-looking environment variable ({name})"
+            if _DANGEROUS_ENV_RE.match(name):
+                return f"touches {name}, which makes tools run other programs"
     return None
 
 
@@ -962,6 +1073,117 @@ def _check_protected_segment(name, args, hits, settings, root_check):
     return f"{name or 'command'} references a protected path ({_describe(hits)})"
 
 
+_SED_ADDRESS = r"(?:\d+(?:~\d+)?|\$|/(?:[^/\\]|\\.)*/[IM]*)"
+_SED_ADDRESS_RE = re.compile(
+    rf"^(?:{_SED_ADDRESS}(?:\s*,\s*(?:{_SED_ADDRESS}|[+~]\d+))?)?\s*!?\s*")
+_SED_SIMPLE_RE = re.compile(r"[pPdDnNgGhHxz=]|[qQ]\s*\d*|l\s*\d*")
+
+
+def _sed_delimited(rest, parts):
+    """Index after ``parts`` delimiter-terminated fields of an s or y
+    command (rest[0] is the command letter), or None."""
+    if len(rest) < 2:
+        return None
+    delim = rest[1]
+    if delim in "\\\n" or delim.isalnum() or delim.isspace():
+        return None
+    i, found = 2, 0
+    while i < len(rest):
+        if rest[i] == "\\":
+            i += 2
+            continue
+        if rest[i] == delim:
+            found += 1
+            if found == parts:
+                return i + 1
+        i += 1
+    return None
+
+
+def _sed_command_safe(command):
+    """True for sed commands that neither run programs (e, s///e) nor read
+    or write files (r, R, w, W, s///w): p, d, s, y, a/i/c and the like."""
+    if command.startswith("#"):
+        return True
+    rest = command[_SED_ADDRESS_RE.match(command).end():]
+    if _SED_SIMPLE_RE.fullmatch(rest):
+        return True
+    if rest[:1] in ("a", "i", "c") and (len(rest) == 1 or rest[1] in " \t\\"):
+        return True
+    if rest.startswith("s"):
+        end = _sed_delimited(rest, 2)
+        return end is not None and re.fullmatch(r"[gpiImM0-9]*", rest[end:]) is not None
+    if rest.startswith("y"):
+        end = _sed_delimited(rest, 2)
+        return end is not None and not rest[end:].strip()
+    return False
+
+
+def _sed_scripts(args):
+    """(scripts, unreadable) of a sed call: -e/--expression values or the
+    first operand; -f/--file scripts cannot be inspected."""
+    scripts, unreadable, explicit, positional = [], False, False, []
+    sandbox = "--sandbox" in args
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--":
+            positional.extend(args[i + 1:])
+            break
+        if arg.startswith("--"):
+            key, eq, value = arg.partition("=")
+            if key.startswith("--e"):  # --expression
+                if not eq and i + 1 < len(args):
+                    i += 1
+                    value = args[i]
+                scripts.append(value)
+                explicit = True
+            elif key.startswith("--f"):  # --file
+                unreadable = explicit = True
+                if not eq:
+                    i += 1
+            elif key.startswith("--l") and not eq:  # --line-length N
+                i += 1
+        elif arg.startswith("-") and len(arg) > 1:
+            for j in range(1, len(arg)):
+                flag = arg[j]
+                if flag in "efl":
+                    value = arg[j + 1:]
+                    if not value and i + 1 < len(args):
+                        i += 1
+                        value = args[i]
+                    if flag == "e":
+                        scripts.append(value)
+                        explicit = True
+                    elif flag == "f":
+                        unreadable = explicit = True
+                    break
+                if flag == "i":
+                    break  # the rest is a backup suffix
+        else:
+            positional.append(arg)
+        i += 1
+    if not explicit and positional:
+        scripts.append(positional[0])
+    return scripts, unreadable and not sandbox, sandbox
+
+
+def _check_sed(args):
+    scripts, unreadable, sandbox = _sed_scripts(args)
+    if unreadable:
+        return "sed reads its script from a file the guard cannot inspect"
+    if sandbox:
+        return None  # GNU sed --sandbox rejects e, r and w
+    for script in scripts:
+        for command in re.split(r"[;\n]", script):
+            command = command.strip()
+            if command and not _sed_command_safe(command):
+                return ("sed script uses a command the guard cannot verify (e runs programs; "
+                        "r, R, w and W read or write files; blocks); use plain p, d, s or y "
+                        "commands, or the Read/Edit tools")
+    return None
+
+
 def check_shell(command, settings, backslash_paths=False, depth=0):
     """Block reason for a shell command, or None."""
     if not isinstance(command, str):
@@ -970,6 +1192,9 @@ def check_shell(command, settings, backslash_paths=False, depth=0):
         return "runs an encoded PowerShell command the guard cannot inspect"
     if depth > _MAX_SHELL_DEPTH:
         return "nests shells too deeply for the guard to inspect"
+    reason = check_powershell_env(command, settings, powershell=backslash_paths)
+    if reason:
+        return reason
     raw_hits = mention_hits(command, settings)
     try:
         parts = split_segments(command, backslash_paths)
@@ -1009,7 +1234,10 @@ def check_shell(command, settings, backslash_paths=False, depth=0):
             or _check_packages(name, args)
             or _check_real_data(name, args, text_only, settings)
             or _check_secret_env(" ".join(segment), settings)
-            or _check_inline_env_dump(segment, text_only)
+            or _check_inline_env_dump(segment, text_only, settings)
+            or (_check_sed(args) if name in ("sed", "gsed") else None)
+            or ("sort --compress-program runs another program" if name == "sort" and any(
+                a.startswith("--co") for a in args) else None)
             or _check_dangerous_env(segment, name, args)
             or (f"{name} --pre runs a preprocessor command" if name == "rg" and any(
                 a.startswith(("--pre", "--pre-glob")) for a in args) else None)
