@@ -123,8 +123,11 @@ def normalize_client_ip(raw_host: str | None) -> str:
 
 def get_client_ip_key(request: Request) -> str:
     """Direct ASGI peer address only -- X-Forwarded-For/X-Real-IP and any
-    other client-supplied header are never read, since nothing in this
+    other client-supplied header are never read here, since nothing in this
     deployment's topology makes them trustworthy (see the E3 design audit).
+    The one exception is outside this module: the Lightsail test deployment
+    runs uvicorn with --forwarded-allow-ips set to its Caddy proxy only, so
+    the peer address uvicorn reports is the client's as seen by Caddy.
     """
     client = request.client
     if client is None or not client.host:

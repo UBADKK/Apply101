@@ -82,6 +82,24 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
   each step it marks "(check)" against Railway's documentation, which
   could not be reached from this environment.
 
+## Lightsail test environment
+
+- **Branch:** `feat/lightsail-test-env`, started from `feat/railway-test-env`
+  (`904e1b2`).
+- **SSH:** the Claude cloud session has no SSH egress. Direct TCP 22 times
+  out, the proxy passes no SSH traffic, and 443 is HTTPS-only through the
+  egress gateway. So the owner runs every server command; nothing connects
+  to the server from the session.
+- **Pieces:**
+  - `deploy/lightsail/compose.yaml`: the app and Caddy, with automatic
+    HTTPS;
+  - `deploy/lightsail/Caddyfile`;
+  - `deploy/lightsail/ctl.sh`: setup, update, admin, catalog, backup and
+    restore.
+- **Runbook:** `docs/LIGHTSAIL_TEST_RUNBOOK.md`.
+- **Local check:** done with domain `localhost` on a temporary root; the
+  runbook's "How this was checked" lists what was covered and what was not.
+
 ## Scope extension task (phases 1-3)
 
 The full scope is in [ONLINE_MVP_PLAN.md](ONLINE_MVP_PLAN.md), under "Scope
