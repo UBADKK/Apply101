@@ -44,9 +44,9 @@ alone lists them.
 
 ## 1. Instance, IP and firewall (check)
 
-1. **Instance:** an Ubuntu 24.04 LTS instance with at least 1 GB of memory.
-   The image is built on the server, and building the web client needs the
-   memory. On a smaller plan, add swap (step 2).
+1. **Instance:** Ubuntu 24.04 LTS with 2 GB of memory. The image is built
+   on the server, and that is enough memory for the build; no swap is
+   needed.
 2. **Static IP:** create one and attach it to the instance.
 3. **Domain:** a DNS name pointing to the static IP, as an A record only, for
    example `apply101-test.example.com`. Do not add an AAAA (IPv6) record.
@@ -63,19 +63,16 @@ alone lists them.
 
 ## 2. Server preparation (browser SSH, user `ubuntu`)
 
+- **Docker:** Docker CE and its Compose plugin come from Docker's official
+  apt repository (docs.docker.com, "Install Docker Engine on Ubuntu").
+  - Do not also install Ubuntu's `docker.io` or `docker-compose-v2`
+    packages: they conflict with Docker CE.
+- **Check** that both work and that `git` is present:
+
 ```bash
-sudo apt-get update
-sudo apt-get install -y docker.io docker-compose-v2 git
-sudo systemctl enable --now docker
 docker compose version
-```
-
-Only if the instance has less than 2 GB of memory, add 2 GB of swap:
-
-```bash
-sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
-sudo mkswap /swapfile && sudo swapon /swapfile
-echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+sudo docker run --rm hello-world
+git --version || sudo apt-get install -y git
 ```
 
 ## 3. Install
@@ -238,5 +235,5 @@ sudo rm -rf /srv/apply101                # deletes ALL data, secrets and certifi
   - a real Let's Encrypt certificate, which needs a public domain;
   - the client addresses Caddy sees on Lightsail;
   - the Lightsail console and firewall steps;
-  - `ctl.sh update` against GitHub;
-  - the apt package names on a real Lightsail image.
+  - Docker CE on the real server: the owner reported `docker compose
+    version` and `hello-world` working there.
