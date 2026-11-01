@@ -251,6 +251,21 @@ class CheckpointFormatTests(unittest.TestCase):
         self.assertTrue(cpmod.verify(text))
 
 
+class LogTrimTests(unittest.TestCase):
+    def test_trimming_keeps_approvals_and_audits(self):
+        from kitlib import workflow
+        state = cpmod.new_state("long-task", "task/x", "abc", 2)
+        cp = cpmod.empty_checkpoint("long-task", "goal", state)
+        workflow._log(cp, "audit: proceed")
+        workflow._log(cp, "approve: covers=data scope=migrations/0002.sql")
+        for i in range(100):
+            workflow._log(cp, f"developed: partial files=1 fp={i:012x}")
+        self.assertLessEqual(len(cp["Log"]), cpmod.MAX_LOG_ENTRIES)
+        self.assertEqual(workflow._approval_coverage(cp), ({"data"}, ["migrations/0002.sql"]))
+        self.assertIn("audit: proceed", cp["Log"])
+        self.assertEqual(cp["Log"][-1], "developed: partial files=1 fp=000000000063")
+
+
 class GlobTests(unittest.TestCase):
     def test_gitignore_like_globs(self):
         cases = [

@@ -179,6 +179,13 @@ class ShellTests(GuardCase):
         # read-only directories reached through read-only commands
         "cd .claude && echo x > settings.json", "sort -o .claude/agent-kit/PROJECT_CONTEXT.md f",
         "awk '{print > \".claude/x\"}' f", "find . -name x -fprint .claude/out",
+        "uniq src .claude/agent-kit/checkpoints/t.md", "sed -n 'w .git/hooks/pre-commit' f",
+        "tree -o .claude/x", "awk 'BEGIN{system(\"cp a .claude/x\")}'",
+        # clobbering redirection and tools that run other programs
+        "echo -n >| data/app.db", "echo X >| .env", "echo x >| .claude/agent-kit/checkpoints/t.md",
+        "echo x &> .claude/x", "rg --pre ./x pattern calc", "GIT_EXTERNAL_DIFF=./x git diff",
+        "LESSOPEN='|./x %s' less calc/core.py", "export GIT_PAGER=./x", "env GIT_SSH_COMMAND=x git status",
+        "node -e \"console.log(process.env.valueOf())\"",
     ]
     ALLOWED = [
         "python3 -m unittest discover -s tests -t .",
@@ -202,7 +209,9 @@ class ShellTests(GuardCase):
         "echo $HOME", "mkdir -p build/tmp", "set -e",
         "find calc -name '*.py' | xargs grep -n add",
         "python3 manage.py test", "tar czf calc.tgz calc", "npm test", "npm run build",
-        "cat .gitignore", "ls .github/workflows",
+        "cat .gitignore", "ls .github/workflows", "PYTHONPATH=. python3 -m unittest tests.test_calc",
+        "python3 -m unittest discover -s tests 2>&1 | tail -5", "git diff >/dev/null 2>&1",
+        "node -e \"console.log(process.env.HOME)\"",
     ]
 
     def test_blocked(self):
@@ -268,14 +277,17 @@ class ScopeAndFailureTests(GuardCase):
     def test_reviewer_shell_is_read_only(self):
         for command in ("echo x > calc/core.py", "sed -i 's/a/b/' calc/core.py", "python3 -m unittest",
                         "awk '{print}' calc/core.py", "sort -o out.txt in.txt", "touch x", "mkdir y",
-                        "tee x", "make", "npm test", "chmod +x run.sh", "find . -fprint out"):
+                        "tee x", "make", "npm test", "chmod +x run.sh", "find . -fprint out",
+                        "cat a >| b", "git diff &>out.txt", "git diff >&out.txt", "uniq a b",
+                        "sed -n 1p calc/core.py", "tree -o out", "X=1 git diff",
+                        "find . -name x -exec cat {} +"):
             with self.subTest(command=command):
                 self.assertBlocked("Bash", {"command": command}, "kit-reviewer")
                 if command in ("python3 -m unittest", "npm test", "mkdir y", "chmod +x run.sh"):
                     self.assertAllowed("Bash", {"command": command}, "kit-developer")
         for command in ("git status --short --untracked-files=all", "git diff -- calc/core.py",
                         "git log --oneline -3 2>/dev/null", "cat calc/core.py | head -20",
-                        "grep -n add calc/*.py", "sed -n '1,20p' calc/core.py", "ls -la",
+                        "grep -n add calc/*.py", "ls -la",
                         "git diff --stat 2>&1 | tail -3", "find calc -name '*.py' | xargs grep -n def"):
             with self.subTest(command=command):
                 self.assertAllowed("Bash", {"command": command}, "kit-reviewer")

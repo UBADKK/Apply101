@@ -157,6 +157,8 @@ class Scenario2MigrationRisk(FakeProjectCase):
         self.kit("checkpoint", "event", "touch", "developed",
                  "--report", self.report("developer", "implemented"), expect=EXIT_REFUSED)
         self.assertIn("watched real-data file changed: data/app.db", self.state("touch")["state"]["Reason"])
+        # Real data changed during the task: final, the user cannot approve it away.
+        self.kit("checkpoint", "event", "touch", "approve", "--note", "fine", expect=EXIT_REFUSED)
 
 
 class Scenario3InterruptedTask(FakeProjectCase):
@@ -318,6 +320,26 @@ class Scenario4IncompleteImplementation(FakeProjectCase):
         self._developed("late-change", FIXED_ADD + "\n# edited after the developer run\n")
         self.kit("checkpoint", "event", "late-change", "review",
                  "--report", self.report("reviewer", "approve"), expect=0)
+
+    def test_approval_required_file_added_during_development_converges(self):
+        self._start("contract")
+        self.write("calc/core.py", FIXED_ADD + "\n\n" + FIXED_MUL)
+        self.write("calc/contract.py", "VERSION = 'calc_v2'\n")  # out of scope and approval-required
+        self.kit("checkpoint", "event", "contract", "developed",
+                 "--report", self.report("developer", "implemented"), expect=EXIT_REFUSED)
+        self.assertIn("out of scope: calc/contract.py", self.state("contract")["state"]["Reason"])
+        self.kit("checkpoint", "event", "contract", "approve", "--note",
+                 "User accepts changing the contract version", expect=0)
+        self.kit("checkpoint", "record", "contract", "--scope", "calc/contract.py",
+                 "--user-approved-change", expect=0)
+        self.kit("checkpoint", "event", "contract", "developed",
+                 "--report", self.report("developer", "implemented"), expect=EXIT_REFUSED)
+        self.assertIn("approval required for: calc/contract.py", self.state("contract")["state"]["Reason"])
+        self.kit("checkpoint", "event", "contract", "approve", "--note",
+                 "User approved calc/contract.py", expect=0)
+        self.kit("checkpoint", "event", "contract", "developed",
+                 "--report", self.report("developer", "implemented"), expect=0)
+        self.assertEqual(self.state("contract")["state"]["Phase"], "review")
 
     def test_report_of_another_role_is_refused(self):
         self._start("wrong-role")

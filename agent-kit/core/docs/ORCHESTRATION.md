@@ -64,8 +64,11 @@ In the commands below, `KIT` stands for `python3 .claude/agent-kit/kit.py`
    `KIT checkpoint event <slug> developed --report <saved report>`. The CLI
    compares the changed files with the approved scope, the protected paths,
    the approval-required paths, the baseline and the watched files; any
-   violation puts the task in `waiting_user`. Never revert the developer's
-   or the user's files yourself; ask the user.
+   violation puts the task in `waiting_user`. Scope and approval problems
+   can be resolved by the user's decision; `unsafe changes` (watched real
+   data, protected files or the user's pre-existing changes were touched)
+   end the task. Never revert the developer's or the user's files yourself;
+   ask the user.
    If code changed, re-run the focused tests from the developer's report
    once yourself before review.
 6. **Review.** Start `kit-reviewer` with the acceptance criteria, the changed

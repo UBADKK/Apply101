@@ -194,9 +194,19 @@ def accept_head(project_root, cp):
     _log(cp, f"accept-head: {old}..{new}")
 
 
+# Entries the gates count on (approval coverage, the audit cap) are kept when
+# the log is trimmed; the oldest other entries go first.
+_KEPT_LOG_PREFIXES = ("approve:", "audit:", "accept-head:")
+
+
 def _log(cp, entry):
-    cp["Log"].append(entry)
-    del cp["Log"][:-cpmod.MAX_LOG_ENTRIES]
+    log = cp["Log"]
+    log.append(entry)
+    while len(log) > cpmod.MAX_LOG_ENTRIES:
+        idx = next((i for i, e in enumerate(log[:-1]) if not e.startswith(_KEPT_LOG_PREFIXES)), None)
+        if idx is None:
+            raise KitError("the checkpoint log is full of approvals and audits; stop and start a new task")
+        del log[idx]
 
 
 def _wait(cp, reason, next_step):
@@ -295,6 +305,22 @@ def scope_check(project_root, cp, config):
     return changed, problems
 
 
+_UNSAFE_PREFIXES = ("watched real-data file changed", "pre-existing user change", "protected path changed")
+
+
+def _wait_for_changes(cp, problems, next_step):
+    """Waits for the user. Unsafe changes (real data, the user's own changes,
+    protected files) end the task; scope and approval problems can be
+    resolved by the user's decision."""
+    detail = "; ".join(problems[:5])
+    if any(p.startswith(_UNSAFE_PREFIXES) for p in problems):
+        _wait(cp, f"unsafe changes: {detail}",
+              "Stop. Report these files to the user; do not revert anything. The task cannot "
+              "continue; after the user has checked the data, start a new task.")
+    else:
+        _wait(cp, f"out of scope or unapproved changes: {detail}", next_step)
+
+
 def _dirty_in_scope(cp):
     return [path for kind, path, _ in _parse_baseline(cp)
             if kind == "dirty" and path_matches(path, cp["Approved scope"])]
@@ -380,8 +406,12 @@ def apply_event(project_root, config, cp, event, verdict=None, findings=(), risk
         if st["Reason"].startswith("approval required"):
             covers = ",".join(_flags(cp)) or "none"
             scope = ";".join(cp["Approved scope"]) or "none"
-            if len(scope) > 300:
-                raise KitError("the approved scope is too long to record in one approval; use globs")
+        elif st["Reason"].startswith("out of scope"):
+            # The user decided about the listed approval-required files.
+            scope = ";".join(m.strip() for m in re.findall(r"approval required for: ([^;]+)", st["Reason"]))
+            scope = scope or cpmod.NONE
+        if len(scope) > 300:
+            raise KitError("the approved scope is too long to record in one approval; use globs")
         st["Status"], st["Reason"] = "active", cpmod.NONE
         st["Approval"] = note.strip()[:200]
         _log(cp, f"approve: covers={covers} scope={scope}")
@@ -431,8 +461,9 @@ def apply_event(project_root, config, cp, event, verdict=None, findings=(), risk
                   "Report the blocker to the user and ask how to proceed.")
             return "waiting for user"
         if problems:
-            _wait(cp, "out of scope or unsafe changes: " + "; ".join(problems[:5]),
-                  "Show the user these files. Do not revert anything yourself; the user decides.")
+            _wait_for_changes(cp, problems,
+                              "Show the user these files. Do not revert anything yourself. If they accept "
+                              "them, extend the scope (record --scope --user-approved-change) or approve.")
             return "waiting for user"
         if not changed:
             _wait(cp, "developer blocked: no changes found in the working tree",
@@ -457,8 +488,9 @@ def apply_event(project_root, config, cp, event, verdict=None, findings=(), risk
             problems.insert(0, "the working tree changed after the last `developed` record")
         if problems:
             st["Phase"] = "fix" if used else "develop"  # the tree needs a new `developed` record
-            _wait(cp, "out of scope or unsafe changes: " + "; ".join(problems[:5]),
-                  "Show the user what changed since the developer run. Do not revert anything yourself.")
+            _wait_for_changes(cp, problems,
+                              "Show the user what changed since the developer run. Do not revert anything "
+                              "yourself; after their decision record `developed` again.")
             return "waiting for user"
         if verdict == "approve":
             if findings:

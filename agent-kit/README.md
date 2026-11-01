@@ -147,6 +147,8 @@ files listed in `kitlib/common.py` (`INSTALL_MAP`).
   ignored files are only covered by the guard and `watch_files`.
 - Risk word scanning is keyword-based; it can over-flag (the user decides)
   and under-flag (the auditor and approval-required paths are the backup).
+- Checkpoints are plain files: the guard keeps kit agents from writing them,
+  but the CLI does not detect a checkpoint edited by hand.
 - No web research for the researcher in v1.
 
 ## V2 ideas (not in v1)

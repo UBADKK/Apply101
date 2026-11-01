@@ -383,7 +383,13 @@ def command_of(segment):
 
 
 def _is_redirect(token):
-    return bool(token) and set(token) <= set("<>&0123456789") and ("<" in token or ">" in token)
+    """True for redirection operators: > >> < >| &> 2>&1 parts and the like."""
+    return bool(token) and set(token) <= set("<>&|0123456789") and ("<" in token or ">" in token)
+
+
+def _is_fd_duplication(token, target):
+    """2>&1, >&2, <&0: duplicates a descriptor, writes no file."""
+    return token.endswith("&") and bool(re.fullmatch(r"\d+|-", target))
 
 
 # -- command rules ------------------------------------------------------------------
@@ -403,7 +409,8 @@ _INLINE_DELETE_RE = re.compile(
     re.IGNORECASE,
 )
 _INLINE_ENV_DUMP_RE = re.compile(
-    r"\bos\.environ\b(?!\s*(?:\[|\.get\b))|\bprocess\.env\b(?!\s*[.\[])|%ENV\b|\bENV\.to_h\b"
+    r"\bos\.environ\b(?!\s*(?:\[|\.get\b))|\bprocess\.env\b(?!\s*\[|\.(?!valueOf|toString|toJSON)\w)"
+    r"|%ENV\b|\bENV\.to_h\b"
     r"|\bos\.getenv\s*\(\s*\)|\bSystem\.getenv\s*\(\s*\)",
     re.IGNORECASE,
 )
@@ -471,15 +478,27 @@ _METADATA_COMMANDS = frozenset({"ls", "stat", "test", "[", "[[", "test-path", "g
 _ECHO_COMMANDS = frozenset({"echo", "printf", "write-host", "write-output"})
 _GIT_METADATA = frozenset({"status", "check-ignore", "ls-files"})
 _GREP_COMMANDS = frozenset({"grep", "egrep", "fgrep", "rg", "git-grep"})
-# Commands that only read: they may name .claude/ and the checkpoint dir.
+# Commands that only read files (they have no option that writes one). They
+# skip the adapter's real-data patterns, and they alone may name .claude/,
+# .git/ or the checkpoint directory.
 _READ_ONLY_COMMANDS = frozenset({
-    "cat", "head", "tail", "less", "more", "ls", "dir", "stat", "wc", "file",
+    "cat", "head", "tail", "ls", "dir", "stat", "wc", "file",
     "grep", "egrep", "fgrep", "rg", "diff", "cmp", "sha256sum", "sha1sum",
-    "shasum", "md5sum", "test", "[", "[[", "echo", "printf", "find", "tree",
+    "shasum", "md5sum", "test", "[", "[[", "echo", "printf", "find",
     "get-content", "gc", "type", "get-item", "get-childitem", "gci",
     "test-path", "select-string", "sls", "realpath", "readlink", "basename",
-    "dirname", "pwd", "cd", "jq", "sort", "uniq", "cut", "column", "awk", "sed",
+    "dirname", "pwd", "cut", "column", "jq",
 })
+# Viewers that cannot start a program: the adapter's real-data patterns
+# (which name modules and scripts) do not apply to them.
+_REAL_DATA_SKIP = _READ_ONLY_COMMANDS | frozenset({"sed", "sort", "uniq", "less", "more", "tree", "cd"})
+# Environment variables that make common tools run other programs.
+_DANGEROUS_ENV_RE = re.compile(
+    r"^(?:GIT_[A-Z0-9_]+|LESSOPEN|LESSCLOSE|LESSKEY|[A-Z_]*PAGER|EDITOR|VISUAL|LD_[A-Z_]+"
+    r"|DYLD_[A-Z_]+|BASH_ENV|ENV|PROMPT_COMMAND|PYTHONSTARTUP|NODE_OPTIONS|PERL5OPT|RUBYOPT"
+    r"|SHELLOPTS|BASHOPTS|IFS)$",
+    re.IGNORECASE,
+)
 # Text filters that may receive an allowlisted listing of protected names.
 _NAME_SAFE_CONSUMERS = frozenset({
     "head", "tail", "wc", "sort", "uniq", "cut", "tr", "cat", "less", "more",
@@ -611,6 +630,27 @@ def _check_env_dump(name, args):
     return None
 
 
+def _assignments(segment, name, args):
+    """Variable names assigned before the command or through export/declare."""
+    names = []
+    for token in segment[:len(segment) - len(args)]:
+        m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=", token)
+        if m:
+            names.append(m.group(1))
+    if name in ("export", "declare", "typeset", "set-item", "local", "readonly"):
+        names += [m.group(1) for a in args for m in [re.match(r"^(?:env:)?([A-Za-z_][A-Za-z0-9_]*)=", a)] if m]
+    if name == "env":
+        names += [m.group(1) for a in args for m in [re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=", a)] if m]
+    return names
+
+
+def _check_dangerous_env(segment, name, args):
+    hit = next((n for n in _assignments(segment, name, args) if _DANGEROUS_ENV_RE.match(n)), None)
+    if hit:
+        return f"sets {hit}, which makes tools run other programs"
+    return None
+
+
 def _check_inline_env_dump(segment, text_only):
     if not text_only and _INLINE_ENV_DUMP_RE.search(" ".join(segment)):
         return "prints the whole environment from inline code, which may hold secrets"
@@ -660,7 +700,7 @@ def _check_network(name, args, segment, text_only):
 def _check_real_data(name, args, text_only, settings):
     """Adapter regexes, matched against the command after wrappers
     (``timeout 60 uvicorn ...`` is checked as ``uvicorn ...``)."""
-    if text_only or name in _READ_ONLY_COMMANDS or name == "git":
+    if text_only or name in _REAL_DATA_SKIP or name == "git":
         return None
     text = " ".join([name] + list(args))
     for regex in settings.real_data:
@@ -970,6 +1010,9 @@ def check_shell(command, settings, backslash_paths=False, depth=0):
             or _check_real_data(name, args, text_only, settings)
             or _check_secret_env(" ".join(segment), settings)
             or _check_inline_env_dump(segment, text_only)
+            or _check_dangerous_env(segment, name, args)
+            or (f"{name} --pre runs a preprocessor command" if name == "rg" and any(
+                a.startswith(("--pre", "--pre-glob")) for a in args) else None)
             or (check_grep(name, args, settings, root_check=not from_xargs) if name in _GREP_COMMANDS else None)
         )
         if reason:
@@ -977,21 +1020,18 @@ def check_shell(command, settings, backslash_paths=False, depth=0):
         for idx, token in enumerate(args):
             if _is_redirect(token) and idx + 1 < len(args):
                 target = args[idx + 1]
+                if _is_fd_duplication(token, target):
+                    continue
                 hits = path_hits(target, settings) | mention_hits(target, settings)
                 if hits:
                     return f"redirects to or from a protected path ({_describe(hits)})"
                 if ">" in token and readonly_hit(target, settings):
-                    return "writes into .claude/ or the checkpoint directory"
+                    return "writes into .claude/, .git/ or the checkpoint directory"
         if readonly_mentioned(" ".join(segment), settings):
-            in_place = (
-                name == "sed" and any(a.startswith("-i") or a == "--in-place" for a in args)
-                or name == "sort" and any(a.startswith(("-o", "--output")) for a in args)
-                or name in ("awk", "gawk", "mawk", "nawk") and any(">" in a for a in args)
-                or name == "find" and any(a.lower() in ("-fprint", "-fprint0", "-fprintf", "-fls") for a in args)
-                or name in ("cd", "pushd", "chdir", "set-location", "sl", "push-location")
-            )
+            writes = name == "find" and any(
+                a.lower() in ("-fprint", "-fprint0", "-fprintf", "-fls") for a in args)
             runs_tests = bool(_TEST_RUNNER_RE.search(" ".join([name] + args)))
-            if in_place or (name not in _READ_ONLY_COMMANDS and name != "git" and not runs_tests):
+            if writes or (name not in _READ_ONLY_COMMANDS and name != "git" and not runs_tests):
                 return (f"{name or 'command'} may write into .claude/ or the checkpoint "
                         "directory; kit agents only read there")
         seg_hits = set()
@@ -1014,12 +1054,11 @@ def check_shell(command, settings, backslash_paths=False, depth=0):
 # The reviewer is read-only: these commands only, no output redirection
 # except to /dev/null or another descriptor.
 _REVIEWER_COMMANDS = frozenset({
-    "git", "cat", "head", "tail", "less", "more", "ls", "dir", "wc", "grep", "egrep",
-    "fgrep", "rg", "diff", "cmp", "stat", "file", "find", "sed", "sort", "uniq", "cut",
-    "tr", "column", "pwd", "cd", "echo", "printf", "test", "[", "[[", "basename",
-    "dirname", "realpath", "readlink", "tree", "sha256sum", "sha1sum", "md5sum",
-    "true", "false", "get-content", "gc", "type", "select-string", "sls",
-    "get-childitem", "gci", "test-path", "get-item",
+    "git", "cat", "head", "tail", "ls", "dir", "wc", "grep", "egrep", "fgrep", "rg",
+    "diff", "cmp", "stat", "file", "find", "cut", "tr", "column", "pwd", "cd", "echo",
+    "printf", "test", "[", "[[", "basename", "dirname", "realpath", "readlink",
+    "sha256sum", "sha1sum", "md5sum", "true", "false", "get-content", "gc", "type",
+    "select-string", "sls", "get-childitem", "gci", "test-path", "get-item",
 })
 
 
@@ -1031,21 +1070,20 @@ def check_reviewer_shell(command, backslash_paths=False):
         return "the reviewer's shell commands must parse; use the file tools"
     for segment, _before, _after in parts:
         name, args = command_of(segment)
+        if any(re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", t) for t in segment[:len(segment) - len(args)]):
+            return "the reviewer does not set environment variables for commands"
         if not name:
             continue
         if name not in _REVIEWER_COMMANDS:
-            return f"the reviewer only runs read-only commands; {name} is not one"
+            return f"the reviewer only runs read-only commands; {name} is not one (use the Read tool)"
         for idx, token in enumerate(args):
-            if _is_redirect(token) and ">" in token and "&" not in token:
+            if _is_redirect(token) and ">" in token:
                 target = args[idx + 1] if idx + 1 < len(args) else ""
-                if target.lower() not in ("/dev/null", "nul", "$null"):
+                if not _is_fd_duplication(token, target) and target.lower() not in ("/dev/null", "nul", "$null"):
                     return "the reviewer does not write files (output redirection)"
-        if name == "sed" and any(a.startswith("-i") or a == "--in-place" for a in args):
-            return "the reviewer does not edit files (sed -i)"
-        if name == "sort" and any(a.startswith(("-o", "--output")) for a in args):
-            return "the reviewer does not write files (sort -o)"
-        if name == "find" and any(a.lower() in ("-fprint", "-fprint0", "-fprintf", "-fls") for a in args):
-            return "the reviewer does not write files (find -fprint)"
+        if name == "find" and any(a.lower() in ("-fprint", "-fprint0", "-fprintf", "-fls", "-exec",
+                                                "-execdir", "-ok", "-okdir", "-delete") for a in args):
+            return "the reviewer does not write files or run commands through find"
     return None
 
 
