@@ -45,8 +45,8 @@ alone lists them.
 ## 1. Instance, IP and firewall (check)
 
 1. **Instance:** Ubuntu 24.04 LTS with 2 GB of memory. The image is built
-   on the server, and that is enough memory for the build; no swap is
-   needed.
+   on the server; 2 GB should be enough for the build, so no swap is set
+   up. Step 3 has a fallback in case the build runs out of memory.
 2. **Static IP:** create one and attach it to the instance.
 3. **Domain:** a DNS name pointing to the static IP, as an A record only, for
    example `apply101-test.example.com`. Do not add an AAAA (IPv6) record.
@@ -72,7 +72,7 @@ alone lists them.
 ```bash
 docker compose version
 sudo docker run --rm hello-world
-git --version || sudo apt-get install -y git
+git --version || { sudo apt-get update && sudo apt-get install -y git; }
 ```
 
 ## 3. Install
@@ -93,6 +93,9 @@ sudo deploy/lightsail/ctl.sh setup apply101-test.example.com
   - builds the image, which takes several minutes the first time;
   - starts both containers.
 - **Running it again** keeps the existing secrets.
+- **If the build stops with `Killed` or exit code 137**, it ran out of
+  memory. Add 2 GB of swap once, then run `setup` again:
+  `sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile && echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab`
 
 Then:
 
@@ -230,10 +233,14 @@ sudo rm -rf /srv/apply101                # deletes ALL data, secrets and certifi
     address is Docker's gateway; step 3 checks the real one on the server;
   - registration, `admin`, `catalog seed` and `summary`, and a backup and
     restore that removed a user added after the backup;
-  - data kept across `down` and `up`, and the app healthy.
+  - data kept across `down` and `up`, and the app healthy;
+  - `ctl.sh update` against GitHub: "Already up to date", then healthy.
 - **Not checked there:**
   - a real Let's Encrypt certificate, which needs a public domain;
   - the client addresses Caddy sees on Lightsail;
+  - a build on a 2 GB instance;
+  - a real fast-forward by `ctl.sh update` on the server, as the
+    checkout's owner;
   - the Lightsail console and firewall steps;
   - Docker CE on the real server: the owner reported `docker compose
     version` and `hello-world` working there.
