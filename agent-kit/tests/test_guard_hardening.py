@@ -268,3 +268,63 @@ class ReviewFollowUpTests(HardeningCase):
              "Write-Output 'env: settings'"],
             tool="PowerShell",
         )
+
+
+class FinalReviewBlockingTests(HardeningCase):
+    """The two blocking findings of the final review of b6215fa."""
+
+    # B1: the guard turns newlines into " ; " before parsing, so text of a,
+    # i and c (and comments) must not swallow the following line, which
+    # GNU sed runs as a command.
+    def test_multiline_sed_after_text_commands(self):
+        self.check(
+            [
+                "sed '1a x\n1e date' calc/core.py",
+                "sed '1c x\ne date' calc/core.py",
+                "sed -e '1i note\n$e python3 -m calc.migrate' calc/core.py",
+                "sed -n '1a x\n1e serve-prod' /dev/null",
+                "sed '1a x\n1r notes.txt' calc/core.py",
+                "sed '1i x\n1w out.txt' calc/core.py",
+                "sed '1a x\ns/a/b/e' calc/core.py",
+                "sed '# a comment\n1e date' calc/core.py",
+            ],
+            [
+                "sed '1i # header' calc/core.py",
+                "sed '1a x\n2p' calc/core.py",
+                "sed '$a last line' calc/core.py",
+                "sed -n '1p\n3p' calc/core.py",
+            ],
+        )
+
+    # B2: the env: drive used anywhere in a PowerShell command, not only by
+    # the first command of a segment, and inside Invoke-Expression strings.
+    def test_powershell_env_drive_anywhere(self):
+        self.check(
+            [
+                "$t = Get-Content env:API_TOKEN",
+                "$v = Get-ChildItem env:; $v",
+                "foreach ($k in Get-ChildItem env:) { $k.Name }",
+                "Invoke-Expression 'Get-ChildItem env:'",
+                "iex \"gc env:API_TOKEN\"",
+                "1 | % { Get-ChildItem env: }",
+                "Invoke-Command -ScriptBlock { gci env: }",
+                "Invoke-Command -ScriptBlock {gci env:}",
+                "$x = Get-Content -Path Env:\\CALC_SIGNING_KEY",
+            ],
+            [
+                "$p = $env:PATH",
+                "$t = Get-Content env:PATH",
+                "$x = Get-Content notes.txt",
+                "Invoke-Expression 'git status'",
+                "Select-String -Path .github\\workflows\\ci.yml -Pattern 'env:'",
+                "Write-Output 'env: settings'",
+                'node -e "console.log({ env: 1 })"',
+            ],
+            tool="PowerShell",
+        )
+
+    def test_nested_powershell_env_drive_from_bash(self):
+        self.check(
+            ["powershell -c '$v = gci env:; $v'", "pwsh -Command 'iex \"gc env:API_TOKEN\"'"],
+            ["powershell -c 'Write-Output $env:PATH'"],
+        )

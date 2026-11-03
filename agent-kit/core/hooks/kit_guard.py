@@ -744,7 +744,6 @@ def _is_secret_name(name, settings):
 
 
 _PS_ENV_VAR_RE = re.compile(r"\$\{?env:([A-Za-z_][A-Za-z0-9_]*)\}?(\s*[-+*/]?=(?!=))?", re.IGNORECASE)
-_PS_ENV_PATH_RE = re.compile(r"(?<![\w$:{])env:[\\/]?([A-Za-z0-9_*?\[\]]*)", re.IGNORECASE)
 _DOTNET_ENV_RE = re.compile(
     r"\[(?:System\.)?Environment\]\s*::\s*(GetEnvironmentVariables|GetEnvironmentVariable"
     r"|SetEnvironmentVariable|ExpandEnvironmentVariables)\s*\(\s*(?:(['\"])([^'\"]*)\2)?",
@@ -780,25 +779,21 @@ def check_powershell_env(text, settings):
     return None
 
 
-# PowerShell commands that take provider paths such as env:NAME.
-_PS_PROVIDER_COMMANDS = frozenset({
-    "get-childitem", "gci", "dir", "ls", "get-item", "gi", "get-content", "gc", "cat", "type",
-    "get-itemproperty", "gp", "get-itempropertyvalue", "gpv", "set-item", "si", "new-item", "ni",
-    "copy-item", "cpi", "cp", "copy", "move-item", "mi", "mv", "move", "rename-item", "rni", "ren",
-    "remove-item", "ri", "rm", "del", "erase", "rd", "rmdir", "clear-item", "cli", "set-content",
-    "sc", "add-content", "ac", "test-path", "resolve-path", "rvpa", "cd", "chdir", "sl",
-    "set-location", "pushd", "push-location", "invoke-item", "ii",
-})
 _PS_LOCATION_COMMANDS = frozenset({"cd", "chdir", "sl", "set-location", "pushd", "push-location"})
+# A token that is an env: drive path (env:, env:NAME, Env:\NAME, env:*).
+_PS_ENV_TOKEN_RE = re.compile(r"^env:[\\/]?([A-Za-z0-9_*?\[\]]*)", re.IGNORECASE)
 
 
-def check_powershell_env_drive(name, args, settings):
-    """The env: drive used by a provider cmdlet: listings, secret names,
-    variables that make tools run programs, and moving into the drive."""
-    if name not in _PS_PROVIDER_COMMANDS:
+def check_powershell_env_drive(name, segment, text_only, settings):
+    """The env: drive anywhere in a PowerShell command, not only as the
+    argument of its first cmdlet ($t = Get-Content env:X, foreach (...),
+    script blocks): listings, secret names, variables that make tools run
+    programs, and moving into the drive. Text-only commands (Select-String
+    patterns, echo, grep) are skipped; a token must start with env:."""
+    if text_only:
         return None
-    for arg in args:
-        m = _PS_ENV_PATH_RE.search(arg)
+    for token in segment:
+        m = _PS_ENV_TOKEN_RE.match(token)
         if not m:
             continue
         drive = m.group(1)
@@ -1042,6 +1037,8 @@ def _nested_command(name, args):
     """(command text, backslash_paths) run by a nested shell, or None."""
     if name == "eval":
         return " ".join(args), False
+    if name in ("invoke-expression", "iex"):
+        return " ".join(args), True
     if name in _POSIX_SHELLS:
         i = 0
         while i < len(args):
@@ -1161,6 +1158,15 @@ _SED_BLANKS_RE = re.compile(r"[ \t]*")
 _SED_NUMBER_RE = re.compile(r"[ \t]*\d*")
 
 
+def _sed_line_end(script, i):
+    """End of the text of a comment or an a/i/c command. The guard has
+    already turned newlines into " ; ", so ";" counts as a line end too:
+    what follows is checked as a command (conservative for text that
+    contains ";")."""
+    ends = [pos for pos in (script.find("\n", i), script.find(";", i)) if pos >= 0]
+    return min(ends) + 1 if ends else len(script)
+
+
 def _sed_script_safe(script):
     """True when every command of a sed script neither runs programs (e,
     s///e) nor reads or writes files (r, R, w, W, s///w): p, d, s, y, a/i/c
@@ -1172,8 +1178,7 @@ def _sed_script_safe(script):
             i += 1
             continue
         if script[i] == "#":
-            newline = script.find("\n", i)
-            i = n if newline < 0 else newline + 1
+            i = _sed_line_end(script, i)
             continue
         i = _SED_ADDRESS_RE.match(script, i).end()
         if i >= n:
@@ -1187,8 +1192,7 @@ def _sed_script_safe(script):
             if command == "s":
                 i = _SED_FLAGS_RE.match(script, i).end()
         elif command in "aic":
-            newline = script.find("\n", i)  # the text runs to the end of the line
-            i = n if newline < 0 else newline + 1
+            i = _sed_line_end(script, i)  # the text runs to the end of the line
             continue
         elif command in "pPdDnNgGhHxz=":
             i += 1
@@ -1322,7 +1326,7 @@ def check_shell(command, settings, backslash_paths=False, depth=0):
             or _check_secret_env(" ".join(segment), settings)
             or _check_inline_env_dump(segment, text_only, settings)
             or (_check_sed(args) if name in ("sed", "gsed") else None)
-            or (check_powershell_env_drive(name, args, settings) if backslash_paths else None)
+            or (check_powershell_env_drive(name, segment, text_only, settings) if backslash_paths else None)
             or ("sort --compress-program runs another program" if name == "sort" and any(
                 a.startswith("--co") for a in args) else None)
             or _check_dangerous_env(segment, name, args)
