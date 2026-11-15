@@ -34,6 +34,89 @@ FAKE_ANALYSIS_SUMMARY = (
 )
 FAKE_ANALYSIS_NOTE = "fake_analysis_provider"
 
+# Classification of stored analysis rows, e.g. for
+# backend/scripts/retire_fake_analyses.py. Fake rows carry the same
+# analysis_model and analysis_prompt_version as real ones, so only the
+# markers above tell them apart:
+# - FAKE: every marker the fake provider always writes is in place, so the
+#   row was produced by it;
+# - AMBIGUOUS: some marker text appears but not that full pattern (malformed
+#   JSON, a partial payload, marker text inside a real analysis, a row that
+#   is not completed); never treat these as fake automatically;
+# - NONE: no marker at all.
+ANALYSIS_FAKE = "fake"
+ANALYSIS_AMBIGUOUS = "ambiguous"
+ANALYSIS_NONE = "none"
+
+
+def _json_object(text) -> dict | None:
+    if not isinstance(text, str):
+        return None
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _contains(text, marker: str) -> bool:
+    return isinstance(text, str) and marker in text
+
+
+def classify_profile_analysis(analysis_status, candidate_summary, analysis_json) -> str:
+    """ANALYSIS_FAKE / ANALYSIS_AMBIGUOUS / ANALYSIS_NONE for a
+    profile_analysis row (its analysis_status, candidate_summary and
+    analysis_json columns). No database access."""
+    data = _json_object(analysis_json)
+    if (
+        analysis_status == "completed"
+        and candidate_summary == FAKE_ANALYSIS_SUMMARY
+        and data is not None
+        and data.get("candidate_summary") == FAKE_ANALYSIS_SUMMARY
+        and data.get("match_notes") == [FAKE_ANALYSIS_NOTE]
+    ):
+        return ANALYSIS_FAKE
+    if (
+        _contains(candidate_summary, FAKE_ANALYSIS_SUMMARY)
+        or _contains(analysis_json, FAKE_ANALYSIS_SUMMARY)
+        or _contains(analysis_json, FAKE_ANALYSIS_NOTE)
+    ):
+        return ANALYSIS_AMBIGUOUS
+    return ANALYSIS_NONE
+
+
+def classify_job_analysis(analysis_status, analysis_json, role_family) -> str:
+    """ANALYSIS_FAKE / ANALYSIS_AMBIGUOUS / ANALYSIS_NONE for a job_analysis
+    row (its analysis_status, analysis_json and role_family columns). The
+    stored payload has only the summary marker, so the role fields the fake
+    provider always sets to "other" must corroborate it. No database
+    access."""
+    data = _json_object(analysis_json)
+    if (
+        analysis_status == "completed"
+        and role_family == "other"
+        and data is not None
+        and data.get("summary") == FAKE_ANALYSIS_SUMMARY
+        and data.get("role_family") == "other"
+        and data.get("role_subfamily") == "other"
+        and data.get("role_tags") == ["other"]
+    ):
+        return ANALYSIS_FAKE
+    if _contains(analysis_json, FAKE_ANALYSIS_SUMMARY) or _contains(analysis_json, FAKE_ANALYSIS_NOTE):
+        return ANALYSIS_AMBIGUOUS
+    return ANALYSIS_NONE
+
+
+def is_fake_cover_letter_grounding(grounding_json) -> bool:
+    """True when a cover_letter_versions.grounding_json records a draft of
+    the fake provider (a missing_information note starting with
+    FAKE_ANALYSIS_NOTE). No database access."""
+    data = _json_object(grounding_json)
+    notes = data.get("missing_information") if data is not None else None
+    return isinstance(notes, list) and any(
+        isinstance(note, str) and note.startswith(FAKE_ANALYSIS_NOTE) for note in notes
+    )
+
 # Where the user data starts in the prompts of routers/profiles.py and
 # routers/jobs.py; everything before it is instructions and taxonomy lists.
 PROFILE_DATA_MARKER = "User basic information:"
