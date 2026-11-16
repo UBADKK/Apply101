@@ -43,6 +43,7 @@ from backend.app.analysis_guard import (
     JOB_USER_OPERATION_TYPE,
 )
 from backend.app.database import Base, get_db
+from backend.app.openai_client import ANALYSIS_ERROR_PROVIDER_RATE_LIMITED
 from backend.app.security import create_access_token, hash_password
 
 # Same synthetic-key import pattern as test_owner_manual_job_analysis.py.
@@ -428,6 +429,9 @@ class SingleAnalyzeSpendLimitTests(_BaseSpendLimitTestCase):
 
 class SingleAnalyzeUnchangedErrorTests(_BaseSpendLimitTestCase):
     def _assert_today_500(self, exc):
+        # Still today's 500 with a failed row, but `error` and
+        # `analysis_error` are now the fixed rate-limit message, never
+        # str(exc) (see test_safe_provider_errors.py).
         owner_id = self._create_user(f"unchanged.{id(exc)}@example.com")
         job_id = self._create_job(f"unchanged-{id(exc)}", owner_id=owner_id, source="manual")
 
@@ -447,7 +451,7 @@ class SingleAnalyzeUnchangedErrorTests(_BaseSpendLimitTestCase):
                     "error_code": "ERR_JOB_ANALYSIS_FAILED",
                     "message": "Job analysis failed.",
                     "job_id": job_id,
-                    "error": str(exc),
+                    "error": ANALYSIS_ERROR_PROVIDER_RATE_LIMITED,
                 }
             },
         )
@@ -455,7 +459,8 @@ class SingleAnalyzeUnchangedErrorTests(_BaseSpendLimitTestCase):
         rows = self._analysis_rows(job_id)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0].analysis_status, "failed")
-        self.assertEqual(rows[0].analysis_error, str(exc))
+        self.assertEqual(rows[0].analysis_error, ANALYSIS_ERROR_PROVIDER_RATE_LIMITED)
+        self.assertNotIn(str(exc), response.text)
         self.assertFalse(rows[0].is_current)
 
     def test_transient_rate_limit_is_unchanged_500(self):
@@ -569,7 +574,9 @@ class AnalyzeMissingSpendLimitTests(_BaseSpendLimitTestCase):
         for result, exc in zip(body["results"], excs):
             self.assertEqual(result["status"], "failed")
             self.assertEqual(result["error"]["error_code"], "ERR_JOB_ANALYSIS_FAILED")
-            self.assertEqual(result["error"]["error"], str(exc))
+            # The fixed message, never str(exc).
+            self.assertEqual(result["error"]["error"], ANALYSIS_ERROR_PROVIDER_RATE_LIMITED)
+            self.assertNotIn(str(exc), response.text)
         self.assertEqual(mock_openai.call_count, 3)
 
         rows = self._analysis_rows()

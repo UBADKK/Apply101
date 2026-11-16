@@ -155,13 +155,15 @@ def _generate(db: Session, *, user_id: int, profile: models.CandidateProfile, jo
             response = _create_cover_letter_response(prompt)
         except Exception as exc:  # noqa: BLE001 - provider errors are mapped, never echoed
             if provider_spend_limit_error_code(exc) is not None:
-                raise _error(503, "ERR_COVER_LETTER_PROVIDER_UNAVAILABLE", "Letter drafting is temporarily unavailable. Please try again later.")
+                raise _error(503, "ERR_COVER_LETTER_PROVIDER_UNAVAILABLE", "Letter drafting is temporarily unavailable. Please try again later.") from None
             logger.warning("cover letter provider call failed: %s", type(exc).__name__)
-            raise _error(502, "ERR_COVER_LETTER_FAILED", "The draft could not be written. Please try again.")
+            # `from None`: a failing release in `finally` must not chain the
+            # provider's text into a server traceback.
+            raise _error(502, "ERR_COVER_LETTER_FAILED", "The draft could not be written. Please try again.") from None
         try:
             output = cover_letter.parse_output(response.output_text, grounding)
         except (ValueError, TypeError):
-            raise _error(502, "ERR_COVER_LETTER_FAILED", "The draft could not be written. Please try again.")
+            raise _error(502, "ERR_COVER_LETTER_FAILED", "The draft could not be written. Please try again.") from None
     finally:
         cover_letter.release_generation(db, user_id, token)
     stored = grounding.as_dict()

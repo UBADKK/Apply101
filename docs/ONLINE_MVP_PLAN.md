@@ -30,7 +30,7 @@ smoke run of `backend.app.main` in a throwaway sandbox with fake data,
 | 1 | `POST /auth/register`, `POST /auth/login` (OAuth2 form, JWT signed with `JWT_SECRET_KEY`), `GET /auth/me`; Argon2 hashing; in-process rate limiting | 201 / 200 / 200 |
 | 2 | `POST /users/{user_id}/profiles`, `PATCH .../profiles/{profile_id}`, `POST .../profiles/{profile_id}/upload-cv` (PDF only, 10 MiB, text extracted with pypdf, file stored as `uploads/user_{id}_profile_{id}_cv.pdf`) | 200 / 200 |
 | 3 | `POST /jobs/manual` (`title`, `url`, `description_text` required; per-owner URL uniqueness; the URL is stored, not fetched) | 201 |
-| 4 | `POST /users/{user_id}/profiles/{profile_id}/analyze` (in-flight guard and cooldown); `POST /jobs/{job_id}/analyze` (own manual jobs only, per-user guard, 10 analyses per rolling 24 h, provider spend/credit limit mapped to 503) | 503 "Analysis service is not configured." without a key |
+| 4 | `POST /users/{user_id}/profiles/{profile_id}/analyze` (in-flight guard and cooldown, provider spend/credit limit mapped to 503 `ERR_PROFILE_ANALYSIS_PROVIDER_UNAVAILABLE` with no failed row); `POST /jobs/{job_id}/analyze` (own manual jobs only, per-user guard, 10 analyses per rolling 24 h, provider spend/credit limit mapped to 503) | 503 "Analysis service is not configured." without a key |
 | 5 | `POST /users/{user_id}/profiles/{profile_id}/jobs/{job_id}/match`, `GET /users/{user_id}/profiles/{profile_id}/matches`; result carries `eligibility_status` (`eligible` / `ineligible` / `review_required`), scores and reason codes | 400 `ERR_PROFILE_ANALYSIS_OUTDATED_OR_MISSING` until analyzed |
 
 The backend already covers steps 1-5. At this baseline the repository had

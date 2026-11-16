@@ -45,8 +45,11 @@ from ..app.rate_limiting import (
 )
 from ..app.openai_client import (
     ANALYSIS_SERVICE_NOT_CONFIGURED_DETAIL,
+    ANALYSIS_ERROR_INVALID_JSON,
     create_openai_client_or_none,
+    detached_from,
     provider_spend_limit_error_code,
+    safe_analysis_error_message,
 )
 
 
@@ -1330,7 +1333,7 @@ def _analyze_job_impl(
                 analysis_model=JOB_ANALYSIS_MODEL,
                 analysis_prompt_version=JOB_ANALYSIS_PROMPT_VERSION,
                 analyzed_at=now,
-                analysis_error=f"AI response was not valid JSON: {raw_text[:1000]}",
+                analysis_error=ANALYSIS_ERROR_INVALID_JSON,
                 is_current=False,
                 created_at=now
             )
@@ -1348,7 +1351,6 @@ def _analyze_job_impl(
                     "error_code": "ERR_AI_INVALID_JSON",
                     "message": "AI response was not valid JSON.",
                     "job_id": job_id,
-                    "raw_response": raw_text
                 }
             )
 
@@ -1448,12 +1450,16 @@ def _analyze_job_impl(
             # so no failed row is written. The finally below still releases
             # the guard(s) with the failure cooldown. Never log or return
             # the provider's text; only the matched code constant.
-            db.rollback()
+            with detached_from(e):
+                db.rollback()
             logger.warning(
                 "_analyze_job_impl: job analysis provider spend limit reached (%s)",
                 spend_limit_code,
             )
             raise _JobAnalysisProviderUnavailableError() from None
+
+        # Fixed text only: str(e) can carry SDK details or model output.
+        safe_error = safe_analysis_error_message(e)
 
         failed_analysis = models.JobAnalysis(
             job_id=job_id,
@@ -1462,27 +1468,42 @@ def _analyze_job_impl(
             analysis_model=JOB_ANALYSIS_MODEL,
             analysis_prompt_version=JOB_ANALYSIS_PROMPT_VERSION,
             analyzed_at=now,
-            analysis_error=str(e),
+            analysis_error=safe_error,
             is_current=False,
             created_at=now
         )
 
-        db.add(failed_analysis)
-        _verify_job_unchanged_or_404(
-            db, job_id=job_id, job_url=job_url, job_owner_id=job_owner_id,
-            owner_token_key=owner_token_key,
-        )
-        db.commit()
+        # Anything raised here leaves the route unhandled; detached_from
+        # keeps `e` (provider text, model output) out of its traceback.
+        with detached_from(e):
+            db.add(failed_analysis)
+            try:
+                _verify_job_unchanged_or_404(
+                    db, job_id=job_id, job_url=job_url, job_owner_id=job_owner_id,
+                    owner_token_key=owner_token_key,
+                )
+                db.commit()
+            except HTTPException:
+                # The job 404; the check already rolled back.
+                raise
+            except Exception:
+                # The check flushed, so this connection may hold SQLite's
+                # write lock; never leave it held, or the guard release in
+                # `finally` (its own connection) would block on it.
+                db.rollback()
+                raise
 
+        # `from None`: analyze-missing's loop handles this, and a failure
+        # there (its rollback) must not print `e` in a server traceback.
         raise HTTPException(
             status_code=500,
             detail={
                 "error_code": "ERR_JOB_ANALYSIS_FAILED",
                 "message": "Job analysis failed.",
                 "job_id": job_id,
-                "error": str(e)
+                "error": safe_error
             }
-        )
+        ) from None
 
     finally:
         # Single guaranteed release point, covering every post-acquisition
@@ -1735,7 +1756,7 @@ def analyze_missing_jobs(
                     "title": job.title,
                     "company_name": job.company_name,
                     "status": "failed",
-                    "error": str(e)
+                    "error": safe_analysis_error_message(e)
                 })
         else:
             # Reached only if the loop completed without `break` --
@@ -2008,14 +2029,13 @@ Rules:
                 try:
                     analysis = json.loads(raw_text)
                 except json.JSONDecodeError:
-                    # Existing dedicated shape, unchanged, including raw_response.
+                    # Dedicated shape, without the raw model output.
                     raise HTTPException(
                         status_code=500,
                         detail={
                             "error_code": "ERR_AI_INVALID_JSON",
                             "message": "AI response was not valid JSON.",
                             "job_id": job.job_id,
-                            "raw_response": raw_text
                         }
                     )
 
@@ -2044,7 +2064,7 @@ Rules:
                         "message": "Job analysis failed.",
                         "job_id": job.job_id,
                     }
-                )
+                ) from None
 
             finally:
                 try:

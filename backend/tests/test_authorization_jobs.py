@@ -1176,7 +1176,11 @@ class BatchGuardRouteTests(_BaseJobsAuthorizationTestCase):
         self.assertEqual(response.status_code, 500)
         detail = response.json()["detail"]
         self.assertEqual(detail["error_code"], "ERR_AI_INVALID_JSON")
-        self.assertIn("raw_response", detail)  # existing shape, unchanged
+        self.assertEqual(detail["message"], "AI response was not valid JSON.")
+        self.assertEqual(detail["job_id"], job_id)
+        # The raw model output is no longer echoed.
+        self.assertNotIn("raw_response", detail)
+        self.assertNotIn("not valid json{{{", response.text)
 
 
 class JobConcurrencyTests(_BaseJobsAuthorizationTestCase):
