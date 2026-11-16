@@ -427,19 +427,25 @@ class AnalysisGuard(Base):
 
 
 class AnalysisQuotaReservation(Base):
-    """One counted attempt of a rolling per-user quota; never refunded.
-    Three quotas share this table, each counted per (operation_type,
-    user_id), so they are independent of each other:
+    """One counted attempt of a rolling quota; never refunded. The quotas
+    sharing this table are each counted per (operation_type, user_id), so
+    they are independent of each other:
     - job_analysis_user: owner manual job analysis;
     - profile_analysis_user: non-admin profile analysis;
-    - cover_letter_user: cover letter generation.
-    The first two are inserted by backend/app/analysis_guard.py inside its
-    guard transaction, right before the paid call. cover_letter_user rows
-    are inserted by backend/app/cover_letter.py (acquire_generation), in
-    the route's own session, in the same transaction as its per-user
-    lease. reserved_at is Unix epoch seconds (Float), like AnalysisGuard.
-    No foreign keys (like analysis_guards); job_id is for auditing only and
-    is NULL except for job_analysis_user.
+    - cover_letter_user: cover letter generation by a non-admin;
+    - provider_call_global: every paid provider call triggered by a
+      non-admin (profile, job, cover letter), system-wide, stored under
+      the sentinel user_id 0 (analysis_guard.PROVIDER_CALL_GLOBAL_USER_ID,
+      not a user), so users.delete_user never deletes these rows;
+    - provider_call_admin: record only, never refused: one row per paid
+      provider call triggered by an admin, under the admin's user_id.
+    Rows are inserted by backend/app/analysis_guard.py inside its guard
+    transaction, right before the paid call, or by
+    backend/app/cover_letter.py (acquire_generation) in the route's own
+    session, in the same transaction as its per-user lease. reserved_at is
+    Unix epoch seconds (Float), like AnalysisGuard. No foreign keys (like
+    analysis_guards); job_id is for auditing only and is NULL except for
+    job_analysis_user and the provider_call_* rows of job analyses.
     Existing databases get this table via
     backend/migrations/phase8_analysis_quota_reservations.py or via the
     Base.metadata.create_all call at app startup (backend/app/main.py).

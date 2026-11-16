@@ -397,9 +397,13 @@ class SingleAnalyzeSpendLimitTests(_BaseSpendLimitTestCase):
                     self._guard_row(JOB_OPERATION_TYPE, job_id),
                     JOB_FAILURE_COOLDOWN, before, after,
                 )
-                # Admins take no per-user resource and no quota slot.
+                # Admins take no per-user resource and no quota slot; since
+                # W17 each admin provider call (also a failed one) leaves
+                # one record-only provider_call_admin row.
                 self.assertIsNone(self._guard_row(JOB_USER_OPERATION_TYPE, admin_id))
-                self.assertEqual(self._reservations(admin_id), [])
+                admin_rows = self._reservations(admin_id)
+                self.assertEqual({row[1] for row in admin_rows}, {"provider_call_admin"})
+                self.assertEqual((admin_rows[-1][2], admin_rows[-1][3]), (admin_id, job_id))
 
                 self._assert_no_sentinel_logged(logs.records, sentinel)
 

@@ -10,7 +10,12 @@ computed here, not by the model, and shown to the user with the facts.
 Cost control: one generation per user at a time (a lease row in
 analysis_guards) and a rolling per-user quota counted in
 analysis_quota_reservations, reserved before the provider call and never
-refunded -- the same pattern as owner job analysis.
+refunded -- the same pattern as owner job analysis. A non-admin requester
+also takes one slot of the system-wide provider-call quota
+(analysis_guard.ProviderCallAccounting) in the same transaction. An admin
+requester (acting on any user's letter) is exempt from both: the letter
+owner's per-user quota is not touched, and one record-only row is written
+under the admin's id instead.
 """
 from __future__ import annotations
 
@@ -25,6 +30,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import models, schemas
+from .analysis_guard import ProviderCallAccounting, reserve_provider_call_slot
 from .analysis_contract import (
     JOB_ANALYSIS_MODEL,
     JOB_ANALYSIS_PROMPT_VERSION,
@@ -54,6 +60,15 @@ class LetterBusy(RuntimeError):
 class LetterQuotaExceeded(RuntimeError):
     def __init__(self, retry_after_seconds: int):
         super().__init__("Daily letter limit reached.")
+        self.retry_after_seconds = retry_after_seconds
+
+
+class LetterGlobalQuotaExceeded(RuntimeError):
+    """The system-wide provider-call quota is used up (not the user's own
+    letter limit); nothing was kept."""
+
+    def __init__(self, retry_after_seconds: int):
+        super().__init__("Global provider call limit reached.")
         self.retry_after_seconds = retry_after_seconds
 
 
@@ -243,9 +258,24 @@ def parse_output(raw_text: str, grounding: Grounding) -> schemas.CoverLetterStru
 
 # --- guard and quota -----------------------------------------------------------
 
-def acquire_generation(db: Session, user_id: int, now_epoch: float | None = None) -> str:
-    """Takes the per-user lease and reserves one quota slot, in one
-    transaction. Raises LetterBusy or LetterQuotaExceeded (nothing kept)."""
+def acquire_generation(
+    db: Session,
+    user_id: int,
+    now_epoch: float | None = None,
+    *,
+    provider_call: ProviderCallAccounting | None = None,
+) -> str:
+    """Takes the per-user lease (of the letter owner, user_id) and reserves
+    the quota slots, in one transaction. Raises LetterBusy,
+    LetterQuotaExceeded or LetterGlobalQuotaExceeded (nothing kept).
+
+    provider_call: None counts the owner's per-user letter quota only, as
+    before. The routes always pass the requester's accounting: a
+    non-admin requester then takes the per-user slot first and one global
+    slot second; an admin requester takes no per-user slot (the owner's
+    quota stays untouched) and leaves one admin record row instead. Both
+    reservations run after the lease write, so under SQLite's write lock,
+    and are committed together with the lease."""
     now_epoch = time.time() if now_epoch is None else now_epoch
     token = secrets.token_hex(16)
     try:
@@ -271,23 +301,29 @@ def acquire_generation(db: Session, user_id: int, now_epoch: float | None = None
             )
             if updated != 1:
                 raise LetterBusy("A letter is already being written.")
-        window_start = now_epoch - QUOTA_WINDOW_SECONDS
-        used = (
-            db.query(models.AnalysisQuotaReservation)
-            .filter(
-                models.AnalysisQuotaReservation.operation_type == OPERATION_TYPE,
-                models.AnalysisQuotaReservation.user_id == user_id,
-                models.AnalysisQuotaReservation.reserved_at > window_start,
+        if provider_call is None or not provider_call.requester_is_admin:
+            window_start = now_epoch - QUOTA_WINDOW_SECONDS
+            used = (
+                db.query(models.AnalysisQuotaReservation)
+                .filter(
+                    models.AnalysisQuotaReservation.operation_type == OPERATION_TYPE,
+                    models.AnalysisQuotaReservation.user_id == user_id,
+                    models.AnalysisQuotaReservation.reserved_at > window_start,
+                )
+                .order_by(models.AnalysisQuotaReservation.reserved_at.asc())
+                .all()
             )
-            .order_by(models.AnalysisQuotaReservation.reserved_at.asc())
-            .all()
-        )
-        if len(used) >= daily_limit():
-            retry_after = max(1, int(used[0].reserved_at - window_start) + 1)
-            raise LetterQuotaExceeded(retry_after)
-        db.add(models.AnalysisQuotaReservation(operation_type=OPERATION_TYPE, user_id=user_id, reserved_at=now_epoch))
+            if len(used) >= daily_limit():
+                retry_after = max(1, int(used[0].reserved_at - window_start) + 1)
+                raise LetterQuotaExceeded(retry_after)
+            db.add(models.AnalysisQuotaReservation(operation_type=OPERATION_TYPE, user_id=user_id, reserved_at=now_epoch))
+            db.flush()
+        if provider_call is not None:
+            global_retry_after = reserve_provider_call_slot(db, provider_call, now_epoch)
+            if global_retry_after is not None:
+                raise LetterGlobalQuotaExceeded(global_retry_after)
         db.commit()
-    except (LetterBusy, LetterQuotaExceeded):
+    except (LetterBusy, LetterQuotaExceeded, LetterGlobalQuotaExceeded):
         db.rollback()
         raise
     except IntegrityError:

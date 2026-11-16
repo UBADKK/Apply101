@@ -18,6 +18,11 @@ from sqlalchemy.orm import Session
 
 from ..app import cover_letter, models, schemas
 from ..app.analysis_contract import COVER_LETTER_MODEL, COVER_LETTER_PROMPT_VERSION
+from ..app.analysis_guard import (
+    AnalysisGuardConfigError,
+    ProviderCallAccounting,
+    load_provider_call_quota_config,
+)
 from ..app.auth_dependencies import get_current_user, get_owned_profile, require_user_access
 from ..app.database import get_db
 from ..app.job_visibility import visible_jobs_clause_for_owner
@@ -138,18 +143,48 @@ def _owned_letter(db: Session, user_id: int, letter_id: int) -> models.CoverLett
     return letter
 
 
-def _generate(db: Session, *, user_id: int, profile: models.CandidateProfile, job: models.Job, language: str) -> tuple[str, dict]:
-    """Runs one guarded, quota-counted generation; returns (text, grounding)."""
+def _generate(
+    db: Session,
+    *,
+    user_id: int,
+    profile: models.CandidateProfile,
+    job: models.Job,
+    language: str,
+    requester_user_id: int,
+    requester_is_admin: bool,
+) -> tuple[str, dict]:
+    """Runs one guarded, quota-counted generation; returns (text, grounding).
+
+    requester_*: who asked (current_user), not the letter owner (user_id).
+    A non-admin requester counts against the owner's (= their own) letter
+    quota and the system-wide provider-call quota; an admin requester
+    against neither (one admin record row instead)."""
     if client is None:
         raise _error(503, "ERR_COVER_LETTER_PROVIDER_NOT_CONFIGURED", ANALYSIS_SERVICE_NOT_CONFIGURED_DETAIL)
+    try:
+        provider_call = ProviderCallAccounting(
+            requester_user_id=requester_user_id,
+            requester_is_admin=requester_is_admin,
+            config=load_provider_call_quota_config(),
+        )
+    except AnalysisGuardConfigError:
+        raise _error(500, "ERR_COVER_LETTER_CONFIG", "Letter drafting is not correctly configured.") from None
     grounding = cover_letter.build_grounding(db, user_id=user_id, profile=profile, job=job)
     prompt = cover_letter.build_prompt(language, grounding)
     try:
-        token = cover_letter.acquire_generation(db, user_id)
+        token = cover_letter.acquire_generation(db, user_id, provider_call=provider_call)
     except cover_letter.LetterBusy:
         raise _error(409, "ERR_COVER_LETTER_IN_PROGRESS", "A letter is already being written. Wait for it to finish.")
     except cover_letter.LetterQuotaExceeded as exc:
         raise _error(429, "ERR_COVER_LETTER_QUOTA", "You reached the daily limit of letter drafts.", {"Retry-After": str(exc.retry_after_seconds)})
+    except cover_letter.LetterGlobalQuotaExceeded as exc:
+        # Not the user's own limit: the service-wide limit of AI calls.
+        raise _error(
+            429,
+            "ERR_COVER_LETTER_SERVICE_LIMIT",
+            "Letter drafting has reached its service-wide usage limit for now. Please try again later.",
+            {"Retry-After": str(exc.retry_after_seconds)},
+        )
     try:
         try:
             response = _create_cover_letter_response(prompt)
@@ -198,6 +233,8 @@ def create_letter(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # Plain values, captured before any commit can expire current_user.
+    requester_user_id, requester_is_admin = current_user.user_id, bool(current_user.is_admin)
     # The job must be visible to the profile owner (catalog or their own).
     job = (
         db.query(models.Job)
@@ -218,7 +255,10 @@ def create_letter(
             "letter_id": existing.letter_id,
         })
     job_title, job_company = job.title, job.company_name
-    text, grounding = _generate(db, user_id=user_id, profile=profile, job=job, language=payload.language)
+    text, grounding = _generate(
+        db, user_id=user_id, profile=profile, job=job, language=payload.language,
+        requester_user_id=requester_user_id, requester_is_admin=requester_is_admin,
+    )
     if db.query(models.CoverLetter.letter_id).filter(
         models.CoverLetter.user_id == user_id, models.CoverLetter.job_id == job_id, models.CoverLetter.language == payload.language
     ).first():
@@ -289,6 +329,8 @@ def regenerate_letter(
 ):
     """A new generated version from the current profile, CV and job. Every
     earlier version, edited ones included, is kept unchanged."""
+    # Plain values, captured before any commit can expire current_user.
+    requester_user_id, requester_is_admin = current_user.user_id, bool(current_user.is_admin)
     letter = _owned_letter(db, user_id, letter_id)
     profile = (
         db.query(models.CandidateProfile)
@@ -305,7 +347,10 @@ def regenerate_letter(
     if profile is None or job is None:
         raise _error(409, "ERR_COVER_LETTER_SOURCE_GONE", "The profile or the job of this letter no longer exists; it can be edited but not regenerated.")
     letter_id_value = letter.letter_id
-    text, grounding = _generate(db, user_id=user_id, profile=profile, job=job, language=letter.language)
+    text, grounding = _generate(
+        db, user_id=user_id, profile=profile, job=job, language=letter.language,
+        requester_user_id=requester_user_id, requester_is_admin=requester_is_admin,
+    )
     letter = _owned_letter(db, user_id, letter_id_value)
     now = cover_letter.utc_now()
     version = models.CoverLetterVersion(

@@ -16,7 +16,9 @@ from ..app.config import upload_dir as configured_upload_dir
 from ..app.analysis_guard import (
     AcquireOutcome,
     AnalysisGuardConfigError,
+    ProviderCallAccounting,
     load_config as load_analysis_guard_config,
+    load_provider_call_quota_config,
     release_profile_analysis_guard,
     try_acquire_profile_analysis_guard,
 )
@@ -536,6 +538,12 @@ def analyze_profile(
     # and an admin's analysis of a user's profile never uses up that
     # user's quota.
     count_user_quota = not current_user.is_admin
+    # The requester (not the profile owner) is what the system-wide
+    # provider-call quota counts: a non-admin takes a global slot, an admin
+    # only leaves a record row under their own id (see
+    # analysis_guard.ProviderCallAccounting).
+    requester_user_id = current_user.user_id
+    requester_is_admin = bool(current_user.is_admin)
 
     # Still queried directly (not just implied by get_owned_profile): the
     # analysis prompt below needs this user's own data, which matters in
@@ -614,6 +622,11 @@ def analyze_profile(
     # and never creates a failed-analysis row.
     try:
         analysis_guard_config = load_analysis_guard_config()
+        provider_call = ProviderCallAccounting(
+            requester_user_id=requester_user_id,
+            requester_is_admin=requester_is_admin,
+            config=load_provider_call_quota_config(),
+        )
     except AnalysisGuardConfigError:
         raise HTTPException(
             status_code=500,
@@ -731,6 +744,9 @@ CV text:
     # count_user_quota (non-admin callers only, see above): a granted
     # acquisition also reserves one slot of the owner's rolling profile
     # analysis quota in the same guard transaction; never refunded.
+    # provider_call: then one global slot (non-admin) or one admin record
+    # row, in the same transaction; a used-up global quota is the same
+    # QUOTA_EXCEEDED as the per-user one.
     guard_acquire_result = try_acquire_profile_analysis_guard(
         db,
         profile_id=owner_identity.profile_id,
@@ -738,6 +754,7 @@ CV text:
         config=analysis_guard_config,
         precondition=lambda guard_db: profile_owner_unchanged(guard_db, owner_identity),
         count_user_quota=count_user_quota,
+        provider_call=provider_call,
     )
 
     if guard_acquire_result.outcome is AcquireOutcome.TARGET_CHANGED:
@@ -751,7 +768,8 @@ CV text:
         )
 
     # QUOTA_EXCEEDED: only a non-admin caller (count_user_quota) has a
-    # rolling quota; same response as a cooldown, nothing was acquired.
+    # rolling per-user or global quota; same response as a cooldown,
+    # nothing was acquired.
     if guard_acquire_result.outcome in (
         AcquireOutcome.COOLDOWN_ACTIVE,
         AcquireOutcome.QUOTA_EXCEEDED,

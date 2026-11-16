@@ -46,6 +46,8 @@ from backend.app.analysis_guard import (
     AnalysisGuardConfigError,
     JOB_USER_OPERATION_TYPE,
     PROFILE_OPERATION_TYPE,
+    PROVIDER_CALL_ADMIN_OPERATION_TYPE,
+    PROVIDER_CALL_GLOBAL_OPERATION_TYPE,
     USER_OPERATION_TYPE,
     load_config,
     load_job_analysis_config,
@@ -803,6 +805,19 @@ class ProfileRouteQuotaTests(_BaseProfileQuotaTestCase):
 
 
 class ProfileQuotaAdminExemptionTests(_BaseProfileQuotaTestCase):
+    # Admin calls are not counted against any quota, but since the global
+    # provider-call quota (W17) each one leaves exactly one record-only
+    # PROVIDER_CALL_ADMIN_OPERATION_TYPE row under the admin's id.
+
+    def _quota_rows(self):
+        return [row for row in self._reservations()
+                if row.operation_type != PROVIDER_CALL_ADMIN_OPERATION_TYPE]
+
+    def _admin_records(self):
+        return [(row.operation_type, row.user_id, row.job_id)
+                for row in self._reservations()
+                if row.operation_type == PROVIDER_CALL_ADMIN_OPERATION_TYPE]
+
     def setUp(self):
         super().setUp()
         self.admin_id = self._create_user("profile.quota.admin@example.com", is_admin=True)
@@ -817,12 +832,15 @@ class ProfileQuotaAdminExemptionTests(_BaseProfileQuotaTestCase):
         self._assert_quota_429(self.owner_id, self.profile_id)
 
         self._post_ok(self.owner_id, self.profile_id, headers=self.admin_headers)
-        self.assertEqual(self._reservations(), self.full_quota)
+        self.assertEqual(self._quota_rows(), self.full_quota)
+        self.assertEqual(
+            self._admin_records(), [(PROVIDER_CALL_ADMIN_OPERATION_TYPE, self.admin_id, None)]
+        )
         self._clear_cooldowns()
 
         # The owner is still blocked afterwards.
         self.assertGreater(self._assert_quota_429(self.owner_id, self.profile_id, force=True), 600)
-        self.assertEqual(self._reservations(), self.full_quota)
+        self.assertEqual(self._quota_rows(), self.full_quota)
 
     def test_admin_own_profile_analyses_are_not_counted(self):
         admin_profile = self._create_profile(self.admin_id)
@@ -836,8 +854,9 @@ class ProfileQuotaAdminExemptionTests(_BaseProfileQuotaTestCase):
         self.assertEqual(mock_acquire.call_count, DEFAULT_MAX_ATTEMPTS + 1)
         for call in mock_acquire.call_args_list:
             self.assertIs(call.kwargs["count_user_quota"], False)
-        self.assertEqual(self._reservations(self.admin_id), [])
-        self.assertEqual(self._reservations(), self.full_quota)
+        self.assertEqual(self._reservations(self.admin_id, USER_OPERATION_TYPE), [])
+        self.assertEqual(self._quota_rows(), self.full_quota)
+        self.assertEqual(len(self._admin_records()), DEFAULT_MAX_ATTEMPTS + 1)
         self._assert_quota_429(self.owner_id, self.profile_id)
 
 
@@ -1009,7 +1028,12 @@ class ProfileQuotaReservationLockTests(_BaseProfileQuotaTestCase):
             outcomes,
             {"insert": "locked", "competing_acquire": AcquireOutcome.BACKEND_UNAVAILABLE},
         )
-        mock_reserve.assert_called_once()
+        # The per-user spec (probed above), then the global provider-call
+        # spec (W17), both in the same guard transaction.
+        self.assertEqual(
+            [call.args[1].operation_type for call in mock_reserve.call_args_list],
+            [USER_OPERATION_TYPE, PROVIDER_CALL_GLOBAL_OPERATION_TYPE],
+        )
         self.assertEqual(response.status_code, 200, response.text)
         mock_openai.assert_called_once()
         self.assertEqual(self._count(self.owner_id), 10)
@@ -1022,8 +1046,10 @@ class ProfileQuotaReservationLockTests(_BaseProfileQuotaTestCase):
 
 class ProfileQuotaMissingTableTests(_BaseProfileQuotaTestCase):
     """Without analysis_quota_reservations (neither migration phase8 nor
-    create_all ran), a counted profile analysis fails closed with 503
-    before any provider call; admins, who are not counted, are unaffected."""
+    create_all ran), every profile analysis fails closed with 503 before
+    any provider call: non-admins cannot reserve their quota slots, and
+    admins (not counted, but recorded since the global provider-call quota,
+    W17) cannot write their record row."""
 
     def _state_without_quota_table(self):
         return {
@@ -1031,7 +1057,7 @@ class ProfileQuotaMissingTableTests(_BaseProfileQuotaTestCase):
             "analysis_guards": self._rows("analysis_guards", "operation_type, resource_id"),
         }
 
-    def test_missing_quota_table_fails_closed_for_non_admins_only(self):
+    def test_missing_quota_table_fails_closed_for_non_admins_and_admins(self):
         owner_id = self._create_user("profile.quota.notable.owner@example.com")
         profile_id = self._create_profile(owner_id)
         admin_id = self._create_user("profile.quota.notable.admin@example.com", is_admin=True)
@@ -1045,11 +1071,11 @@ class ProfileQuotaMissingTableTests(_BaseProfileQuotaTestCase):
         mock_openai.assert_not_called()
         self.assertEqual(self._state_without_quota_table(), before)
 
-        self._post_ok(owner_id, profile_id, headers=self._headers(admin_id))
-        rows = self._rows("profile_analysis", "analysis_id")
-        self.assertEqual(
-            [(row.profile_id, row.analysis_status) for row in rows], [(profile_id, "completed")]
-        )
+        response, mock_openai = self._post(owner_id, profile_id, headers=self._headers(admin_id))
+        self.assertEqual(response.status_code, 503, response.text)
+        self.assertEqual(response.json(), SERVICE_UNAVAILABLE_BODY)
+        mock_openai.assert_not_called()
+        self.assertEqual(self._state_without_quota_table(), before)
 
 
 # ---------------------------------------------------------------------------
