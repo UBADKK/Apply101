@@ -248,6 +248,10 @@ p {
   max-width: 480px;
 }
 
+.page-reading {
+  max-width: 760px;
+}
+
 .page-header {
   display: flex;
   flex-wrap: wrap;
@@ -273,6 +277,25 @@ p {
   color: var(--color-muted);
   font-size: 0.85rem;
   padding: 1.5rem 1rem;
+}
+
+/* AI data notice: inline notes before paid actions and the notice page */
+
+.ai-note {
+  color: var(--color-muted);
+  margin: 0.5rem 0 0.75rem;
+  max-width: 46rem;
+  overflow-wrap: anywhere;
+}
+
+.prose ul {
+  margin: 0 0 0.75rem;
+  padding-left: 1.25rem;
+}
+
+.prose li {
+  margin-bottom: 0.35rem;
+  overflow-wrap: anywhere;
 }
 
 /* Cards */

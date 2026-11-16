@@ -2,6 +2,8 @@ import { BrowserRouter, Route, Routes, useParams } from 'react-router-dom';
 import { AuthProvider } from './auth/AuthContext';
 import { PublicOnly, RequireAuth } from './auth/RequireAuth';
 import { Layout, PublicLayout } from './components/Layout';
+import { ProviderModeProvider } from './hooks/useProviderMode';
+import { AiDataPage } from './pages/AiDataPage';
 import { CatalogPage } from './pages/CatalogPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { JobDetailPage } from './pages/JobDetailPage';
@@ -24,7 +26,19 @@ function JobDetailRoute() {
 
 export function AppRoutes() {
   return (
+    <ProviderModeProvider>
+      <AppRouteTable />
+    </ProviderModeProvider>
+  );
+}
+
+function AppRouteTable() {
+  return (
     <Routes>
+      {/* Public whether signed in or not: linked from sign-up and every footer. */}
+      <Route element={<PublicLayout wide />}>
+        <Route path="/ai-data" element={<AiDataPage />} />
+      </Route>
       <Route
         element={
           <PublicOnly>

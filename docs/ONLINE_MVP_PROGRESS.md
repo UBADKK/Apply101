@@ -37,6 +37,34 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 | W15 | Safe provider errors | in review | Profile analysis, job analysis (single, `analyze-missing`, `analyze-sample`) and cover letters never return, store or log SDK error text or raw model output: fixed messages from `openai_client.safe_analysis_error_message`, `raw_response` removed from the two invalid-JSON details. Profile analysis answers an exhausted spend limit with 503 `ERR_PROFILE_ANALYSIS_PROVIDER_UNAVAILABLE` and writes no failed row. Older failed rows keep their old text (not exposed by the API) |
 | W16 | Per-user quota for profile analysis | in review | `POST /users/{user_id}/profiles/{profile_id}/analyze`: 10 counted analyses per rolling 24 h per user, shared by all of the user's profiles (`PROFILE_ANALYSIS_USER_QUOTA_MAX_ATTEMPTS`, `PROFILE_ANALYSIS_USER_QUOTA_WINDOW_SECONDS`); 429 "Too many requests" with Retry-After when used up. Reuses the job-analysis reservation table (no migration) with its own, separate count. Counted when the guard is granted, never refunded (also on provider errors); cached results, rejected requests and admins are not counted. Covers W3; D3 (the budget and the limit values) stays open |
 | W17 | Global quota of paid provider calls | in review | Every paid provider call (profile analysis, job analysis, cover letter create and regenerate) triggered by a non-admin takes one slot of a system-wide rolling quota: 100 per 24 h (`PROVIDER_CALL_GLOBAL_QUOTA_MAX_ATTEMPTS`, `PROVIDER_CALL_GLOBAL_QUOTA_WINDOW_SECONDS`), checked after the per-user quota in the same guard/lease transaction, never refunded (also on provider errors). Used up: profile and job answer the same 429 "Too many requests" with Retry-After; cover letters answer 429 `ERR_COVER_LETTER_SERVICE_LIMIT` with Retry-After. Cached results and rejected requests are not counted. Admins are never limited, also not by the per-user cover letter quota (owner decision; before, an admin's letter used the owner's quota); each admin call, including every call of `analyze-missing` and `analyze-sample`, leaves one `provider_call_admin` row. Reuses `analysis_quota_reservations` (no migration); global rows have `user_id` 0, so deleting an account never refunds them. Report: `backend/scripts/provider_call_usage.py` (read-only). **Not a spending limit**, see "API facts" |
+| W18 | AI data disclosure in the web client | in review | Informational only, before the switch to the real provider: public page `/ai-data` ("How Apply101 uses AI": OpenAI via its API; only on profile analysis, job analysis and letter create/regenerate, also when an admin starts them; the data each of these sends; why; what Apply101 keeps, without a retention period; limits), a short note next to each of these four actions, a link on the register page and in every footer. The provider mode comes from one `GET /meta` request per app load (`frontend/src/hooks/useProviderMode.tsx`), shared with the demo banner: `fake` shows "Demo mode: nothing is sent to an AI provider."; `openai` names OpenAI; while the answer is pending the notes name no provider ("AI data use: How Apply101 uses AI") and the page describes the real provider conditionally; a failed request (not retried) or an unknown or inconsistent answer shows the notes in "may send" wording and no demo text. The register page no longer says the data "stays private". No consent step, no consent records, no API, prompt or schema change. Drift guard: `backend/tests/test_ai_data_disclosure.py`. D6 stays open, see "Open questions before the real provider" |
+
+## Open questions before the real provider (for the owner and legal counsel)
+
+W18 only informs users. These points are open; none of them is decided
+by the notice, and OpenAI's terms are to be checked, not assumed.
+- **Legal basis:** on which legal basis CV and profile data are sent to
+  OpenAI, and whether the user's consent is needed for it.
+- **Special-category data:** CVs can contain health data, religion,
+  nationality, a photo or similar; how this is handled.
+- **International transfer and OpenAI's API terms:** where the data is
+  processed; the API data terms and a data processing agreement (DPA);
+  OpenAI's retention, abuse monitoring and use for training. To be
+  verified in OpenAI's current documents.
+- **Apply101's own retention:** how long CV files, CV text, analyses,
+  letters and quota rows are kept, and what account deletion removes
+  (W7: CV files are not removed on account deletion today).
+- **Data minimisation:** the profile-analysis prompt sends the user's name
+  and email, which matching may not need. Removing them is a prompt change
+  with a version bump, out of scope for W18.
+- **Admin access:** administrators can read user data and start profile
+  analyses, job analyses and letters for any user; who is an administrator
+  and how this is disclosed.
+- **Controller and user rights:** who the controller is, a contact
+  address or imprint, and how users exercise access, correction and
+  deletion rights.
+- **Consent step:** whether a recorded consent step (with stored consent
+  records) is needed before the first paid action or at sign-up.
 
 ## Acceptance criteria
 
@@ -490,6 +518,35 @@ that an interrupted session can resume.
   second job within 60 seconds returns 429 with `Retry-After`.
 
 ## Log
+
+### 2026-11-17: W18 AI data disclosure
+- **Checked in the code:** only four functions call the provider
+  (`profiles._create_profile_analysis_response`,
+  `jobs._create_job_analysis_response`,
+  `jobs._create_job_sample_analysis_response`,
+  `cover_letters._create_cover_letter_response`). CV upload, matching,
+  recommendations, browse, register and login call no AI; the web client
+  starts a paid action only on a click (profile analyze, job analyze,
+  letter write and regenerate).
+- **What is sent:** profile analysis sends name, email, the user record
+  fields, the profile, languages, self description and the first 12,000
+  characters of the CV text; job analysis only the posting (first 12,000
+  characters of the description); a letter sends profile facts, the
+  analysis skills, languages, the first 4,000 characters of the CV text,
+  the posting and, for job-pool postings only, the company record.
+- **Web client:** page `/ai-data`, inline notes, register page link and
+  footer links; one `/meta` request per app load for the banner and the
+  notes. The register page claim "stay private to your account" was
+  replaced: other users do not see profile, CV, matches or letters,
+  administrators can.
+- **Tests:** Vitest `src/pages/aiData.flow.test.tsx` (modes, single
+  `/meta` request, links, register flow, page content and a list of
+  forbidden guarantees); backend drift guard
+  `backend.tests.test_ai_data_disclosure` (prompt data labels of profile
+  analysis, job analysis and the admin `analyze-sample`, and letter fact
+  ids). The e2e flow asserts the demo note on the profile page.
+- **Open:** D6 and the questions in "Open questions before the real
+  provider".
 
 ### 2026-10-28: why the EU Greenhouse API host fails
 One investigation, no retries in a loop. The project owner confirmed that

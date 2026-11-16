@@ -4,6 +4,7 @@ import { api } from '../api/endpoints';
 import type { CoverLetter, LetterLanguage, LetterVersion } from '../api/types';
 import { useAction } from '../hooks/useAction';
 import { useResource } from '../hooks/useResource';
+import { AiDataNote } from './AiDataNote';
 import { Alert } from './Alert';
 import { ErrorAlert } from './ErrorAlert';
 import { formatDateTime } from './labels';
@@ -120,6 +121,7 @@ function LetterEditor({ userId, letter, onChange }: { userId: number; letter: Co
         <textarea id={`letter-${letter.letter_id}`} rows={16} value={text} maxLength={8000} onChange={(event) => setText(event.target.value)} />
         <p className="field-hint">Replace every [placeholder] with your own example or remove it before sending.</p>
       </div>
+      <AiDataNote action="letter-regenerate" />
       <div className="form-actions">
         <button type="button" className="button button-primary" onClick={() => void save.run()} disabled={!dirty || !text.trim() || save.pending}>
           {save.pending ? 'Saving…' : 'Save as new version'}
@@ -188,6 +190,7 @@ export function CoverLetterPanel({ userId, profileId, jobId }: { userId: number;
         facts and to leave [placeholders] for anything missing; still, check every sentence before you send it.
       </p>
       {letters.error !== null && <ErrorAlert error={letters.error} />}
+      {profileId !== null && <AiDataNote action="letter-create" />}
       {profileId === null ? (
         <p>Create your profile first to write a letter.</p>
       ) : (
