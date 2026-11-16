@@ -33,6 +33,7 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 | W11 | Phase 2: catalog browse and "Jobs for me" (backend and web client) | in review | `GET /catalog/jobs`, `GET /catalog/filters`, `GET /users/{id}/profiles/{id}/recommendations`; screens `/catalog`, `/for-you` |
 | W12 | Phase 2: URL import (ATS APIs, JobPosting JSON-LD, SSRF protections) | in review | `POST /jobs/import/preview`, plus the import box on `/jobs/new`. Live: Greenhouse, Lever and Ashby links and the JSON-LD parsing of real Arbeitnow pages; the pinned fetch itself needs an environment without a proxy |
 | W13 | Phase 3: motivation letters (TR/EN/DE, versions, quota, fake provider) | in review | `backend/routers/cover_letters.py`, `backend/app/cover_letter.py`, migration `phase10_cover_letters`, panel on the job page and `/letters`. Checked with the fake provider only, which is a template: the real model's writing quality is not checked |
+| W14 | Retire fake analyses when switching to the real provider | in review | `backend/scripts/retire_fake_analyses.py`; dry run by default, `--yes` to apply; must be run (again) right after switching the provider; not run on Lightsail yet |
 
 ## Acceptance criteria
 
