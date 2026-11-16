@@ -4,6 +4,7 @@ import { isApiError } from '../api/client';
 import { api } from '../api/endpoints';
 import type { AnalyzedJob, MatchData } from '../api/types';
 import { useCurrentUser } from '../auth/AuthContext';
+import { AiDataNote } from '../components/AiDataNote';
 import { Alert } from '../components/Alert';
 import { CoverLetterPanel } from '../components/CoverLetterPanel';
 import { EmptyState } from '../components/EmptyState';
@@ -251,6 +252,7 @@ export function JobDetailPage() {
             ) : (
               <ErrorAlert error={analyze.error} cooldownSeconds={analyze.cooldownSeconds} />
             )}
+            <AiDataNote action="job-analysis" />
             <button
               type="button"
               className="button button-primary"

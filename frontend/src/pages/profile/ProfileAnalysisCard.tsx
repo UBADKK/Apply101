@@ -1,4 +1,5 @@
 import type { AnalyzedProfile } from '../../api/types';
+import { AiDataNote } from '../../components/AiDataNote';
 import { Alert } from '../../components/Alert';
 import { ErrorAlert } from '../../components/ErrorAlert';
 import { formatDateTime, workAuthorizationLabel } from '../../components/labels';
@@ -75,6 +76,7 @@ export function ProfileAnalysisCard({ analysis, stale, hasCv, onAnalyze, pending
         </div>
       )}
       <ErrorAlert error={error} cooldownSeconds={cooldownSeconds} />
+      <AiDataNote action="profile-analysis" />
       <button type="button" className="button button-primary" onClick={onAnalyze} disabled={disabled} aria-busy={pending}>
         {label}
       </button>

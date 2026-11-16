@@ -107,7 +107,9 @@ test.describe.serial('Apply101 web client', () => {
     await page.getByRole('button', { name: 'Upload CV' }).click();
     await expect(page.getByText(/demo_cv\.pdf: \d+ characters of text extracted\./)).toBeVisible();
 
-    // Profile analysis (fake provider).
+    // Profile analysis (fake provider): the AI data note says nothing is sent.
+    await expect(page.getByText('Demo mode: nothing is sent to an AI provider.')).toBeVisible();
+    await expect(page.getByText(/OpenAI/)).toHaveCount(0);
     await page.getByRole('button', { name: 'Analyze profile' }).click();
     await expect(page.getByText(/Fake demo analysis/)).toBeVisible();
     await expect(page.getByRole('button', { name: 'Re-run analysis' })).toBeVisible();

@@ -1,5 +1,6 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
+import { AiDataLink } from './AiDataNote';
 import { DemoBanner } from './DemoBanner';
 
 const NAV_ITEMS = [
@@ -59,20 +60,22 @@ export function Layout() {
       <main className="page" id="main">
         <Outlet />
       </main>
-      <footer className="app-footer">Apply101 · match your profile against job postings with reasons you can check</footer>
+      <footer className="app-footer">
+        Apply101 · match your profile against job postings with reasons you can check · <AiDataLink />
+      </footer>
     </div>
   );
 }
 
-/** Frame for the login and register pages. */
-export function PublicLayout() {
+/** Frame for the login and register pages; `wide` for the public notice pages. */
+export function PublicLayout({ wide = false }: { wide?: boolean }) {
   return (
     <div className="app-shell public-shell">
       <a className="skip-link" href="#main">
         Skip to content
       </a>
       <DemoBanner />
-      <main className="page page-narrow" id="main">
+      <main className={wide ? 'page page-reading' : 'page page-narrow'} id="main">
         <div className="public-brand">
           <span className="brand-mark" aria-hidden="true">
             A
@@ -81,6 +84,9 @@ export function PublicLayout() {
         </div>
         <Outlet />
       </main>
+      <footer className="app-footer">
+        <AiDataLink />
+      </footer>
     </div>
   );
 }

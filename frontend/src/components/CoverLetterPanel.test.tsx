@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import type { CoverLetter } from '../api/types';
 import { callsTo, installFakeFetch } from '../test/fakeFetch';
@@ -40,7 +41,7 @@ describe('motivation letter panel', () => {
       },
     });
     const user = userEvent.setup();
-    render(<CoverLetterPanel userId={1} profileId={1} jobId={7} />);
+    render(<CoverLetterPanel userId={1} profileId={1} jobId={7} />, { wrapper: MemoryRouter });
     await screen.findByRole('button', { name: 'Write a draft' });
     expect(callsTo(fetchMock, 'POST /users/1/profiles/1/jobs/7/cover-letters')).toBe(0);
     await user.selectOptions(screen.getByLabelText('Language'), 'de');
@@ -65,7 +66,7 @@ describe('motivation letter panel', () => {
       'POST /users/1/cover-letters/4/regenerate': { body: letter() },
     });
     const user = userEvent.setup();
-    render(<CoverLetterPanel userId={1} profileId={1} jobId={7} />);
+    render(<CoverLetterPanel userId={1} profileId={1} jobId={7} />, { wrapper: MemoryRouter });
     const editor = await screen.findByLabelText(/Letter \(English/);
     await user.clear(editor);
     await user.type(editor, 'My own words.');
@@ -89,7 +90,7 @@ describe('motivation letter panel', () => {
       },
     });
     const user = userEvent.setup();
-    render(<CoverLetterPanel userId={1} profileId={1} jobId={7} />);
+    render(<CoverLetterPanel userId={1} profileId={1} jobId={7} />, { wrapper: MemoryRouter });
     await user.click(await screen.findByRole('button', { name: 'Write a draft' }));
     expect(await screen.findByText(/try again in 3600 seconds/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Write a draft' })).toBeDisabled();

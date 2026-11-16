@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { isApiError } from '../api/client';
+import { AiDataNote } from '../components/AiDataNote';
 import { ErrorAlert } from '../components/ErrorAlert';
 import { TextField } from '../components/fields';
 import { PageHeader } from '../components/PageHeader';
@@ -42,7 +43,10 @@ export function RegisterPage() {
 
   return (
     <div className="card auth-card">
-      <PageHeader title="Create an account" description="Your profile, jobs and matches stay private to your account." />
+      <PageHeader
+        title="Create an account"
+        description="Other users do not see your profile, CV, matches or letters. Apply101 administrators can access them."
+      />
       <ErrorAlert error={action.error} cooldownSeconds={action.cooldownSeconds} />
       <form onSubmit={handleSubmit} noValidate aria-busy={action.pending}>
         <TextField label="Name" name="name" autoComplete="name" required value={name} onChange={setName} error={errors.name ?? serverErrors.name} />
@@ -80,6 +84,7 @@ export function RegisterPage() {
         <button type="submit" className="button button-primary button-block" disabled={action.pending || action.cooldownSeconds > 0}>
           {action.pending ? 'Creating account…' : 'Create account'}
         </button>
+        <AiDataNote action="account" />
       </form>
       <p className="auth-switch">
         Already registered? <Link to="/login">Log in</Link>
