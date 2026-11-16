@@ -103,13 +103,19 @@ class GenericCoreCompatibilityTests(unittest.TestCase):
         release_params = list(inspect.signature(release_profile_analysis_guard).parameters)
         # precondition: keyword-only, default None (profile guard identity
         # re-check); count_user_quota: keyword-only, default False (rolling
-        # per-user profile analysis quota). Every existing call site is
-        # unchanged.
+        # per-user profile analysis quota); provider_call: keyword-only,
+        # default None (global provider-call quota, W17). Every existing
+        # call site is unchanged.
         self.assertEqual(
             acquire_params,
             ["db", "profile_id", "owner_user_id", "config", "clock", "precondition",
-             "count_user_quota"],
+             "count_user_quota", "provider_call"],
         )
+        provider_call_param = inspect.signature(try_acquire_profile_analysis_guard).parameters[
+            "provider_call"
+        ]
+        self.assertIs(provider_call_param.kind, inspect.Parameter.KEYWORD_ONLY)
+        self.assertIsNone(provider_call_param.default)
         count_param = inspect.signature(try_acquire_profile_analysis_guard).parameters[
             "count_user_quota"
         ]

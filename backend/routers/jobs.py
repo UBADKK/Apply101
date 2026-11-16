@@ -17,9 +17,11 @@ from ..app import models, schemas
 from ..app.analysis_guard import (
     AcquireOutcome,
     AnalysisGuardConfigError,
+    ProviderCallAccounting,
     RenewOutcome,
     load_job_analysis_batch_config,
     load_job_analysis_config,
+    load_provider_call_quota_config,
     release_job_analysis_guard,
     release_job_batch_guard,
     renew_job_batch_guard,
@@ -997,8 +999,11 @@ def _analyze_job_impl(
     job_id: int,
     force_reanalyze: bool,
     db: Session,
+    requester_user_id: int,
+    requester_is_admin: bool,
     job_config=None,
     restrict_to_owner: JobRequesterIdentity | None = None,
+    provider_call_config=None,
 ):
     """Business logic for analyzing a single job. No Depends(), no
     authentication -- callers (the single-analyze route and the
@@ -1009,6 +1014,14 @@ def _analyze_job_impl(
     callers load it once and pass it down (avoiding N redundant env reads
     across a large batch); the single-job route leaves this as None so
     _analyze_job_impl loads its own, exactly once per request, as before.
+
+    requester_user_id / requester_is_admin: who triggered this call (the
+    current user or the batch's admin), as plain values captured before
+    any commit. A granted guard also takes one slot of the system-wide
+    provider-call quota for a non-admin, or records one admin row (see
+    analysis_guard.ProviderCallAccounting). provider_call_config is the
+    already-loaded global quota config (batch callers), or None to load it
+    here together with job_config.
 
     restrict_to_owner: None (admins, the batch route) analyzes any job, as
     before. A JobRequesterIdentity (a non-admin caller) only matches a job
@@ -1116,6 +1129,15 @@ def _analyze_job_impl(
     # route leaves job_config=None so one fresh copy is loaded here.
     try:
         config = job_config if job_config is not None else load_job_analysis_config()
+        provider_call = ProviderCallAccounting(
+            requester_user_id=requester_user_id,
+            requester_is_admin=requester_is_admin,
+            config=(
+                provider_call_config
+                if provider_call_config is not None
+                else load_provider_call_quota_config()
+            ),
+        )
     except AnalysisGuardConfigError:
         raise HTTPException(
             status_code=500,
@@ -1264,8 +1286,12 @@ def _analyze_job_impl(
             owner_token_key=owner_token_key,
         )
 
+    # Every caller also counts this provider call (provider_call): one
+    # global slot for a non-admin owner, one admin record row for an admin
+    # (single route or analyze-missing), in the same guard transaction.
     guard_acquire_result = try_acquire_job_analysis_guard(
-        db, job_id=job.job_id, config=config, **guard_precondition_kwargs
+        db, job_id=job.job_id, config=config, provider_call=provider_call,
+        **guard_precondition_kwargs
     )
 
     if guard_acquire_result.outcome is AcquireOutcome.TARGET_CHANGED:
@@ -1279,7 +1305,8 @@ def _analyze_job_impl(
         )
 
     # QUOTA_EXCEEDED: only a non-admin owner (owner_user_id passed) has a
-    # rolling quota; same response as a cooldown, nothing was acquired.
+    # rolling per-user or global quota; same response as a cooldown,
+    # nothing was acquired.
     if guard_acquire_result.outcome in (
         AcquireOutcome.COOLDOWN_ACTIVE,
         AcquireOutcome.QUOTA_EXCEEDED,
@@ -1559,6 +1586,8 @@ def analyze_job(
         job_id=job_id,
         force_reanalyze=force_reanalyze,
         db=db,
+        requester_user_id=current_user.user_id,
+        requester_is_admin=bool(current_user.is_admin),
         restrict_to_owner=restrict_to_owner,
     )
 
@@ -1570,6 +1599,10 @@ def analyze_missing_jobs(
     current_admin: models.User = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
+    # Captured before any commit expires current_admin: every provider call
+    # of this batch is recorded under this admin's id (never limited).
+    admin_user_id = current_admin.user_id
+
     completed_analysis_job_ids = (
         db.query(models.JobAnalysis.job_id)
         .filter(
@@ -1648,6 +1681,7 @@ def analyze_missing_jobs(
         batch_config = load_job_analysis_batch_config(
             job_guard_lease_seconds=per_job_config.lease_ttl_seconds
         )
+        provider_call_config = load_provider_call_quota_config()
     except AnalysisGuardConfigError:
         raise HTTPException(
             status_code=500,
@@ -1713,7 +1747,10 @@ def analyze_missing_jobs(
                     job_id=job.job_id,
                     force_reanalyze=False,
                     db=db,
+                    requester_user_id=admin_user_id,
+                    requester_is_admin=True,
                     job_config=per_job_config,
+                    provider_call_config=provider_call_config,
                 )
 
                 results.append({
@@ -1818,6 +1855,10 @@ def analyze_sample_jobs(
     current_admin: models.User = Depends(get_current_admin),
     db: Session = Depends(get_db)
 ):
+    # Captured before any commit expires current_admin: every provider call
+    # of this request is recorded under this admin's id (never limited).
+    admin_user_id = current_admin.user_id
+
     if limit > MAX_ANALYZE_JOBS:
         raise HTTPException(
             status_code=400,
@@ -1888,6 +1929,7 @@ def analyze_sample_jobs(
         batch_config = load_job_analysis_batch_config(
             job_guard_lease_seconds=per_job_config.lease_ttl_seconds
         )
+        provider_call_config = load_provider_call_quota_config()
     except AnalysisGuardConfigError:
         raise HTTPException(
             status_code=500,
@@ -1989,7 +2031,18 @@ Rules:
 - If EU work authorization is required, include it in dealbreakers.
 """
 
-            job_guard_result = try_acquire_job_analysis_guard(db, job_id=job.job_id, config=per_job_config)
+            # One admin record row per provider call, in the guard's own
+            # transaction (record only: never QUOTA_EXCEEDED for an admin).
+            job_guard_result = try_acquire_job_analysis_guard(
+                db,
+                job_id=job.job_id,
+                config=per_job_config,
+                provider_call=ProviderCallAccounting(
+                    requester_user_id=admin_user_id,
+                    requester_is_admin=True,
+                    config=provider_call_config,
+                ),
+            )
 
             if job_guard_result.outcome is AcquireOutcome.ALREADY_IN_PROGRESS:
                 # Aborts the complete sample request -- matches analyze-sample's
@@ -1999,7 +2052,10 @@ Rules:
                     detail="An analysis for this job is already in progress.",
                 )
 
-            if job_guard_result.outcome is AcquireOutcome.COOLDOWN_ACTIVE:
+            if job_guard_result.outcome in (
+                AcquireOutcome.COOLDOWN_ACTIVE,
+                AcquireOutcome.QUOTA_EXCEEDED,
+            ):
                 raise HTTPException(
                     status_code=429,
                     detail="Too many requests. Please try again later.",
@@ -2007,6 +2063,14 @@ Rules:
                 )
 
             if job_guard_result.outcome is AcquireOutcome.BACKEND_UNAVAILABLE:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Service temporarily unavailable. Please try again shortly.",
+                )
+
+            # Defensive, like _analyze_job_impl: any other outcome than
+            # GRANTED (nothing was acquired) must never reach the provider.
+            if job_guard_result.outcome is not AcquireOutcome.GRANTED:
                 raise HTTPException(
                     status_code=503,
                     detail="Service temporarily unavailable. Please try again shortly.",

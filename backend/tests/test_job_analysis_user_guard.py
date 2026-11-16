@@ -233,8 +233,10 @@ class JobUserGuardConfigTests(unittest.TestCase):
 
     def test_owner_user_id_is_a_trailing_keyword_only_optional_parameter(self):
         for func, expected in (
+            # provider_call (W17): keyword-only, default None.
             (try_acquire_job_analysis_guard,
-             ["db", "job_id", "config", "clock", "precondition", "owner_user_id"]),
+             ["db", "job_id", "config", "clock", "precondition", "provider_call",
+              "owner_user_id"]),
             (release_job_analysis_guard,
              ["db", "job_id", "owner_token", "succeeded", "config", "clock", "owner_user_id"]),
         ):

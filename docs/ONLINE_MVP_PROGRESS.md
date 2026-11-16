@@ -36,6 +36,7 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 | W14 | Retire fake analyses when switching to the real provider | in review | `backend/scripts/retire_fake_analyses.py`; dry run by default, `--yes` to apply; must be run (again) right after switching the provider; not run on Lightsail yet |
 | W15 | Safe provider errors | in review | Profile analysis, job analysis (single, `analyze-missing`, `analyze-sample`) and cover letters never return, store or log SDK error text or raw model output: fixed messages from `openai_client.safe_analysis_error_message`, `raw_response` removed from the two invalid-JSON details. Profile analysis answers an exhausted spend limit with 503 `ERR_PROFILE_ANALYSIS_PROVIDER_UNAVAILABLE` and writes no failed row. Older failed rows keep their old text (not exposed by the API) |
 | W16 | Per-user quota for profile analysis | in review | `POST /users/{user_id}/profiles/{profile_id}/analyze`: 10 counted analyses per rolling 24 h per user, shared by all of the user's profiles (`PROFILE_ANALYSIS_USER_QUOTA_MAX_ATTEMPTS`, `PROFILE_ANALYSIS_USER_QUOTA_WINDOW_SECONDS`); 429 "Too many requests" with Retry-After when used up. Reuses the job-analysis reservation table (no migration) with its own, separate count. Counted when the guard is granted, never refunded (also on provider errors); cached results, rejected requests and admins are not counted. Covers W3; D3 (the budget and the limit values) stays open |
+| W17 | Global quota of paid provider calls | in review | Every paid provider call (profile analysis, job analysis, cover letter create and regenerate) triggered by a non-admin takes one slot of a system-wide rolling quota: 100 per 24 h (`PROVIDER_CALL_GLOBAL_QUOTA_MAX_ATTEMPTS`, `PROVIDER_CALL_GLOBAL_QUOTA_WINDOW_SECONDS`), checked after the per-user quota in the same guard/lease transaction, never refunded (also on provider errors). Used up: profile and job answer the same 429 "Too many requests" with Retry-After; cover letters answer 429 `ERR_COVER_LETTER_SERVICE_LIMIT` with Retry-After. Cached results and rejected requests are not counted. Admins are never limited, also not by the per-user cover letter quota (owner decision; before, an admin's letter used the owner's quota); each admin call, including every call of `analyze-missing` and `analyze-sample`, leaves one `provider_call_admin` row. Reuses `analysis_quota_reservations` (no migration); global rows have `user_id` 0, so deleting an account never refunds them. Report: `backend/scripts/provider_call_usage.py` (read-only). **Not a spending limit**, see "API facts" |
 
 ## Acceptance criteria
 
@@ -382,6 +383,42 @@ that an interrupted session can resume.
   - Profile analysis has a per-user quota of 10 per rolling 24 h (W16).
     When it is used up, the response is the same 429 as a cooldown, with
     Retry-After. Admins are exempt.
+  - All paid provider calls of non-admin users share one global quota of
+    100 per rolling 24 h (W17). Profile and job analysis answer the same
+    429 with Retry-After; cover letters answer 429
+    `ERR_COVER_LETTER_SERVICE_LIMIT` with Retry-After (the web client shows
+    its usual 429 countdown). Admins are exempt and only recorded.
+    - It is **not a monetary spending limit**: it counts app-level calls,
+      not tokens or cost; the SDK's `max_retries` can turn one counted call
+      into several HTTP requests (profile/job default 0, cover letter 1);
+      prompt and response sizes and models differ; admin calls are not
+      counted. The real money cap is the budget / hard limit of the OpenAI
+      project; an exhausted one already maps to 503 without leaking (W15).
+    - Emergency stop: remove `OPENAI_API_KEY` everywhere the deployment
+      provides it -- the process environment (e.g. the compose env file)
+      and `.env` -- and restart. Removing it only from the shell is not
+      enough: `main.py` loads `.env` (`config.load_env_file`, without
+      override), which fills a missing variable again. The module clients
+      are created at import and kept, so a running process keeps calling
+      until it is restarted. After the restart every paid route answers
+      503 "not configured" before any guard or DB write. The current
+      Lightsail test deployment runs with the fake provider and refuses a
+      key altogether (`backend/app/deploy_app.py`).
+    - Fake provider calls are counted like real ones, so development and
+      e2e runs exercise the same limits. After switching Lightsail from
+      fake to real, fake-call rows keep occupying the global window for up
+      to 24 h (conservative). One e2e run takes about 5 global slots (plus
+      admin rows for `analyze-missing`), far below 100; a reused
+      `APPLY101_E2E_SANDBOX` keeps its rows for 24 h.
+    - Usage: `python -m backend.scripts.provider_call_usage` (read-only,
+      `APPLY101_DATABASE_URL` from the process environment only) prints the
+      global used/limit, when the next slot frees, admin calls per admin
+      id and counts per `operation_type`.
+  - Cover letters answer 500 `ERR_COVER_LETTER_CONFIG` when
+    `PROVIDER_CALL_GLOBAL_QUOTA_MAX_ATTEMPTS` or
+    `PROVIDER_CALL_GLOBAL_QUOTA_WINDOW_SECONDS` is invalid (profile and
+    job analysis answer their existing configuration 500); nothing is
+    written and no provider call is made.
   - The saved-match list already contains the full `match` result.
 
 ## Development environment

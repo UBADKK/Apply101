@@ -40,6 +40,8 @@ from backend.app.analysis_guard import (
     JOB_OPERATION_TYPE,
     JOB_USER_OPERATION_TYPE,
     PROFILE_OPERATION_TYPE,
+    PROVIDER_CALL_ADMIN_OPERATION_TYPE,
+    PROVIDER_CALL_GLOBAL_OPERATION_TYPE,
     USER_OPERATION_TYPE,
     load_config,
     load_job_analysis_batch_config,
@@ -470,7 +472,12 @@ class QuotaGuardLevelTests(_BaseQuotaTestCase):
         self.assertEqual(self._guard_keys(), set())
         self.assertEqual(self._reservations(), [])
 
-    def test_missing_quota_table_fails_closed_for_owners_only(self):
+    def test_missing_quota_table_fails_closed_only_with_a_quota_spec(self):
+        """Guard level, without provider_call: the owner acquisition (a
+        per-user quota spec) fails closed, one without any spec is granted.
+        At route level every job analysis now passes provider_call, so
+        admin analyses fail closed too (see
+        test_provider_call_global_quota.MissingQuotaTableRouteTests)."""
         with self.engine.begin() as connection:
             connection.execute(text("DROP TABLE " + QUOTA_TABLE))
 
@@ -798,7 +805,12 @@ class QuotaReservationLockTests(_BaseQuotaTestCase):
             outcomes,
             {"insert": "locked", "competing_acquire": AcquireOutcome.BACKEND_UNAVAILABLE},
         )
-        mock_reserve.assert_called_once()
+        # The per-user spec (probed above), then the global provider-call
+        # spec (W17), both in the same guard transaction.
+        self.assertEqual(
+            [call.args[1].operation_type for call in mock_reserve.call_args_list],
+            [JOB_USER_OPERATION_TYPE, PROVIDER_CALL_GLOBAL_OPERATION_TYPE],
+        )
         self.assertEqual(response.status_code, 200, response.text)
         mock_openai.assert_called_once()
         self.assertEqual(self._count(self.owner_id), 10)
@@ -812,6 +824,19 @@ class QuotaReservationLockTests(_BaseQuotaTestCase):
 
 
 class AdminAndBatchNotCountedTests(_BaseQuotaTestCase):
+    # Admin calls are not counted against any quota, but since the global
+    # provider-call quota (W17) each one leaves exactly one record-only
+    # PROVIDER_CALL_ADMIN_OPERATION_TYPE row under the admin's id.
+
+    def _admin_records(self):
+        return [(row.operation_type, row.user_id, row.job_id)
+                for row in self._reservations()
+                if row.operation_type == PROVIDER_CALL_ADMIN_OPERATION_TYPE]
+
+    def _quota_rows(self):
+        return [row for row in self._reservations()
+                if row.operation_type != PROVIDER_CALL_ADMIN_OPERATION_TYPE]
+
     def setUp(self):
         super().setUp()
         self.admin_id = self._create_user("quota.admin@example.com", is_admin=True)
@@ -830,8 +855,13 @@ class AdminAndBatchNotCountedTests(_BaseQuotaTestCase):
         for job_id in (owner_job, catalog):
             with self.subTest(job_id=job_id):
                 self._post_ok(job_id, self.admin_headers)
-                self.assertEqual(self._reservations(), self.full_quota)
-        self.assertEqual(self._count(self.admin_id), 0)
+                self.assertEqual(self._quota_rows(), self.full_quota)
+        self.assertEqual(
+            self._admin_records(),
+            [(PROVIDER_CALL_ADMIN_OPERATION_TYPE, self.admin_id, owner_job),
+             (PROVIDER_CALL_ADMIN_OPERATION_TYPE, self.admin_id, catalog)],
+        )
+        self.assertEqual(self._count(self.admin_id), 2)
 
     def test_analyze_missing_is_not_counted(self):
         self._create_job("quota-missing-catalog", source="arbeitnow")
@@ -844,7 +874,8 @@ class AdminAndBatchNotCountedTests(_BaseQuotaTestCase):
             )
         self.assertEqual(response.status_code, 200, response.text)
         mock_openai.assert_called_once()
-        self.assertEqual(self._reservations(), self.full_quota)
+        self.assertEqual(self._quota_rows(), self.full_quota)
+        self.assertEqual(len(self._admin_records()), 1)
 
     def test_analyze_sample_is_not_counted(self):
         owner_job = self._create_job("quota-sample-owner", owner_id=self.owner_id, source="manual")
@@ -860,7 +891,12 @@ class AdminAndBatchNotCountedTests(_BaseQuotaTestCase):
             )
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(mock_openai.call_count, 2)
-        self.assertEqual(self._reservations(), self.full_quota)
+        self.assertEqual(self._quota_rows(), self.full_quota)
+        self.assertEqual(
+            self._admin_records(),
+            [(PROVIDER_CALL_ADMIN_OPERATION_TYPE, self.admin_id, owner_job),
+             (PROVIDER_CALL_ADMIN_OPERATION_TYPE, self.admin_id, catalog)],
+        )
 
 
 class ProfileAnalysisRouteNotCountedTests(_BaseQuotaTestCase):
@@ -932,7 +968,13 @@ class ProfileAnalysisRouteNotCountedTests(_BaseQuotaTestCase):
                         if row.operation_type == USER_OPERATION_TYPE]
         self.assertEqual(len(profile_rows), 1)
         self.assertIsNone(profile_rows[0].job_id)
-        self.assertEqual(len(self._reservations()), DEFAULT_MAX_ATTEMPTS)
+        # Plus the call's one system-wide provider-call slot (W17).
+        self.assertEqual(len(self._reservations()), DEFAULT_MAX_ATTEMPTS + 1)
+        self.assertEqual(
+            len(self._reservations(0)), 1
+        )
+        self.assertEqual(self._reservations(0)[0].operation_type,
+                         PROVIDER_CALL_GLOBAL_OPERATION_TYPE)
 
         # The remaining job slot is still there for an owner job analysis.
         first_job = self._create_job("quota-profile-1", owner_id=self.owner_id, source="manual")

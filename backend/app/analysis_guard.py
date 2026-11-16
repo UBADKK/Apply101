@@ -35,7 +35,7 @@ import secrets
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable
+from typing import Callable, Sequence
 
 from sqlalchemy import and_, delete, insert, or_, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -72,6 +72,25 @@ JOB_BATCH_OPERATION_TYPE = "job_analysis_batch"
 # if a real job_id were ever 0.
 JOB_BATCH_RESOURCE_ID = 0
 
+# System-wide rolling quota of paid provider calls (profile analysis, job
+# analysis, cover letters) triggered by non-admin users, counted in
+# analysis_quota_reservations next to the per-user quotas. See
+# ProviderCallQuotaConfig.
+PROVIDER_CALL_GLOBAL_OPERATION_TYPE = "provider_call_global"
+# Not a user: the fixed user_id under which every provider_call_global
+# reservation is stored, so the per-(operation_type, user_id) counting of
+# _reserve_quota_slot counts system-wide. users.delete_user deletes
+# reservations by the deleted user's id only, so deleting an account (and
+# registering again) never refunds global slots. Real user ids start at 1.
+PROVIDER_CALL_GLOBAL_USER_ID = 0
+# Record-only, never refused: one row per provider call triggered by an
+# admin, under the admin's own user_id, for monitoring
+# (backend/scripts/provider_call_usage.py). An admin's rows older than the
+# global window are deleted only when that same admin makes a later paid
+# call (like every quota here, pruning is lazy); the script never counts
+# rows outside the window.
+PROVIDER_CALL_ADMIN_OPERATION_TYPE = "provider_call_admin"
+
 # Not an environment variable -- a fixed operational constant covering the
 # JSON parsing / pydantic validation / DB write time between "the OpenAI
 # call returns" and "the guard is actually released".
@@ -85,8 +104,8 @@ GUARD_SAFETY_MARGIN_SECONDS = 30
 _SDK_MAX_RETRY_AFTER_SECONDS = 60
 
 
-def _get_positive_int_env(name: str, default: int) -> int:
-    raw_value = os.environ.get(name)
+def _get_positive_int_env(name: str, default: int, environ=None) -> int:
+    raw_value = (os.environ if environ is None else environ).get(name)
     if not raw_value:
         return default
     try:
@@ -297,6 +316,46 @@ def load_job_analysis_batch_config(*, job_guard_lease_seconds: int) -> JobAnalys
     )
 
 
+@dataclass(frozen=True)
+class ProviderCallQuotaConfig:
+    """System-wide rolling quota of paid provider calls triggered by
+    non-admin users: at most max_attempts calls per rolling window_seconds,
+    over all users and all three paid features together (profile analysis,
+    job analysis, cover letters). A call is counted when its guard or lease
+    is granted, right before the provider call, and never refunded (also
+    not on a provider error, invalid output or a spend-limit 503).
+
+    This is NOT a monetary spending limit:
+    - it counts app-level calls, not tokens or cost;
+    - the SDK's own retries (max_retries) can turn one counted call into
+      several HTTP requests;
+    - prompt and response sizes and the models differ per feature;
+    - calls triggered by admins are not counted (only recorded);
+    - the fake provider's calls are counted like real ones.
+    The real money cap is the budget / hard limit of the OpenAI project.
+    """
+
+    max_attempts: int = 100
+    window_seconds: int = 86400
+
+
+def load_provider_call_quota_config(environ=None) -> ProviderCallQuotaConfig:
+    """Reads PROVIDER_CALL_GLOBAL_QUOTA_MAX_ATTEMPTS (default 100) and
+    PROVIDER_CALL_GLOBAL_QUOTA_WINDOW_SECONDS (default 86400) from the
+    process environment (or `environ`). Unset or empty means the default;
+    anything that is not a positive whole number raises
+    AnalysisGuardConfigError, like the other quota variables. Must be
+    called -- and must succeed -- before any guard or lease is taken."""
+    return ProviderCallQuotaConfig(
+        max_attempts=_get_positive_int_env(
+            "PROVIDER_CALL_GLOBAL_QUOTA_MAX_ATTEMPTS", 100, environ
+        ),
+        window_seconds=_get_positive_int_env(
+            "PROVIDER_CALL_GLOBAL_QUOTA_WINDOW_SECONDS", 86400, environ
+        ),
+    )
+
+
 class AcquireOutcome(Enum):
     GRANTED = "granted"
     ALREADY_IN_PROGRESS = "already_in_progress"
@@ -307,8 +366,9 @@ class AcquireOutcome(Enum):
     # was acquired (no owner_token) and nothing was written.
     TARGET_CHANGED = "target_changed"
     # Only returned when the caller passed a quota: every resource was free,
-    # but the user's rolling quota is used up. Nothing was acquired or
-    # written; retry_after_seconds says when the next slot frees up.
+    # but the user's rolling quota or the global provider-call quota is used
+    # up. Nothing was acquired or written; retry_after_seconds says when the
+    # next slot of the exceeded quota frees up.
     QUOTA_EXCEEDED = "quota_exceeded"
 
 
@@ -345,13 +405,49 @@ def _safe_close(session: Session) -> None:
 class _QuotaSpec:
     """A rolling quota checked and reserved inside the guard transaction:
     at most max_attempts reservations per (operation_type, user_id) whose
-    reserved_at lies within the last window_seconds."""
+    reserved_at lies within the last window_seconds. max_attempts None
+    means record only: a reservation is always inserted, never refused."""
 
     operation_type: str
     user_id: int
     job_id: int | None
-    max_attempts: int
+    max_attempts: int | None
     window_seconds: int
+
+
+@dataclass(frozen=True)
+class ProviderCallAccounting:
+    """Who triggered a paid provider call -- the requester (current_user),
+    not the owner of the profile/job/letter -- as plain values captured
+    before any commit, plus the already-loaded global quota config.
+
+    A non-admin requester takes one slot of the system-wide quota
+    (PROVIDER_CALL_GLOBAL_OPERATION_TYPE under PROVIDER_CALL_GLOBAL_USER_ID).
+    An admin requester is never limited: one record-only row
+    (PROVIDER_CALL_ADMIN_OPERATION_TYPE under the admin's own user_id) is
+    written instead, and neither the global quota nor any per-user quota
+    is touched."""
+
+    requester_user_id: int
+    requester_is_admin: bool
+    config: ProviderCallQuotaConfig
+
+    def quota_spec(self, job_id: int | None = None) -> _QuotaSpec:
+        if self.requester_is_admin:
+            return _QuotaSpec(
+                operation_type=PROVIDER_CALL_ADMIN_OPERATION_TYPE,
+                user_id=self.requester_user_id,
+                job_id=job_id,
+                max_attempts=None,
+                window_seconds=self.config.window_seconds,
+            )
+        return _QuotaSpec(
+            operation_type=PROVIDER_CALL_GLOBAL_OPERATION_TYPE,
+            user_id=PROVIDER_CALL_GLOBAL_USER_ID,
+            job_id=job_id,
+            max_attempts=self.config.max_attempts,
+            window_seconds=self.config.window_seconds,
+        )
 
 
 def _reserve_quota_slot(guard_session: Session, quota: _QuotaSpec, now: float) -> int | None:
@@ -359,10 +455,11 @@ def _reserve_quota_slot(guard_session: Session, quota: _QuotaSpec, now: float) -
     before the commit, on the same guard_session (which already holds
     SQLite's write lock). Deletes this user's expired reservations for
     this operation_type, then, if fewer than max_attempts unexpired ones
-    remain, inserts one reservation at `now` and returns None. Otherwise
-    inserts nothing and returns the Retry-After seconds until enough
-    reservations expire; the caller then rolls back (undoing the prune
-    too). May raise -- the caller fails closed.
+    remain (or max_attempts is None: record only), inserts one reservation
+    at `now` and returns None. Otherwise inserts nothing and returns the
+    Retry-After seconds until enough reservations expire; the caller then
+    rolls back (undoing the prune too). May raise -- the caller fails
+    closed.
     """
     cutoff = now - quota.window_seconds
     same_user = and_(
@@ -374,18 +471,19 @@ def _reserve_quota_slot(guard_session: Session, quota: _QuotaSpec, now: float) -
             same_user, AnalysisQuotaReservation.reserved_at <= cutoff
         )
     )
-    reserved_ats = guard_session.execute(
-        select(AnalysisQuotaReservation.reserved_at)
-        .where(same_user, AnalysisQuotaReservation.reserved_at > cutoff)
-        .order_by(AnalysisQuotaReservation.reserved_at.asc())
-    ).scalars().all()
+    if quota.max_attempts is not None:
+        reserved_ats = guard_session.execute(
+            select(AnalysisQuotaReservation.reserved_at)
+            .where(same_user, AnalysisQuotaReservation.reserved_at > cutoff)
+            .order_by(AnalysisQuotaReservation.reserved_at.asc())
+        ).scalars().all()
 
-    count = len(reserved_ats)
-    if count >= quota.max_attempts:
-        # The (count - max_attempts + 1) oldest reservations must expire
-        # before a slot is free; with count == max_attempts, the oldest.
-        frees_at = reserved_ats[count - quota.max_attempts] + quota.window_seconds
-        return max(1, math.ceil(frees_at - now))
+        count = len(reserved_ats)
+        if count >= quota.max_attempts:
+            # The (count - max_attempts + 1) oldest reservations must expire
+            # before a slot is free; with count == max_attempts, the oldest.
+            frees_at = reserved_ats[count - quota.max_attempts] + quota.window_seconds
+            return max(1, math.ceil(frees_at - now))
 
     guard_session.execute(
         insert(AnalysisQuotaReservation).values(
@@ -396,6 +494,26 @@ def _reserve_quota_slot(guard_session: Session, quota: _QuotaSpec, now: float) -
         )
     )
     return None
+
+
+def reserve_provider_call_slot(
+    session: Session,
+    provider_call: ProviderCallAccounting,
+    now: float,
+    *,
+    job_id: int | None = None,
+) -> int | None:
+    """The global-quota (non-admin) or admin-record reservation of one
+    provider call, for a caller that runs its own transaction (cover
+    letters: backend/app/cover_letter.py acquire_generation). Same counting
+    as the guard transaction (_reserve_quota_slot): returns None when the
+    row was inserted, else the Retry-After seconds with nothing inserted.
+
+    The caller must already hold SQLite's write lock in `session`'s open
+    transaction (i.e. have written its lease row first) and must commit or
+    roll back that transaction itself; on a returned Retry-After it must
+    roll back everything it wrote. May raise."""
+    return _reserve_quota_slot(session, provider_call.quota_spec(job_id), now)
 
 
 def _guard_session(db: Session) -> Session:
@@ -422,7 +540,7 @@ def _try_acquire_guard_resources(
     lease_ttl_seconds: int,
     clock: Callable[[], float] = time.time,
     precondition: Callable[[Session], bool] | None = None,
-    quota: _QuotaSpec | None = None,
+    quotas: Sequence[_QuotaSpec] = (),
 ) -> AcquireResult:
     """Generic core: atomically acquires ALL listed (operation_type,
     resource_id) resources under one owner token, or none. Never calls
@@ -449,13 +567,16 @@ def _try_acquire_guard_resources(
     BACKEND_UNAVAILABLE is returned, like any other failure of this
     transaction (fail closed: nothing acquired, nothing written).
 
-    quota: optional; None (the default) changes nothing. Otherwise, only
+    quotas: optional; empty (the default) changes nothing. Otherwise, only
     once every resource was won (so never on TARGET_CHANGED, a live lease
-    or a cooldown), _reserve_quota_slot runs in the same transaction with
-    the same `now`, right before the commit. A used-up quota rolls
-    everything back and returns QUOTA_EXCEEDED; a reserved slot is
-    committed together with the leases (and rolled back with them if the
-    commit fails); an error rolls everything back as BACKEND_UNAVAILABLE.
+    or a cooldown), _reserve_quota_slot runs once per spec, in the given
+    order (per-user quota first, then the global/admin provider-call
+    spec), in the same transaction with the same `now`, right before the
+    commit. The first used-up quota rolls everything back -- also the
+    slots already reserved for earlier specs -- and returns QUOTA_EXCEEDED
+    with that spec's Retry-After; reserved slots are committed together
+    with the leases (and rolled back with them if the commit fails); an
+    error rolls everything back as BACKEND_UNAVAILABLE.
     """
     if not resources or len(set(resources)) != len(resources):
         # Internal programmer error, not a runtime/backend condition --
@@ -532,7 +653,7 @@ def _try_acquire_guard_resources(
         won = {(row.operation_type, row.resource_id) for row in rows if row.owner_token == owner_token}
 
         if won == set(resources):
-            if quota is not None:
+            for quota in quotas:
                 try:
                     quota_retry_after = _reserve_quota_slot(guard_session, quota, now)
                 except Exception as exc:
@@ -606,6 +727,7 @@ def try_acquire_profile_analysis_guard(
     clock: Callable[[], float] = time.time,
     precondition: Callable[[Session], bool] | None = None,
     count_user_quota: bool = False,
+    provider_call: ProviderCallAccounting | None = None,
 ) -> AcquireResult:
     """Atomically acquires BOTH the per-profile and per-owner-user guard
     rows under one owner token, or neither. Thin wrapper over the generic
@@ -626,16 +748,25 @@ def try_acquire_profile_analysis_guard(
     operation_type USER_OPERATION_TYPE, separate from the job-analysis
     quota) in the same transaction; reserved slots are never refunded. A
     used-up quota returns QUOTA_EXCEEDED and writes nothing.
+
+    provider_call: None (the default) counts no provider call, exactly as
+    before. The profile analysis route always passes one: a granted
+    acquisition then also reserves one global slot (non-admin requester)
+    or records one admin row, after the per-user quota and in the same
+    transaction (see ProviderCallAccounting). A used-up global quota
+    returns QUOTA_EXCEEDED and writes nothing -- no per-user slot either.
     """
-    quota = None
+    quotas = []
     if count_user_quota:
-        quota = _QuotaSpec(
+        quotas.append(_QuotaSpec(
             operation_type=USER_OPERATION_TYPE,
             user_id=owner_user_id,
             job_id=None,
             max_attempts=config.user_quota_max_attempts,
             window_seconds=config.user_quota_window_seconds,
-        )
+        ))
+    if provider_call is not None:
+        quotas.append(provider_call.quota_spec())
     return _try_acquire_guard_resources(
         db,
         resources=[
@@ -645,7 +776,7 @@ def try_acquire_profile_analysis_guard(
         lease_ttl_seconds=config.lease_ttl_seconds,
         clock=clock,
         precondition=precondition,
-        quota=quota,
+        quotas=quotas,
     )
 
 
@@ -756,6 +887,7 @@ def try_acquire_job_analysis_guard(
     config: JobAnalysisConfig,
     clock: Callable[[], float] = time.time,
     precondition: Callable[[Session], bool] | None = None,
+    provider_call: ProviderCallAccounting | None = None,
     owner_user_id: int | None = None,
 ) -> AcquireResult:
     """Acquires the per-job guard resource. Admins may analyze any job; a
@@ -781,26 +913,37 @@ def try_acquire_job_analysis_guard(
     the user's rolling quota (config.user_quota_max_attempts per
     config.user_quota_window_seconds) in the same transaction; reserved
     slots are never refunded. A used-up quota returns QUOTA_EXCEEDED and
-    writes nothing. Without owner_user_id no quota is checked or counted.
+    writes nothing. Without owner_user_id no per-user quota is checked or
+    counted.
+
+    provider_call: None (the default) counts no provider call, exactly as
+    before. The single-job route, analyze-missing (through
+    _analyze_job_impl) and analyze-sample always pass one: a granted
+    acquisition then also reserves one global slot (non-admin requester)
+    or records one admin row, with job_id, after the per-user quota and in
+    the same transaction (see ProviderCallAccounting). A used-up global
+    quota returns QUOTA_EXCEEDED and writes nothing.
     """
     resources = [(JOB_OPERATION_TYPE, job_id)]
-    quota = None
+    quotas = []
     if owner_user_id is not None:
         resources.append((JOB_USER_OPERATION_TYPE, owner_user_id))
-        quota = _QuotaSpec(
+        quotas.append(_QuotaSpec(
             operation_type=JOB_USER_OPERATION_TYPE,
             user_id=owner_user_id,
             job_id=job_id,
             max_attempts=config.user_quota_max_attempts,
             window_seconds=config.user_quota_window_seconds,
-        )
+        ))
+    if provider_call is not None:
+        quotas.append(provider_call.quota_spec(job_id))
     return _try_acquire_guard_resources(
         db,
         resources=resources,
         lease_ttl_seconds=config.lease_ttl_seconds,
         clock=clock,
         precondition=precondition,
-        quota=quota,
+        quotas=quotas,
     )
 
 
