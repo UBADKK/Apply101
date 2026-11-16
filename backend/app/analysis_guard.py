@@ -120,6 +120,10 @@ class AnalysisGuardConfig:
     profile_failure_cooldown_seconds: int
     user_success_cooldown_seconds: int
     user_failure_cooldown_seconds: int
+    # Rolling per-user quota of counted (non-admin) profile analyses;
+    # defaults keep existing constructors valid.
+    user_quota_max_attempts: int = 10
+    user_quota_window_seconds: int = 86400
 
 
 def load_config() -> AnalysisGuardConfig:
@@ -142,6 +146,12 @@ def load_config() -> AnalysisGuardConfig:
     )
     user_failure_cooldown = _get_positive_int_env(
         "PROFILE_ANALYSIS_USER_FAILURE_COOLDOWN_SECONDS", 30
+    )
+    user_quota_max_attempts = _get_positive_int_env(
+        "PROFILE_ANALYSIS_USER_QUOTA_MAX_ATTEMPTS", 10
+    )
+    user_quota_window_seconds = _get_positive_int_env(
+        "PROFILE_ANALYSIS_USER_QUOTA_WINDOW_SECONDS", 86400
     )
 
     # Conservative OPERATIONAL bound, not a formal wall-clock deadline
@@ -175,6 +185,8 @@ def load_config() -> AnalysisGuardConfig:
         profile_failure_cooldown_seconds=profile_failure_cooldown,
         user_success_cooldown_seconds=user_success_cooldown,
         user_failure_cooldown_seconds=user_failure_cooldown,
+        user_quota_max_attempts=user_quota_max_attempts,
+        user_quota_window_seconds=user_quota_window_seconds,
     )
 
 
@@ -593,6 +605,7 @@ def try_acquire_profile_analysis_guard(
     config: AnalysisGuardConfig,
     clock: Callable[[], float] = time.time,
     precondition: Callable[[Session], bool] | None = None,
+    count_user_quota: bool = False,
 ) -> AcquireResult:
     """Atomically acquires BOTH the per-profile and per-owner-user guard
     rows under one owner token, or neither. Thin wrapper over the generic
@@ -604,7 +617,25 @@ def try_acquire_profile_analysis_guard(
     the guard's write lock that the profile and its owner (token_key) are
     still the captured identity; a False result means TARGET_CHANGED. None
     (the default) behaves exactly as before.
+
+    count_user_quota: False (the default) checks and counts no quota,
+    exactly as before. The profile analysis route passes True only for a
+    non-admin caller; then a granted acquisition also reserves one slot of
+    owner_user_id's rolling profile-analysis quota
+    (config.user_quota_max_attempts per config.user_quota_window_seconds,
+    operation_type USER_OPERATION_TYPE, separate from the job-analysis
+    quota) in the same transaction; reserved slots are never refunded. A
+    used-up quota returns QUOTA_EXCEEDED and writes nothing.
     """
+    quota = None
+    if count_user_quota:
+        quota = _QuotaSpec(
+            operation_type=USER_OPERATION_TYPE,
+            user_id=owner_user_id,
+            job_id=None,
+            max_attempts=config.user_quota_max_attempts,
+            window_seconds=config.user_quota_window_seconds,
+        )
     return _try_acquire_guard_resources(
         db,
         resources=[
@@ -614,6 +645,7 @@ def try_acquire_profile_analysis_guard(
         lease_ttl_seconds=config.lease_ttl_seconds,
         clock=clock,
         precondition=precondition,
+        quota=quota,
     )
 
 

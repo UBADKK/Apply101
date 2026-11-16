@@ -1,5 +1,6 @@
-"""Create the analysis_quota_reservations table (rolling per-user quota of
-owner manual job analysis) and its lookup index.
+"""Create the analysis_quota_reservations table (rolling per-user quotas of
+owner manual job analysis, non-admin profile analysis and cover letter
+generation) and its lookup index.
 
 Additive only: creates the table (with its index) from
 models.AnalysisQuotaReservation when it is missing, or only the index when
@@ -14,7 +15,9 @@ calls Base.metadata.create_all at import, with the same DDL. This script
 makes the additive change explicit and auditable; it can be run (after
 backing up the database) before starting the new code. Only if neither has
 run (e.g. an entry point that does not import main.py) do owner (non-admin)
-job analyses fail closed with 503; admin, batch and cached paths are
+job analyses and non-admin profile analyses fail closed with 503 before
+any provider call, and cover letter generation fails with a database
+error before its provider call; admin, batch and cached paths are
 unaffected. Running it after create_all is a no-op.
 
 Run once from the project root:
