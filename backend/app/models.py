@@ -427,11 +427,19 @@ class AnalysisGuard(Base):
 
 
 class AnalysisQuotaReservation(Base):
-    """One counted attempt of a rolling per-user quota (currently owner
-    manual job analysis), inserted by backend/app/analysis_guard.py inside
-    the guard transaction right before the paid call; never refunded.
-    reserved_at is Unix epoch seconds (Float), like AnalysisGuard. No
-    foreign keys (like analysis_guards); job_id is for auditing only.
+    """One counted attempt of a rolling per-user quota; never refunded.
+    Three quotas share this table, each counted per (operation_type,
+    user_id), so they are independent of each other:
+    - job_analysis_user: owner manual job analysis;
+    - profile_analysis_user: non-admin profile analysis;
+    - cover_letter_user: cover letter generation.
+    The first two are inserted by backend/app/analysis_guard.py inside its
+    guard transaction, right before the paid call. cover_letter_user rows
+    are inserted by backend/app/cover_letter.py (acquire_generation), in
+    the route's own session, in the same transaction as its per-user
+    lease. reserved_at is Unix epoch seconds (Float), like AnalysisGuard.
+    No foreign keys (like analysis_guards); job_id is for auditing only and
+    is NULL except for job_analysis_user.
     Existing databases get this table via
     backend/migrations/phase8_analysis_quota_reservations.py or via the
     Base.metadata.create_all call at app startup (backend/app/main.py).

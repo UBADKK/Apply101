@@ -22,7 +22,7 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 |---|---|---|---|
 | W1 | Configurable database URL and upload directory, explicit `.env` loading | done | `APPLY101_DATABASE_URL`, `APPLY101_UPLOAD_DIR`, `APPLY101_LOAD_DOTENV`; defaults unchanged |
 | W2 | Fake analysis provider for development and end-to-end tests | done | `APPLY101_ANALYSIS_PROVIDER=fake`, only with a non-default database and upload directory; no fallback |
-| W3 | Per-user limit for profile analysis | todo | Depends on D3 |
+| W3 | Per-user limit for profile analysis | in review | Implemented as W16 (default 10 per rolling 24 h, configurable); the limit values themselves are part of D3 |
 | W4 | Web client and CORS | in review | Draft PR [UBADKK/Apply101#26](https://github.com/UBADKK/Apply101/pull/26) from `feat/online-mvp-web-client`; verified locally (Vitest, Playwright in Edge) and in a Linux cloud session (Playwright in Chromium); reviewer approved; see "W4 task" below |
 | W5 | Hosting and database setup | todo | Depends on D2 |
 | W6 | Portable stored CV paths | todo | Existing rows store OS-specific relative paths; a configured upload dir on Windows stores mixed separators (`C:/.../uploads\user_1_profile_1_cv.pdf`) |
@@ -35,6 +35,7 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 | W13 | Phase 3: motivation letters (TR/EN/DE, versions, quota, fake provider) | in review | `backend/routers/cover_letters.py`, `backend/app/cover_letter.py`, migration `phase10_cover_letters`, panel on the job page and `/letters`. Checked with the fake provider only, which is a template: the real model's writing quality is not checked |
 | W14 | Retire fake analyses when switching to the real provider | in review | `backend/scripts/retire_fake_analyses.py`; dry run by default, `--yes` to apply; must be run (again) right after switching the provider; not run on Lightsail yet |
 | W15 | Safe provider errors | in review | Profile analysis, job analysis (single, `analyze-missing`, `analyze-sample`) and cover letters never return, store or log SDK error text or raw model output: fixed messages from `openai_client.safe_analysis_error_message`, `raw_response` removed from the two invalid-JSON details. Profile analysis answers an exhausted spend limit with 503 `ERR_PROFILE_ANALYSIS_PROVIDER_UNAVAILABLE` and writes no failed row. Older failed rows keep their old text (not exposed by the API) |
+| W16 | Per-user quota for profile analysis | in review | `POST /users/{user_id}/profiles/{profile_id}/analyze`: 10 counted analyses per rolling 24 h per user, shared by all of the user's profiles (`PROFILE_ANALYSIS_USER_QUOTA_MAX_ATTEMPTS`, `PROFILE_ANALYSIS_USER_QUOTA_WINDOW_SECONDS`); 429 "Too many requests" with Retry-After when used up. Reuses the job-analysis reservation table (no migration) with its own, separate count. Counted when the guard is granted, never refunded (also on provider errors); cached results, rejected requests and admins are not counted. Covers W3; D3 (the budget and the limit values) stays open |
 
 ## Acceptance criteria
 
@@ -43,7 +44,7 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 | AC1 | Registration and login | in progress | Web client: register, login, logout, reload and expiry verified locally in Edge; multi-process rate limiting (W5) and staging open |
 | AC2 | Profile and PDF CV | in progress | Web client profile (all matching fields, languages) and PDF upload verified locally; persistence and paths on the host open (W5, W6) |
 | AC3 | Manual job (text and URL) | in progress | Web client add, list and open, duplicate URL (409), and another user's job (404) verified locally; staging open |
-| AC4 | Analysis | in progress | Web client analyses with the fake provider, 429 countdown without retry, and mocked 503 verified locally; profile analysis limit open (W3); real provider not exercised |
+| AC4 | Analysis | in progress | Web client analyses with the fake provider, 429 countdown without retry, and mocked 503 verified locally; profile analysis limit in review (W3/W16); real provider not exercised |
 | AC5 | Reasoned match result | in progress | Web client shows `eligible` (74) and `ineligible` (20, `required_language_missing`) with reasons; saved results reopen and rematch work; `review_required` covered by a unit test only; staging open |
 | AC6 | End to end and operations | todo | Needs W1-W8 |
 
@@ -378,6 +379,9 @@ that an interrupted session can resume.
     `force_reanalyze` is admin-only (403).
   - The profile-level success cooldown is 300 s
     (`PROFILE_ANALYSIS_PROFILE_SUCCESS_COOLDOWN_SECONDS`).
+  - Profile analysis has a per-user quota of 10 per rolling 24 h (W16).
+    When it is used up, the response is the same 429 as a cooldown, with
+    Retry-After. Admins are exempt.
   - The saved-match list already contains the full `match` result.
 
 ## Development environment

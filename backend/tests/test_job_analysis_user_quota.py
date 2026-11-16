@@ -866,7 +866,9 @@ class AdminAndBatchNotCountedTests(_BaseQuotaTestCase):
 class ProfileAnalysisRouteNotCountedTests(_BaseQuotaTestCase):
     """POST /users/{user_id}/profiles/{profile_id}/analyze (the real
     profiles router, mounted on its own app over the same temp database)
-    never touches the job-analysis quota."""
+    never touches the job-analysis quota. It counts against its own,
+    separate profile-analysis quota (USER_OPERATION_TYPE); see
+    test_profile_analysis_quota.py."""
 
     def setUp(self):
         super().setUp()
@@ -896,12 +898,17 @@ class ProfileAnalysisRouteNotCountedTests(_BaseQuotaTestCase):
         self._add(profile)
         self.profile_id = self._rows("candidate_profiles", "profile_id")[-1].profile_id
 
-    def test_owner_profile_analysis_reserves_nothing(self):
-        # One slot left: a counted profile analysis would use it up.
+    def _job_reservations(self, user_id):
+        return [row for row in self._reservations(user_id)
+                if row.operation_type == JOB_USER_OPERATION_TYPE]
+
+    def test_owner_profile_analysis_reserves_only_its_own_quota(self):
+        # One job slot left: a profile analysis counted against the job
+        # quota would use it up.
         self._seed_reservations(
             self.owner_id, [time.time() - 10] * (DEFAULT_MAX_ATTEMPTS - 1)
         )
-        before = self._reservations()
+        job_rows_before = self._job_reservations(self.owner_id)
 
         with patch(
             "backend.routers.profiles._create_profile_analysis_response",
@@ -919,12 +926,18 @@ class ProfileAnalysisRouteNotCountedTests(_BaseQuotaTestCase):
              for row in self._rows("profile_analysis", "analysis_id")],
             [(self.profile_id, "completed", 1)],
         )
-        self.assertEqual(self._reservations(), before)
+        # The job quota is untouched; exactly one profile reservation.
+        self.assertEqual(self._job_reservations(self.owner_id), job_rows_before)
+        profile_rows = [row for row in self._reservations(self.owner_id)
+                        if row.operation_type == USER_OPERATION_TYPE]
+        self.assertEqual(len(profile_rows), 1)
+        self.assertIsNone(profile_rows[0].job_id)
+        self.assertEqual(len(self._reservations()), DEFAULT_MAX_ATTEMPTS)
 
-        # The remaining slot is still there for an owner job analysis.
+        # The remaining job slot is still there for an owner job analysis.
         first_job = self._create_job("quota-profile-1", owner_id=self.owner_id, source="manual")
         self._post_ok(first_job, self.headers)
-        rows = self._reservations(self.owner_id)
+        rows = self._job_reservations(self.owner_id)
         self.assertEqual(len(rows), DEFAULT_MAX_ATTEMPTS)
         self.assertEqual(rows[-1].job_id, first_job)
 

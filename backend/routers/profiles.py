@@ -526,6 +526,17 @@ def analyze_profile(
     current_user: models.User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    # Plain bool, read before any commit/rollback can expire current_user.
+    # Rolling per-user quota policy (same as owner job analysis): every
+    # non-admin analysis the guard grants is counted against the profile's
+    # owner -- get_owned_profile only lets a non-admin reach their own
+    # profiles, so that is always the requester. Requests the guard refuses
+    # (409, cooldown 429, TARGET_CHANGED, QUOTA_EXCEEDED) are not. Admins are
+    # exempt, for their own profiles and for other users' profiles alike,
+    # and an admin's analysis of a user's profile never uses up that
+    # user's quota.
+    count_user_quota = not current_user.is_admin
+
     # Still queried directly (not just implied by get_owned_profile): the
     # analysis prompt below needs this user's own data, which matters in
     # particular when an admin is analyzing another user's profile.
@@ -717,12 +728,16 @@ CV text:
     # over since the check above; the precondition repeats it under the
     # guard's write lock so a reused id's guard rows are never acquired
     # (nor later given a cooldown).
+    # count_user_quota (non-admin callers only, see above): a granted
+    # acquisition also reserves one slot of the owner's rolling profile
+    # analysis quota in the same guard transaction; never refunded.
     guard_acquire_result = try_acquire_profile_analysis_guard(
         db,
         profile_id=owner_identity.profile_id,
         owner_user_id=owner_identity.user_id,
         config=analysis_guard_config,
         precondition=lambda guard_db: profile_owner_unchanged(guard_db, owner_identity),
+        count_user_quota=count_user_quota,
     )
 
     if guard_acquire_result.outcome is AcquireOutcome.TARGET_CHANGED:
@@ -735,7 +750,12 @@ CV text:
             detail="An analysis for this profile is already in progress.",
         )
 
-    if guard_acquire_result.outcome is AcquireOutcome.COOLDOWN_ACTIVE:
+    # QUOTA_EXCEEDED: only a non-admin caller (count_user_quota) has a
+    # rolling quota; same response as a cooldown, nothing was acquired.
+    if guard_acquire_result.outcome in (
+        AcquireOutcome.COOLDOWN_ACTIVE,
+        AcquireOutcome.QUOTA_EXCEEDED,
+    ):
         raise HTTPException(
             status_code=429,
             detail="Too many requests. Please try again later.",
@@ -743,6 +763,14 @@ CV text:
         )
 
     if guard_acquire_result.outcome is AcquireOutcome.BACKEND_UNAVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Service temporarily unavailable. Please try again shortly.",
+        )
+
+    # Defensive: any other outcome than GRANTED must never reach OpenAI.
+    # Nothing was acquired, so nothing is released below.
+    if guard_acquire_result.outcome is not AcquireOutcome.GRANTED:
         raise HTTPException(
             status_code=503,
             detail="Service temporarily unavailable. Please try again shortly.",
