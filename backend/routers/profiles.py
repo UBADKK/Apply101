@@ -40,12 +40,22 @@ from ..app.analysis_contract import (
 from ..app.openai_client import (
     ANALYSIS_SERVICE_NOT_CONFIGURED_DETAIL,
     create_openai_client_or_none,
+    detached_from,
+    provider_spend_limit_error_code,
+    safe_analysis_error_message,
 )
 
 # None when OPENAI_API_KEY is missing, so the app still starts; only the
 # analysis route needs it (see _require_openai_client).
 client = create_openai_client_or_none()
 logger = logging.getLogger(__name__)
+
+# Fixed 503 detail for an exhausted provider spend/credit limit. Never
+# carries the profile_id, the provider's error text or its error code.
+PROFILE_ANALYSIS_PROVIDER_UNAVAILABLE_ERROR_CODE = "ERR_PROFILE_ANALYSIS_PROVIDER_UNAVAILABLE"
+PROFILE_ANALYSIS_PROVIDER_UNAVAILABLE_MESSAGE = (
+    "Profile analysis is temporarily unavailable. Please try again later."
+)
 
 router = APIRouter(
     prefix="/users",
@@ -857,7 +867,29 @@ CV text:
         raise
 
     except Exception as e:
-        db.rollback()
+        with detached_from(e):
+            db.rollback()
+
+        spend_limit_code = provider_spend_limit_error_code(e)
+        if spend_limit_code is not None:
+            # Provider spend/credit limit exhausted: not this profile's
+            # fault, so no failed row is written. The finally below still
+            # releases the guard with the failure cooldown. Never log or
+            # return the provider's text; only the matched code constant.
+            logger.warning(
+                "analyze_profile: profile analysis provider spend limit reached (%s)",
+                spend_limit_code,
+            )
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error_code": PROFILE_ANALYSIS_PROVIDER_UNAVAILABLE_ERROR_CODE,
+                    "message": PROFILE_ANALYSIS_PROVIDER_UNAVAILABLE_MESSAGE,
+                },
+            ) from None
+
+        # Fixed text only: str(e) can carry SDK details or model output.
+        safe_error = safe_analysis_error_message(e)
 
         failed_analysis = models.ProfileAnalysis(
             profile_id=owner_identity.profile_id,
@@ -866,31 +898,39 @@ CV text:
             analysis_model=PROFILE_ANALYSIS_MODEL,
             analysis_prompt_version=PROFILE_ANALYSIS_PROMPT_VERSION,
             analyzed_at=now,
-            analysis_error=str(e),
+            analysis_error=safe_error,
             is_current=False,
             created_at=now
         )
 
-        db.add(failed_analysis)
-        verify_profile_owner_unchanged_or_404(db, owner_identity)
-        try:
-            db.commit()
-        except Exception:
-            # The check above flushed, so this connection holds SQLite's
-            # write lock; never leave it held, or the guard release in
-            # `finally` (its own connection) would block on it.
-            db.rollback()
-            raise
+        # Anything raised here leaves the route unhandled; detached_from
+        # keeps `e` (provider text, model output) out of its traceback.
+        with detached_from(e):
+            db.add(failed_analysis)
+            try:
+                verify_profile_owner_unchanged_or_404(db, owner_identity)
+                db.commit()
+            except HTTPException:
+                # The owner 404; verify already rolled back.
+                raise
+            except Exception:
+                # The check above flushed, so this connection holds
+                # SQLite's write lock; never leave it held, or the guard
+                # release in `finally` (its own connection) would block on it.
+                db.rollback()
+                raise
 
+        # `from None`: a later failure that picks this up as its context
+        # must not print `e` in a server traceback.
         raise HTTPException(
             status_code=500,
             detail={
                 "error_code": "ERR_PROFILE_ANALYSIS_FAILED",
                 "message": "Profile analysis failed.",
                 "profile_id": owner_identity.profile_id,
-                "error": str(e)
+                "error": safe_error
             }
-        )
+        ) from None
 
     finally:
         # Single guaranteed release point, covering every post-acquisition

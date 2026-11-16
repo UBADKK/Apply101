@@ -32,6 +32,7 @@ from backend.app.analysis_contract import (
 )
 from backend.app.analysis_guard import JOB_OPERATION_TYPE
 from backend.app.database import Base, get_db
+from backend.app.openai_client import ANALYSIS_ERROR_INTERNAL
 from backend.app.security import create_access_token
 from backend.tests.test_authorization_jobs import VALID_JOB_ANALYSIS_PAYLOAD
 
@@ -435,8 +436,9 @@ class JobAnalysisUnchangedBehaviorTests(_BaseInflightJobDeleteTestCase):
                     "error_code": "ERR_AI_INVALID_JSON",
                     "message": "AI response was not valid JSON.",
                     "job_id": job_id,
-                    "raw_response": INVALID_JSON_TEXT,
                 }})
+                # The raw model output is no longer echoed.
+                self.assertNotIn(INVALID_JSON_TEXT, response.text)
                 rows = self._job_analysis_rows(job_id)
                 self.assertEqual([(s, c) for _, s, c in rows], [("failed", False)])
                 guard = self._guard_row(job_id)
@@ -457,8 +459,10 @@ class JobAnalysisUnchangedBehaviorTests(_BaseInflightJobDeleteTestCase):
                     "error_code": "ERR_JOB_ANALYSIS_FAILED",
                     "message": "Job analysis failed.",
                     "job_id": job_id,
-                    "error": UPSTREAM_ERROR,
+                    "error": ANALYSIS_ERROR_INTERNAL,
                 }})
+                # The exception text is no longer echoed.
+                self.assertNotIn(UPSTREAM_ERROR, response.text)
                 rows = self._job_analysis_rows(job_id)
                 self.assertEqual([(s, c) for _, s, c in rows], [("failed", False)])
                 guard = self._guard_row(job_id)

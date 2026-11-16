@@ -34,6 +34,7 @@ Status values: `todo`, `in progress`, `blocked`, `done`.
 | W12 | Phase 2: URL import (ATS APIs, JobPosting JSON-LD, SSRF protections) | in review | `POST /jobs/import/preview`, plus the import box on `/jobs/new`. Live: Greenhouse, Lever and Ashby links and the JSON-LD parsing of real Arbeitnow pages; the pinned fetch itself needs an environment without a proxy |
 | W13 | Phase 3: motivation letters (TR/EN/DE, versions, quota, fake provider) | in review | `backend/routers/cover_letters.py`, `backend/app/cover_letter.py`, migration `phase10_cover_letters`, panel on the job page and `/letters`. Checked with the fake provider only, which is a template: the real model's writing quality is not checked |
 | W14 | Retire fake analyses when switching to the real provider | in review | `backend/scripts/retire_fake_analyses.py`; dry run by default, `--yes` to apply; must be run (again) right after switching the provider; not run on Lightsail yet |
+| W15 | Safe provider errors | in review | Profile analysis, job analysis (single, `analyze-missing`, `analyze-sample`) and cover letters never return, store or log SDK error text or raw model output: fixed messages from `openai_client.safe_analysis_error_message`, `raw_response` removed from the two invalid-JSON details. Profile analysis answers an exhausted spend limit with 503 `ERR_PROFILE_ANALYSIS_PROVIDER_UNAVAILABLE` and writes no failed row. Older failed rows keep their old text (not exposed by the API) |
 
 ## Acceptance criteria
 

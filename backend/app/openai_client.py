@@ -1,7 +1,18 @@
+import json
 import logging
 import os
+from contextlib import contextmanager
 
-from openai import OpenAI, OpenAIError, RateLimitError
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    AuthenticationError,
+    OpenAI,
+    OpenAIError,
+    RateLimitError,
+)
+from pydantic import ValidationError
 
 from .config import (
     DATABASE_URL_ENV,
@@ -119,3 +130,74 @@ def provider_spend_limit_error_code(exc: BaseException) -> str | None:
     if not isinstance(code, str) or code not in PROVIDER_SPEND_LIMIT_ERROR_CODES:
         return None
     return code
+
+
+# Fixed analysis failure messages, stored in `analysis_error` and returned
+# in the failure response. Chosen by exception class only: SDK error text
+# can carry key fragments, organization/project/request ids, and pydantic
+# or JSON errors can echo model output (and so CV or job content).
+ANALYSIS_ERROR_INVALID_JSON = "AI response was not valid JSON."
+ANALYSIS_ERROR_INVALID_FORMAT = "AI response did not match the expected format."
+ANALYSIS_ERROR_PROVIDER_TIMEOUT = "The analysis provider timed out."
+ANALYSIS_ERROR_PROVIDER_UNREACHABLE = "The analysis provider could not be reached."
+ANALYSIS_ERROR_PROVIDER_RATE_LIMITED = "The analysis provider is rate limited."
+ANALYSIS_ERROR_PROVIDER_CREDENTIALS = "The analysis provider rejected the credentials."
+ANALYSIS_ERROR_PROVIDER_STATUS = "The analysis provider returned an error."
+ANALYSIS_ERROR_PROVIDER_FAILED = "The analysis provider failed."
+ANALYSIS_ERROR_INTERNAL = "Analysis failed due to an internal error."
+
+
+def safe_analysis_error_message(exc: BaseException) -> str:
+    """Returns one of the fixed ANALYSIS_ERROR_* messages for `exc`.
+
+    Only the exception's class is used, never its text or attributes.
+    Subclasses are checked before their bases (APITimeoutError is an
+    APIConnectionError; JSONDecodeError and ValidationError are
+    ValueErrors).
+    """
+    if isinstance(exc, json.JSONDecodeError):
+        return ANALYSIS_ERROR_INVALID_JSON
+    if isinstance(exc, ValidationError):
+        return ANALYSIS_ERROR_INVALID_FORMAT
+    if isinstance(exc, APITimeoutError):
+        return ANALYSIS_ERROR_PROVIDER_TIMEOUT
+    if isinstance(exc, APIConnectionError):
+        return ANALYSIS_ERROR_PROVIDER_UNREACHABLE
+    if isinstance(exc, RateLimitError):
+        return ANALYSIS_ERROR_PROVIDER_RATE_LIMITED
+    if isinstance(exc, AuthenticationError):
+        return ANALYSIS_ERROR_PROVIDER_CREDENTIALS
+    # PermissionDeniedError (403) lands here: it can also mean an
+    # unsupported region or no access to the model, not only credentials.
+    if isinstance(exc, APIStatusError):
+        return ANALYSIS_ERROR_PROVIDER_STATUS
+    if isinstance(exc, OpenAIError):
+        return ANALYSIS_ERROR_PROVIDER_FAILED
+    return ANALYSIS_ERROR_INTERNAL
+
+
+@contextmanager
+def detached_from(original: BaseException):
+    """For code running inside `except ... as original:`. Anything raised in
+    the block is re-raised unchanged (same object, type and message), but
+    with `original` cut out of its __cause__/__context__ chain -- also from
+    the chained exceptions it carries (SQLAlchemy raises its errors `from`
+    the DBAPI error, which itself picked up `original` as its context). So
+    a server traceback never prints the provider's text or model output.
+    """
+    try:
+        yield
+    except BaseException as exc:
+        pending = [exc]
+        seen = set()
+        while pending:
+            current = pending.pop()
+            if current is None or id(current) in seen:
+                continue
+            seen.add(id(current))
+            if current.__cause__ is original:
+                current.__cause__ = None
+            if current.__context__ is original:
+                current.__context__ = None
+            pending.extend((current.__cause__, current.__context__))
+        raise
